@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 	external_session_id TEXT DEFAULT '',
 	source_session_id TEXT DEFAULT NULL,
 	thinking_effort TEXT DEFAULT '',
+	mode TEXT DEFAULT '',
 	deleted INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -106,11 +107,27 @@ CREATE TABLE IF NOT EXISTS summaries (
 	UNIQUE(target_type, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON chat_sessions(source_session_id) WHERE source_session_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS chat_metadata (
+	message_id INTEGER PRIMARY KEY,
+	mode TEXT DEFAULT '',
+	thinking_effort TEXT DEFAULT '',
+	transport TEXT DEFAULT '',
+	model TEXT DEFAULT '',
+	input_tokens INTEGER DEFAULT 0,
+	output_tokens INTEGER DEFAULT 0,
+	duration_ms INTEGER DEFAULT 0,
+	wall_ms INTEGER DEFAULT 0,
+	cost_usd REAL DEFAULT 0,
+	stop_reason TEXT DEFAULT '',
+	is_error INTEGER DEFAULT 0,
+	error_message TEXT DEFAULT '',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 // setupDB creates an in-memory SQLite database with the required schema,
 // sets service.DB, and returns a cleanup function.
-func setupDB(t *testing.T) *sql.DB { //nolint:unparam // test helper: DB used implicitly via global state
+func setupDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	assert.NoError(t, err)
@@ -637,7 +654,7 @@ func TestFinalizeStreamingMessage(t *testing.T) {
 	_, err := service.AddChatMessage("/project", "claude", sid, "assistant", "streaming...", nil, true, "")
 	assert.NoError(t, err)
 
-	err = service.FinalizeStreamingMessage("/project", "claude", sid, "final content")
+	_, err = service.FinalizeStreamingMessage("/project", "claude", sid, "final content")
 	assert.NoError(t, err)
 
 	msgs, err := service.GetChatHistory("/project", "claude", sid)
@@ -870,7 +887,7 @@ func TestFinalizeStreamingMessage_NoStreamingRow(t *testing.T) {
 	sid := helperCreateSession(t, "/project", "claude", "NoStream")
 
 	// No streaming message; finalize should succeed but affect 0 rows
-	err := service.FinalizeStreamingMessage("/project", "claude", sid, "content")
+	_, err := service.FinalizeStreamingMessage("/project", "claude", sid, "content")
 	assert.NoError(t, err)
 }
 
@@ -2013,6 +2030,59 @@ func TestGetSessionInfo(t *testing.T) {
 	assert.Equal(t, "claude", info.AgentID)
 	assert.Equal(t, "claude-sonnet-4-6", info.Model)
 	assert.Equal(t, "", info.ThinkingEffort)
+	assert.Equal(t, "", info.Mode)
+}
+
+// ---------- SaveMetadata ----------
+
+func TestSaveMetadata(t *testing.T) {
+	db := setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Meta")
+	msgID, err := service.AddChatMessage("/project", "claude", sid, "assistant", `{"blocks":[],"metadata":{"model":"gpt-4","inputTokens":100,"outputTokens":50}}`, nil, false, "")
+	assert.NoError(t, err)
+	assert.Greater(t, msgID, int64(0))
+
+	meta := &ai.Metadata{
+		Mode:           "code",
+		ThinkingEffort: "high",
+		Transport:      "acp",
+		Model:          "gpt-4",
+		InputTokens:    100,
+		OutputTokens:   50,
+		WallMs:         3200,
+		CostUSD:        0.005,
+		StopReason:     "stop",
+	}
+	err = service.SaveMetadata(msgID, meta)
+	assert.NoError(t, err)
+
+	// Verify the row was inserted
+	var mode, model, transport string
+	var inputTokens, outputTokens, wallMs int
+	var costUsd float64
+	err = db.QueryRow("SELECT mode, model, transport, input_tokens, output_tokens, wall_ms, cost_usd FROM chat_metadata WHERE message_id = ?", msgID).
+		Scan(&mode, &model, &transport, &inputTokens, &outputTokens, &wallMs, &costUsd)
+	assert.NoError(t, err)
+	assert.Equal(t, "code", mode)
+	assert.Equal(t, "gpt-4", model)
+	assert.Equal(t, "acp", transport)
+	assert.Equal(t, 100, inputTokens)
+	assert.Equal(t, 50, outputTokens)
+	assert.Equal(t, 3200, wallMs)
+	assert.InDelta(t, 0.005, costUsd, 0.0001)
+}
+
+func TestSaveMetadata_NilMeta(t *testing.T) {
+	_ = setupDB(t)
+	err := service.SaveMetadata(1, nil)
+	assert.NoError(t, err)
+}
+
+func TestSaveMetadata_ZeroMessageID(t *testing.T) {
+	_ = setupDB(t)
+	err := service.SaveMetadata(0, &ai.Metadata{Model: "test"})
+	assert.NoError(t, err)
 }
 
 func TestGetSessionInfo_NotFound(t *testing.T) {
@@ -2520,6 +2590,72 @@ func TestUpdateSessionModel_NonExistent(t *testing.T) {
 	assert.NoError(t, err) // UPDATE on non-existent row is a no-op
 }
 
+// ---------- UpdateSessionMode ----------
+
+func TestUpdateSessionMode(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Test")
+
+	// Default mode should be empty
+	var mode string
+	err := service.DB.QueryRow("SELECT mode FROM chat_sessions WHERE id = ?", sid).Scan(&mode)
+	assert.NoError(t, err)
+	assert.Equal(t, "", mode)
+
+	// Update mode to "plan"
+	err = service.UpdateSessionMode(sid, "plan")
+	assert.NoError(t, err)
+
+	// Verify mode persisted in DB
+	err = service.DB.QueryRow("SELECT mode FROM chat_sessions WHERE id = ?", sid).Scan(&mode)
+	assert.NoError(t, err)
+	assert.Equal(t, "plan", mode)
+}
+
+func TestUpdateSessionMode_NonExistentSession(t *testing.T) {
+	setupDB(t)
+
+	// Should not panic; UPDATE on non-existent row is a no-op
+	err := service.UpdateSessionMode("non-existent-session", "code")
+	assert.NoError(t, err)
+}
+
+func TestUpdateSessionMode_UpdateMultipleTimes(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Update")
+
+	err := service.UpdateSessionMode(sid, "ask")
+	assert.NoError(t, err)
+
+	err = service.UpdateSessionMode(sid, "architect")
+	assert.NoError(t, err)
+
+	var mode string
+	err = service.DB.QueryRow("SELECT mode FROM chat_sessions WHERE id = ?", sid).Scan(&mode)
+	assert.NoError(t, err)
+	assert.Equal(t, "architect", mode)
+}
+
+func TestUpdateSessionMode_ResetToEmpty(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Reset")
+
+	err := service.UpdateSessionMode(sid, "code")
+	assert.NoError(t, err)
+
+	// Reset to empty (auto/default)
+	err = service.UpdateSessionMode(sid, "")
+	assert.NoError(t, err)
+
+	var mode string
+	err = service.DB.QueryRow("SELECT mode FROM chat_sessions WHERE id = ?", sid).Scan(&mode)
+	assert.NoError(t, err)
+	assert.Equal(t, "", mode)
+}
+
 // ---------- GetStreamingMessageID ----------
 
 func TestGetStreamingMessageID_Found(t *testing.T) {
@@ -2531,7 +2667,7 @@ func TestGetStreamingMessageID_Found(t *testing.T) {
 	_, err := service.AddChatMessage("/project", "claude", sid, "assistant", "streaming...", nil, true, "")
 	assert.NoError(t, err)
 
-	err = service.FinalizeStreamingMessage("/project", "claude", sid, "final content")
+	_, err = service.FinalizeStreamingMessage("/project", "claude", sid, "final content")
 	assert.NoError(t, err)
 
 	id := service.GetStreamingMessageID(sid)

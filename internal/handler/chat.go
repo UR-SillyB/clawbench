@@ -167,7 +167,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		if cachedSessionInfo == nil {
 			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
 		}
-		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort string
+		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort, sessionMode string
 		var sessionInfoBackend string
 		if cachedSessionInfo != nil {
 			sessionTitle = cachedSessionInfo.Title
@@ -175,16 +175,74 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			sessionAgentID = cachedSessionInfo.AgentID
 			sessionModelID = cachedSessionInfo.Model
 			sessionThinkingEffort = cachedSessionInfo.ThinkingEffort
+			sessionMode = cachedSessionInfo.Mode
 		}
 		if sessionInfoBackend != "" {
 			sessionBackend = sessionInfoBackend
 		}
 		running := service.IsSessionRunning(sessionID)
+
+		// Look up cached ACP mode/thinking/model list state for this session.
+		// This allows the frontend to populate mode chips immediately
+		// without waiting for SSE events (which may have already been consumed).
+		// Fallback: for brand-new sessions with no pool session mapping yet,
+		// look up by agent ID so mode chips appear on first load.
+		var modeState, thinkingEffortState, modelListState any
+		var commands []ai.AvailableCommandInfo
+		if sessionID != "" {
+			if ms, _, es, cmds, ml := ai.GetACPConnectionPool().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil {
+				modeState = ms
+				thinkingEffortState = es
+				commands = cmds
+				modelListState = ml
+			} else if sessionAgentID != "" {
+				// No session-level mapping yet (new session, never sent a message).
+				// Fall back to agent-level cache so mode/thinking/command chips
+				// appear immediately without requiring the first message.
+				if ms, _, es, ml := ai.GetACPConnectionPool().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil {
+					modeState = ms
+					thinkingEffortState = es
+					modelListState = ml
+				}
+				if cmds := ai.GetACPConnectionPool().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
+					commands = cmds
+				}
+			}
+		}
+		// DB fallback: when pool cache is empty (e.g. after server restart),
+		// use ACP state persisted in the agents table so mode/thinking/command
+		// chips appear immediately without waiting for a new ACP connection.
+		if modeState == nil && thinkingEffortState == nil && len(commands) == 0 && modelListState == nil && sessionAgentID != "" {
+			if a, ok := model.Agents[sessionAgentID]; ok && a.Transport == "acp-stdio" {
+				if a.AcpModeState != "" {
+					var dbMs ai.ModeState
+					if json.Unmarshal([]byte(a.AcpModeState), &dbMs) == nil && len(dbMs.AvailableModes) > 0 {
+						modeState = &dbMs
+					}
+				}
+				if a.AcpThinkingState != "" {
+					var dbEs ai.ThinkingEffortState
+					if json.Unmarshal([]byte(a.AcpThinkingState), &dbEs) == nil && len(dbEs.AvailableLevels) > 0 {
+						thinkingEffortState = &dbEs
+					}
+				}
+				if a.AcpCommands != "" && a.AcpCommands != "[]" {
+					json.Unmarshal([]byte(a.AcpCommands), &commands)
+				}
+				if a.AcpModelListState != "" {
+					var dbMl ai.ModelListState
+					if json.Unmarshal([]byte(a.AcpModelListState), &dbMl) == nil && len(dbMl.Models) > 0 {
+						modelListState = &dbMl
+					}
+				}
+			}
+		}
+
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState})
 		return
 	}
 
@@ -517,7 +575,7 @@ func executeStreamRun(
 	chatReq ai.ChatRequest,
 	fileDir string,
 ) streamRunResult {
-	backend, err := ai.NewBackend(backendName)
+	backend, err := ai.NewBackendForAgent(backendName, agentID)
 	if err != nil {
 		slog.Error("failed to create backend", slog.String("backend", backendName), slog.String("err", err.Error()))
 		errMsg := T(r, "BackendCreateFailed", map[string]any{"Error": err.Error()})
@@ -618,10 +676,12 @@ func executeStreamRun(
 					slog.String("session", sessionID))
 
 				// Finalize current streaming message
-				if err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
+				if msgID, err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
 					slog.Error("failed to finalize pre-resume message",
 						slog.String("session", sessionID),
 						slog.String("err", err.Error()))
+				} else if msgID > 0 && responseMetadata != nil {
+					_ = service.SaveMetadata(msgID, responseMetadata)
 				}
 
 				// Save raw output if captured so far
@@ -733,6 +793,11 @@ func finalizeStreamRun(
 	// tool names like "/commit" (model confuses slash commands with tools).
 	blocks = removeRejectedToolBlocks(blocks)
 
+	// Merge fragmented thinking blocks produced by ACP backends.
+	// ACP agents interleave AgentThoughtChunk and ToolCall events, causing
+	// many tiny thinking blocks separated by tool_use. Consolidate them.
+	blocks = ai.MergeConsecutiveThinkingBlocks(blocks)
+
 	// Compute wall-clock duration and inject into metadata
 	wallMs := int(time.Since(wallStart).Milliseconds())
 	if responseMetadata == nil {
@@ -740,8 +805,43 @@ func finalizeStreamRun(
 	}
 	responseMetadata.WallMs = wallMs
 
+	// Inject ACP mode and thinking effort into metadata (if available)
+	if ms, _, es, _, _ := ai.GetACPConnectionPool().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
+		if ms != nil && ms.CurrentModeID != "" {
+			responseMetadata.Mode = ms.CurrentModeID
+			_ = service.UpdateSessionMode(sessionID, ms.CurrentModeID)
+		}
+		if es != nil && es.CurrentID != "" {
+			responseMetadata.ThinkingEffort = es.CurrentID
+		}
+	}
+	// Also inject thinking effort from session DB if not already set from ACP cache
+	if responseMetadata.ThinkingEffort == "" {
+		if effort := service.GetSessionThinkingEffort(sessionID); effort != "" {
+			responseMetadata.ThinkingEffort = effort
+		}
+	}
+	// Inject transport type (acp vs cli) based on agent configuration
+	if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+		responseMetadata.Transport = "acp"
+	} else {
+		responseMetadata.Transport = "cli"
+	}
+
+	// Always store our own model selection (not the AI backend's reported model).
+	// The backend may report a different model or none at all; we want consistency.
+	if sessionModel := service.GetSessionModel(sessionID); sessionModel != "" {
+		responseMetadata.Model = sessionModel
+	}
+
 	// Determine cancellation reason
 	cancelReason := service.GetAndClearCancelReason(sessionID)
+
+	// Ensure responseMetadata exists — even for cancelled/empty responses,
+	// we want to persist whatever info we have (wallMs, mode, transport, etc.)
+	if responseMetadata == nil {
+		responseMetadata = &ai.Metadata{}
+	}
 
 	// Serialize blocks + metadata as JSON for database storage
 	var content string
@@ -760,17 +860,14 @@ func finalizeStreamRun(
 			errMsg, reason = "AI returned no content", ai.ReasonEmpty
 		}
 		blocks = append(blocks, model.ContentBlock{Type: "warning", Text: errMsg, Reason: reason})
-		contentMap := map[string]any{"blocks": blocks}
+		contentMap := map[string]any{"blocks": blocks, "metadata": responseMetadata}
 		if cancelReason == "user" || ctx.Err() == context.Canceled {
 			contentMap["cancelled"] = true
 		}
 		blocksJSON, _ := json.Marshal(contentMap)
 		content = string(blocksJSON)
 	} else {
-		contentMap := map[string]any{"blocks": blocks}
-		if responseMetadata != nil {
-			contentMap["metadata"] = responseMetadata
-		}
+		contentMap := map[string]any{"blocks": blocks, "metadata": responseMetadata}
 		// When there are blocks but the stream was interrupted, add a warning and mark cancelled
 		if cancelReason == "user" {
 			contentMap["cancelled"] = true
@@ -783,12 +880,19 @@ func finalizeStreamRun(
 		blocksJSON, _ := json.Marshal(contentMap)
 		content = string(blocksJSON)
 	}
-	if err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, content); err != nil {
+	msgID, err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, content)
+	if err != nil {
 		slog.Error(
 			"failed to finalize streaming message",
 			slog.String("session", sessionID),
 			slog.String("err", err.Error()),
 		)
+	}
+	// Save metadata to dedicated table for analytical queries
+	if msgID > 0 && responseMetadata != nil {
+		if saveErr := service.SaveMetadata(msgID, responseMetadata); saveErr != nil {
+			slog.Warn("failed to save message metadata", slog.Int64("msg_id", msgID), slog.String("err", saveErr.Error()))
+		}
 	}
 
 	// Drain any remaining events from channel
@@ -885,9 +989,17 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 	//   - codebuddy/claude/qoder: ClawBench UUID (same as session id)
 	//   - opencode/codex/deepseek/pi: CLI-assigned ID (captured from stream events)
 	// When resuming, we always use external_session_id so the CLI can find its session context.
+	//
+	// EXCEPTION: ACP-backed agents manage their own session mapping internally
+	// via ACPConnectionPool (clawbench UUID → ACP session ID). For ACP agents,
+	// always use the ClawBench UUID as the session ID — the pool handles the rest.
 	effectiveSessionID := sessionID
 	resume := service.SessionHasAssistant(sessionID)
-	if resume {
+	isACP := false
+	if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+		isACP = true
+	}
+	if resume && !isACP {
 		extID := service.GetExternalSessionID(sessionID)
 		if extID != "" {
 			effectiveSessionID = extID

@@ -82,8 +82,9 @@ export default {
       placeholder: '输入消息...',
       placeholderQueue: '输入消息加入队列...',
       placeholderOptional: '添加描述（可选）...',
-      placeholderQuickSend: '点击⚡选指令 →',
+      placeholderQuickSend: '点击⚡快捷发送消息 →',
       placeholderAtCommand: "输入 {'@'} 执行内置命令",
+      placeholderCommand: "输入 {'@'} 或 {'/'} 执行命令",
       send: '发送',
       enqueue: '加入队列',
       quickMenu: '快捷指令',
@@ -92,9 +93,12 @@ export default {
       confirmStop: '确认停止',
     },
     atCommand: {
-      title: '命令',
+      title: 'ClawBench 命令',
       chatsearchDesc: '搜索聊天历史',
       taskDesc: '管理定时任务',
+    },
+    slashCommand: {
+      title: 'Agent 命令',
     },
     actions: {
       session: '会话',
@@ -115,6 +119,16 @@ export default {
     },
     modelSwitcher: {
       title: '选择模型',
+    },
+    modeSwitcher: {
+      title: '会话模式',
+    },
+    plan: {
+      title: '执行计划',
+      completedCount: '{completed}/{total} 完成',
+      priorityHigh: '高',
+      priorityMedium: '中',
+      priorityLow: '低',
     },
     modelModal: {
       searchPlaceholder: '搜索模型...',
@@ -146,7 +160,7 @@ export default {
       openDirectory: '打开目录',
     },
     quickSend: {
-      title: '快捷发送',
+      title: '快捷发送消息',
       tapToFill: '长按发送',
       edit: '编辑',
       addItem: '添加项目',
@@ -277,6 +291,9 @@ export default {
       time: '时间:',
       relatedFile: '关联文件:',
       backend: '后端:',
+      transport: '交互类型:',
+      mode: '模式:',
+      thinkingEffort: '思考深度:',
       model: '模型:',
       inputTokens: '输入Token:',
       outputTokens: '输出Token:',
@@ -779,8 +796,29 @@ export default {
       pattern: '匹配模式',
       path: '路径',
     },
+    ls: {
+      currentDir: '当前目录',
+    },
     webFetch: {
       url: 'URL',
+    },
+    todoRead: {
+      label: '读取待办列表',
+    },
+    task: {
+      subject: '主题',
+      description: '描述',
+      name: '名称',
+      cron: 'Cron',
+      prompt: '提示词',
+      agent: 'Agent',
+      status: '状态',
+      owner: '负责人',
+      activeForm: '进行中',
+      noDetails: '（无详情）',
+    },
+    sendMessage: {
+      to: '发送给',
     },
     askUser: {
       noQuestions: '（无问题）',
@@ -789,6 +827,13 @@ export default {
       name: '提问',
       supplementary: '补充信息',
       supplementaryPlaceholder: '可选，添加额外补充说明…',
+    },
+    permission: {
+      title: '权限请求',
+      file: '文件',
+      command: '命令',
+      approved: '已批准',
+      denied: '已拒绝',
     },
   },
   agents: {

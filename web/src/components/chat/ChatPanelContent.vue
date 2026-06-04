@@ -61,6 +61,14 @@
       </div>
     </Transition>
 
+    <!-- Plan progress panel -->
+    <PlanPanel
+      :entries="planEntries"
+      :collapsed="planCollapsed"
+      :has-update="planHasUpdate"
+      @toggle-collapse="togglePlanCollapse"
+    />
+
     <!-- Unified input container -->
     <ChatInputBar
       ref="inputBarRef"
@@ -79,6 +87,9 @@
       :currentModelName="identity.currentModelName.value"
       :currentThinkingEffort="identity.currentThinkingEffort.value"
       :currentAgentId="identity.currentAgentId.value"
+      :currentModeId="identity.currentModeId.value"
+      :currentModeName="identity.currentModeName.value"
+      :availableModes="identity.availableModes.value"
       :active="props.active"
       @send="sendMessage"
       @cancel="stream.cancelStream"
@@ -95,6 +106,7 @@
       @delete-session="() => manager.deleteCurrentSession((draftId) => inputBarRef.value?.deleteDraft(draftId))"
       @switch-model="handleSwitchModel"
       @switch-thinking-effort="handleSwitchThinkingEffort"
+      @switch-mode="handleSwitchMode"
     />
 
   </div>
@@ -154,6 +166,8 @@ import ChatMetadataModal from './ChatMetadataModal.vue'
 import ToolDetailOverlay from './ToolDetailOverlay.vue'
 import ChatInputBar from './ChatInputBar.vue'
 import ChatMessageList from './ChatMessageList.vue'
+import PlanPanel from './PlanPanel.vue'
+import { usePlanProgress } from '@/composables/usePlanProgress'
 import { useChatRender } from '@/composables/useChatRender.ts'
 import { formatToolOutput } from '@/utils/renderToolDetail.ts'
 import { useChatStream } from '@/composables/useChatStream.ts'
@@ -237,6 +251,8 @@ function handleFileTagClick(filePath) {
         switchTab('viewer')
     }
 }
+
+const { planEntries, planCollapsed, planHasUpdate, hasPlan, togglePlanCollapse, clearPlanState } = usePlanProgress()
 
 const render = useChatRender({ messages, theme, currentSessionId: identity.currentSessionId })
 
@@ -472,6 +488,26 @@ function handleSwitchModel(model) {
 function handleSwitchThinkingEffort(level) {
   identity.currentThinkingEffort.value = level
   identity.saveThinkingPref(identity.currentAgentId.value, level)
+}
+
+async function handleSwitchMode(mode) {
+  if (!mode?.id || mode.id === identity.currentModeId.value) return
+  // Optimistic update — UI updates immediately
+  identity.currentModeId.value = mode.id
+  identity.currentModeName.value = mode.name || mode.id
+  // Send mode switch to backend
+  try {
+    await fetch('/api/ai/session/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: identity.currentSessionId.value,
+        modeId: mode.id,
+      }),
+    })
+  } catch (err) {
+    console.error('Failed to switch mode:', err)
+  }
 }
 
 async function sendMessage(text, extraFilePaths) {

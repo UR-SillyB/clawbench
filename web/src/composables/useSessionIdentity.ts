@@ -13,10 +13,15 @@ import { gt } from '@/composables/useLocale'
 const currentSessionId = ref('')
 const currentSessionTitle = ref('')
 const currentBackend = ref('')
-const currentAgentId = ref('')
+export const currentAgentId = ref('')
 const currentModelId = ref('')
 const currentModelName = ref('')
 const currentThinkingEffort = ref('')
+const currentModeId = ref('')
+const currentModeName = ref('')
+const availableModes = ref<Array<{ id: string; name: string }>>([])
+const availableCommands = ref<Array<{ name: string; description: string; inputHint?: string }>>([])
+const availableThinkingEfforts = ref<Array<{ id: string; name: string }>>([])
 const runningSessions = ref(new Set<string>())
 // Bumped on every mutation to runningSessions so computed properties
 // that depend on the set's contents re-evaluate correctly.
@@ -28,6 +33,11 @@ const runningSessionsVersion = ref(0)
 const sessionDrawerOpen = ref(false)
 
 /** Reset all module-level singleton refs — used by SPA hot project switch. */
+/** Read-only accessor for the current session ID (no composable setup needed). */
+export function getSessionId(): string {
+  return currentSessionId.value
+}
+
 export function resetIdentity(): void {
   currentSessionId.value = ''
   currentSessionTitle.value = ''
@@ -36,6 +46,11 @@ export function resetIdentity(): void {
   currentModelId.value = ''
   currentModelName.value = ''
   currentThinkingEffort.value = ''
+  currentModeId.value = ''
+  currentModeName.value = ''
+  availableModes.value = []
+  availableCommands.value = []
+  availableThinkingEfforts.value = []
   runningSessions.value = new Set()
   runningSessionsVersion.value = 0
   sessionDrawerOpen.value = false
@@ -47,6 +62,15 @@ export function resetIdentity(): void {
   _continueFromExecution = null
   _checkContinueSession = null
   _sessionDrawerRef = null
+  // Clean up E2E test bridge
+  if (typeof window !== 'undefined') {
+    const bridge = (window as any).__clawbench
+    if (bridge) {
+      bridge.createSession = null
+      bridge.switchSession = null
+      bridge.deleteSession = null
+    }
+  }
 }
 
 // ───────────────────────────────────────────────────────────
@@ -86,6 +110,67 @@ function loadThinkingPref(agentId: string): string | null {
 }
 
 // ───────────────────────────────────────────────────────────
+// Mode state — ACP session mode (ask/architect/code)
+// Updated from SSE mode_update/config_update events.
+// Only populated for ACP-backed sessions that support modes.
+// ───────────────────────────────────────────────────────────
+
+/** Update mode state from SSE mode_update or config_update event. */
+export function updateModeState(modeId: string, modes: Array<{ id: string; name: string }>) {
+  if (modeId) {
+    currentModeId.value = modeId
+    const mode = modes.find(m => m.id === modeId)
+    currentModeName.value = mode?.name || modeId
+  }
+  if (modes.length > 0) {
+    availableModes.value = modes
+  }
+}
+
+/** Clear mode state (called on session switch or when leaving ACP session). */
+export function clearModeState() {
+  currentModeId.value = ''
+  currentModeName.value = ''
+  availableModes.value = []
+}
+
+/** Update available slash commands from ACP commands_update event. */
+export function updateCommandState(commands: Array<{ name: string; description: string; inputHint?: string }>) {
+  availableCommands.value = commands
+}
+
+/** Clear command state (called on session switch). */
+export function clearCommandState() {
+  availableCommands.value = []
+}
+
+/**
+ * Slash commands are now populated from GET /api/agents (acpStates.commands)
+ * and SSE commands_update events — no separate prefetch HTTP request needed.
+ * This function is kept as a no-op for backward compatibility with call sites
+ * that haven't been updated yet.
+ * @deprecated Use acpStates from /api/agents instead.
+ */
+export async function prefetchCommands(_agentId: string) {
+  // No-op: commands are now pre-populated from /api/agents acpStates
+}
+
+/** Update thinking effort state from SSE thinking_effort_update event. */
+export function updateThinkingEffortState(currentId: string, levels: Array<{ id: string; name: string }>) {
+  if (currentId) {
+    currentThinkingEffort.value = currentId
+  }
+  if (levels.length > 0) {
+    availableThinkingEfforts.value = levels
+  }
+}
+
+/** Clear thinking effort state (called on session switch). */
+export function clearThinkingEffortState() {
+  availableThinkingEfforts.value = []
+}
+
+// ───────────────────────────────────────────────────────────
 // Action callbacks — registered by ChatPanel on mount.
 // Inversion of control: singleton owns the identity refs, but
 // ChatPanel owns the session *operations*. Other consumers
@@ -117,6 +202,11 @@ export interface SessionActions {
 /**
  * Register session action callbacks. Called by App.vue on mount
  * (for openAgentSelector) and ChatPanel on mount (for the rest).
+ *
+ * Also exposes a minimal E2E test bridge on window.__clawbench
+ * so Playwright can call createSession/switchSession without
+ * page reload — session state is updated in-place by the Vue
+ * reactivity system.
  */
 export function registerSessionActions(actions: SessionActions) {
   _switchSession = actions.switchSession
@@ -126,6 +216,16 @@ export function registerSessionActions(actions: SessionActions) {
   _openChatPanel = actions.openChatPanel
   _continueFromExecution = actions.continueFromExecution
   _checkContinueSession = actions.checkContinueSession
+
+  // Expose E2E test bridge on window for Playwright access.
+  // These allow tests to create/switch sessions without page reload,
+  // which is essential for ACP tests that need to switch agents mid-test.
+  if (typeof window !== 'undefined') {
+    const bridge = (window as any).__clawbench || ((window as any).__clawbench = {})
+    bridge.createSession = actions.createSession
+    bridge.switchSession = actions.switchSession
+    bridge.deleteSession = actions.deleteSession
+  }
 }
 
 /** Register the SessionDrawer component ref so openAgentSelector() works. */
@@ -152,6 +252,8 @@ export async function initSessionFromAPI() {
         currentSessionTitle.value = data.sessionTitle || ''
         currentBackend.value = data.backend || ''
         currentAgentId.value = data.agentId || ''
+        // Slash commands are now populated from /api/agents acpStates (via loadAgents)
+        // and from the chat response below — no separate prefetch request needed.
         // Initialize model: prefer server-persisted modelId, then localStorage pref, then agent default
         if (data.modelId) {
           currentModelId.value = data.modelId
@@ -181,6 +283,18 @@ export async function initSessionFromAPI() {
           currentThinkingEffort.value = data.thinkingEffort
         } else {
           currentThinkingEffort.value = loadThinkingPref(data.agentId || '') || ''
+        }
+        // Populate slash commands from chat response (cached ACP state)
+        if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
+          availableCommands.value = data.commands
+        }
+        // Populate mode state from chat response (DB-persisted ACP state)
+        if (data.modeState && data.modeState.availableModes?.length > 0) {
+          updateModeState(data.modeId || data.modeState.currentModeId || '', data.modeState.availableModes)
+        }
+        // Populate thinking effort state from chat response (DB-persisted ACP state)
+        if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
+          updateThinkingEffortState(data.thinkingEffort || data.thinkingEffortState.currentLevelId || '', data.thinkingEffortState.availableLevels)
         }
       }
     }
@@ -361,6 +475,11 @@ export function useSessionIdentity() {
     currentModelId,
     currentModelName,
     currentThinkingEffort,
+    currentModeId,
+    currentModeName,
+    availableModes,
+    availableCommands,
+    availableThinkingEfforts,
     runningSessions,
     runningSessionsVersion,
     agentHeaderTitle,

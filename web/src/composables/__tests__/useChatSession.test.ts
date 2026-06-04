@@ -104,6 +104,7 @@ vi.mock('@/composables/useSessionIdentity', () => ({
       get value() { return mockIdentity.currentThinkingEffort },
       set value(v) { mockIdentity.currentThinkingEffort = v },
     },
+    availableCommands: { value: [] },
     runningSessions: {
       get value() { return mockState.runningSessions },
     },
@@ -124,6 +125,13 @@ vi.mock('@/composables/useSessionIdentity', () => ({
     loadModelPref: mockIdentityFns.loadModelPref,
     loadThinkingPref: mockIdentityFns.loadThinkingPref,
   }),
+  currentAgentId: { value: '' },
+  updateModeState: vi.fn(),
+  clearModeState: vi.fn(),
+  updateCommandState: vi.fn(),
+  clearCommandState: vi.fn(),
+  updateThinkingEffortState: vi.fn(),
+  clearThinkingEffortState: vi.fn(),
 }))
 
 vi.mock('@/composables/useToast', () => ({
@@ -142,6 +150,8 @@ vi.mock('@/composables/useAgents', () => ({
     getAgentModel: mockAgentFns.getAgentModel,
     agentHeaderTitle: mockAgentFns.agentHeaderTitle,
   }),
+  restoreOriginalModels: vi.fn(),
+  populateACPStateFromCache: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/stores/app', () => ({

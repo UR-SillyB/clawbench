@@ -3,7 +3,9 @@ import { gt } from '@/composables/useLocale'
 import { useToast } from '@/composables/useToast.ts'
 import { useNotification } from '@/composables/useNotification.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
-import { useAgents } from '@/composables/useAgents'
+import { clearModeState, updateModeState, clearCommandState, updateCommandState, updateThinkingEffortState, clearThinkingEffortState, currentAgentId as _currentAgentId } from '@/composables/useSessionIdentity.ts'
+import { clearPlanState } from '@/composables/usePlanProgress'
+import { useAgents, restoreOriginalModels, populateACPStateFromCache } from '@/composables/useAgents'
 import { store } from '@/stores/app.ts'
 import { buildMessageSnapshot, parseMessages } from '@/utils/chatSessionUtils.ts'
 import { warmWorktreeCache } from '@/composables/useWorktreeAnnotation.ts'
@@ -82,7 +84,7 @@ export function useChatSession(options: UseChatSessionOptions) {
 
   // ── Identity refs from singleton ──
   const identity = useSessionIdentity()
-  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion } = identity
+  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands } = identity
 
   // ── Agents from singleton ──
   const { agents, loadAgents, getAgentIcon, getAgentName, syncModelFromAgent, getAgentModel, agentHeaderTitle: makeAgentTitle } = useAgents()
@@ -213,6 +215,18 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
+      // Populate ACP mode state from REST response (avoids waiting for SSE events
+      // which may have already been consumed by a previous SSE handler).
+      if (data.modeState && data.modeState.availableModes?.length > 0) {
+        updateModeState(data.modeState.currentModeId || '', data.modeState.availableModes)
+      }
+      if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
+        updateThinkingEffortState(data.thinkingEffortState.currentId || '', data.thinkingEffortState.availableLevels)
+      }
+      // Populate slash commands from REST response (cached ACP state)
+      if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
+        updateCommandState(data.commands)
+      }
       onExtractScheduledTasks(messages.value)
       onRenderUpdate(true)
       if (data.running) {
@@ -279,6 +293,16 @@ export function useChatSession(options: UseChatSessionOptions) {
     // Clear stale blockAskQuestions from previous session
     Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
     Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
+    // Clear ACP state from previous session — will be repopulated by REST response
+    // or SSE events only if the new session's agent actually supports ACP.
+    clearModeState()
+    clearCommandState()
+    clearThinkingEffortState()
+    // Restore original CLI model list in case ACP had overridden it
+    const prevAgentId = _currentAgentId.value
+    if (prevAgentId) restoreOriginalModels(prevAgentId)
+    // Clear plan progress from previous session — will be repopulated by SSE plan_update
+    clearPlanState()
     try {
       // Load agents first so we can resolve agent names
       if (agents.value.length === 0) await loadAgents()
@@ -302,6 +326,18 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
+      // Populate ACP mode state from REST response (avoids waiting for SSE events
+      // which may have already been consumed by a previous SSE handler).
+      if (data.modeState && data.modeState.availableModes?.length > 0) {
+        updateModeState(data.modeState.currentModeId || '', data.modeState.availableModes)
+      }
+      if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
+        updateThinkingEffortState(data.thinkingEffortState.currentId || '', data.thinkingEffortState.availableLevels)
+      }
+      // Populate slash commands from REST response (cached ACP state)
+      if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
+        updateCommandState(data.commands)
+      }
       onExtractScheduledTasks(messages.value)
       onRenderUpdate(true)
       onScrollBottom(true)
@@ -352,6 +388,21 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || agentId || ''
       syncModelFromData(currentAgentId.value, '')
       currentThinkingEffort.value = identity.loadThinkingPref(currentAgentId.value) || ''
+      // Clear ACP state for new session — then immediately restore from
+      // cached acpStates so mode/thinking/command chips appear without
+      // needing to send the first message first.
+      clearModeState()
+      clearCommandState()
+      clearThinkingEffortState()
+      // Clear plan progress from previous session — plan is session-bound,
+      // will be repopulated by SSE plan_update for the new session.
+      clearPlanState()
+      // Restore original CLI model list in case ACP had overridden it
+      restoreOriginalModels(currentAgentId.value)
+      // Re-populate ACP state from the agents cache (pool + DB persisted).
+      // This makes mode chips visible immediately on new sessions.
+      // May trigger a force-refresh of /api/agents if the cache is stale.
+      await populateACPStateFromCache(currentAgentId.value)
       messages.value = []
       totalMessages.value = 0
       lastMessageSnapshot = ''  // New session — no messages yet

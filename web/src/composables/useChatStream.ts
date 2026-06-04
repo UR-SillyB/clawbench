@@ -2,6 +2,9 @@ import { onMounted, onUnmounted, type Ref } from 'vue'
 import { cancelChat } from '@/utils/api'
 import { useReconnect } from './useReconnect'
 import { gt } from '@/composables/useLocale'
+import { updateModeState, updateCommandState, updateThinkingEffortState, currentAgentId } from './useSessionIdentity'
+import { updateACPModelList } from './useAgents'
+import { updatePlanEntries } from './usePlanProgress'
 import { FILE_MODIFYING_TOOLS, findLastBlockOfType, forceCleanupStreamingState as _forceCleanupStreamingState } from '@/utils/chatStreamUtils.ts'
 
 export interface UseChatStreamOptions {
@@ -350,6 +353,22 @@ export function useChatStream(options: UseChatStreamOptions) {
       }
     })
 
+    // ACP think tool completed — mark the last thinking block as done
+    // so the spinner disappears immediately instead of waiting for the
+    // entire AI response to finish.
+    eventSource.addEventListener('thinking_done', () => {
+      if (!guard()) return
+      const blocks = streamingMsg.blocks
+      // Mark the last thinking block as done
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i].type === 'thinking') {
+          blocks[i].done = true
+          break
+        }
+      }
+      onRenderNeeded()
+    })
+
     eventSource.addEventListener('tool_use', (e) => {
       if (!guard()) return // Check guard first to prevent stale events corrupting new session (ISS-304)
       resetStreamTimeout()
@@ -417,12 +436,17 @@ export function useChatStream(options: UseChatStreamOptions) {
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE tool_result: invalid JSON, skipping'); return }
       const blocks = streamingMsg.blocks
-      // Find the matching tool_use block and update output/status
+      // Find the matching tool_use block and update output/status/done
       const existing = blocks.find(b => b.type === 'tool_use' && b.id === data.id)
       if (existing) {
         if (data.output !== undefined) existing.output = data.output
         if (data.status !== undefined) existing.status = data.status
+        existing.done = true
       }
+      // Clear timeout if set
+      const timer = toolUseTimeouts.get(data.id)
+      if (timer) { clearTimeout(timer); toolUseTimeouts.delete(data.id) }
+      onRenderNeeded()
       // Skip scroll when panel not visible
       if (isOpen.value) {
         onScrollBottom()
@@ -515,6 +539,67 @@ export function useChatStream(options: UseChatStreamOptions) {
       // Skip render when panel not visible — data is accumulated regardless
       if (isOpen.value) {
         onRenderNeeded()
+      }
+    })
+
+    eventSource.addEventListener('mode_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE mode_update: invalid JSON, skipping'); return }
+      updateModeState(data.currentModeId || '', data.availableModes || [])
+    })
+
+    eventSource.addEventListener('config_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE config_update: invalid JSON, skipping'); return }
+      // Process each config option by category
+      for (const opt of (data.options || [])) {
+        if (opt.category === 'mode' || opt.id === 'mode') {
+          const modes = (opt.values || []).map((v: any) => ({ id: v.id, name: v.name || v.id }))
+          const currentId = data.currentValueId || ''
+          updateModeState(currentId, modes)
+        }
+      }
+    })
+
+    eventSource.addEventListener('thinking_effort_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE thinking_effort_update: invalid JSON, skipping'); return }
+      if (data.availableLevels) {
+        const levels = (data.availableLevels || []).map((l: any) => ({ id: l.id, name: l.name || l.id }))
+        updateThinkingEffortState(data.currentId || '', levels)
+      }
+    })
+
+    eventSource.addEventListener('commands_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE commands_update: invalid JSON, skipping'); return }
+      if (Array.isArray(data.commands)) {
+        updateCommandState(data.commands)
+      }
+    })
+
+    eventSource.addEventListener('model_list_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE model_list_update: invalid JSON, skipping'); return }
+      if (Array.isArray(data.models) && data.models.length > 0) {
+        const aid = currentAgentId.value
+        if (aid) {
+          updateACPModelList(aid, data.models, data.currentModelId)
+        }
+      }
+    })
+
+    eventSource.addEventListener('plan_update', (e) => {
+      if (!guard()) return
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE plan_update: invalid JSON, skipping'); return }
+      if (Array.isArray(data.entries)) {
+        updatePlanEntries(data.entries)
       }
     })
 

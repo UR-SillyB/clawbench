@@ -33,6 +33,12 @@ func setupTestDBForDiscovery(t *testing.T) *sql.DB {
 			models_auto_detected INTEGER NOT NULL DEFAULT 0,
 			source TEXT NOT NULL DEFAULT 'auto',
 			sort_order INTEGER NOT NULL DEFAULT 0,
+			transport TEXT NOT NULL DEFAULT 'cli',
+			acp_command TEXT NOT NULL DEFAULT '',
+			acp_mode_state TEXT NOT NULL DEFAULT '',
+			acp_commands TEXT NOT NULL DEFAULT '[]',
+			acp_thinking_state TEXT NOT NULL DEFAULT '',
+			acp_model_list_state TEXT NOT NULL DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"clawbench/internal/ai"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
 )
@@ -82,6 +83,37 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 
 	flusher, canFlush := w.(http.Flusher)
 
+	// Re-emit cached ACP mode/config/thinking/commands/model list state on SSE connect.
+	// When the frontend reconnects (page reload, session switch), the previous
+	// SSE handler already consumed mode_update events. Re-emit from cache so
+	// the new SSE client receives state without waiting for a new prompt.
+	if modeState, configState, effortState, cmds, modelListState := ai.GetACPConnectionPool().GetCachedStateByClawbenchSID(sessionID); modeState != nil || configState != nil || effortState != nil || len(cmds) > 0 || modelListState != nil {
+		if modeState != nil {
+			data, _ := json.Marshal(modeState)
+			fmt.Fprintf(w, "event: mode_update\ndata: %s\n\n", data)
+		}
+		if configState != nil {
+			data, _ := json.Marshal(configState)
+			fmt.Fprintf(w, "event: config_update\ndata: %s\n\n", data)
+		}
+		if effortState != nil {
+			data, _ := json.Marshal(effortState)
+			fmt.Fprintf(w, "event: thinking_effort_update\ndata: %s\n\n", data)
+		}
+		if len(cmds) > 0 {
+			data, _ := json.Marshal(map[string]any{"commands": cmds})
+			fmt.Fprintf(w, "event: commands_update\ndata: %s\n\n", data)
+		}
+		if modelListState != nil {
+			data, _ := json.Marshal(modelListState)
+			fmt.Fprintf(w, "event: model_list_update\ndata: %s\n\n", data)
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+		slog.Debug("sse: re-emitted cached ACP state on connect", "session_id", sessionID)
+	}
+
 	// Heartbeat: send SSE comment lines to keep the connection alive through
 	// reverse proxies and mobile networks during quiet periods (e.g., long-running
 	// tool execution). Proxies typically drop idle connections after 30-60s.
@@ -110,6 +142,8 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 			case "thinking":
 				data, _ := json.Marshal(map[string]string{"text": event.Content})
 				fmt.Fprintf(w, "event: thinking\ndata: %s\n\n", data)
+			case "thinking_done":
+				fmt.Fprintf(w, "event: thinking_done\ndata: {}\n\n")
 			case "tool_use":
 				if event.Tool != nil {
 					var input any
@@ -205,6 +239,38 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 				// and will auto-resume. Forward to frontend so it can reset streaming
 				// state (clear blocks, prepare for new content after resume).
 				fmt.Fprintf(w, "event: resume_split\ndata: {}\n\n")
+			case "mode_update":
+				if event.Mode != nil {
+					data, _ := json.Marshal(event.Mode)
+					fmt.Fprintf(w, "event: mode_update\ndata: %s\n\n", data)
+				}
+			case "config_update":
+				if event.Config != nil {
+					data, _ := json.Marshal(event.Config)
+					fmt.Fprintf(w, "event: config_update\ndata: %s\n\n", data)
+				}
+			case "commands_update":
+				if event.Commands != nil {
+					data, _ := json.Marshal(map[string]any{
+						"commands": event.Commands,
+					})
+					fmt.Fprintf(w, "event: commands_update\ndata: %s\n\n", data)
+				}
+			case "thinking_effort_update":
+				if event.ThinkingEffort != nil {
+					data, _ := json.Marshal(event.ThinkingEffort)
+					fmt.Fprintf(w, "event: thinking_effort_update\ndata: %s\n\n", data)
+				}
+			case "model_list_update":
+				if event.ModelList != nil {
+					data, _ := json.Marshal(event.ModelList)
+					fmt.Fprintf(w, "event: model_list_update\ndata: %s\n\n", data)
+				}
+			case "plan_update":
+				if event.Plan != nil {
+					data, _ := json.Marshal(event.Plan)
+					fmt.Fprintf(w, "event: plan_update\ndata: %s\n\n", data)
+				}
 			}
 
 			if canFlush {

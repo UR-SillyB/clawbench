@@ -52,6 +52,15 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 		} else {
 			*blocks = append(*blocks, model.ContentBlock{Type: "thinking", Text: event.Content})
 		}
+	case "thinking_done":
+		// Mark the last thinking block as done — the thinking content is complete.
+		// Without this, the frontend spinner stays until the entire response finishes.
+		for i := len(*blocks) - 1; i >= 0; i-- {
+			if (*blocks)[i].Type == "thinking" {
+				(*blocks)[i].Done = true
+				break
+			}
+		}
 	case "tool_use":
 		if event.Tool != nil {
 			// Parse tool input JSON into map
@@ -92,14 +101,15 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 			}
 		}
 	case "tool_result":
-		// tool_result events update the Output/Status of an existing tool_use block.
-		// This handles backends (Gemini, Claude/Codebuddy stream_event) that send
-		// tool results as a separate event after the tool_use event.
+		// tool_result events update the Output/Status of an existing tool_use block
+		// and mark it as Done. This handles backends (ACP, Gemini, Claude/Codebuddy
+		// stream_event) that send tool results as a separate event after the tool_use.
 		if event.Tool != nil {
 			for i := len(*blocks) - 1; i >= 0; i-- {
 				if (*blocks)[i].Type == "tool_use" && (*blocks)[i].ID == event.Tool.ID {
 					(*blocks)[i].Output = event.Tool.Output
 					(*blocks)[i].Status = event.Tool.Status
+					(*blocks)[i].Done = true
 					break
 				}
 			}
@@ -109,4 +119,48 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 	case "error":
 		*blocks = append(*blocks, model.ContentBlock{Type: "warning", Text: event.Error, Reason: event.Reason})
 	}
+}
+
+// MergeConsecutiveThinkingBlocks merges adjacent thinking blocks, including
+// across tool_use boundaries. ACP agents interleave AgentThoughtChunk and
+// ToolCall events, causing many small thinking fragments separated by
+// tool_use blocks. This post-processing step consolidates them into fewer
+// blocks: all thinking before the first non-thinking block merges into one,
+// all thinking between non-thinking blocks merges, etc.
+//
+// Call this after streaming completes (before DB serialization) to clean up
+// fragmented thinking blocks produced by ACP backends.
+func MergeConsecutiveThinkingBlocks(blocks []model.ContentBlock) []model.ContentBlock {
+	if len(blocks) <= 1 {
+		return blocks
+	}
+	var result []model.ContentBlock
+	var currentThinking *model.ContentBlock
+
+	flushThinking := func() {
+		if currentThinking != nil && currentThinking.Text != "" {
+			result = append(result, *currentThinking)
+			currentThinking = nil
+		}
+	}
+
+	for _, b := range blocks {
+		if b.Type == "thinking" {
+			if currentThinking != nil {
+				currentThinking.Text += b.Text
+				// If any merged block is done, the combined block is done
+				if b.Done {
+					currentThinking.Done = true
+				}
+			} else {
+				bCopy := b
+				currentThinking = &bCopy
+			}
+		} else {
+			flushThinking()
+			result = append(result, b)
+		}
+	}
+	flushThinking()
+	return result
 }

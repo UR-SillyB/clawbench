@@ -82,8 +82,9 @@ export default {
       placeholder: 'Type a message...',
       placeholderQueue: 'Type a message to enqueue...',
       placeholderOptional: 'Add description (optional)...',
-      placeholderQuickSend: 'Tap ⚡ for quick commands →',
+      placeholderQuickSend: 'Tap ⚡ to quick send message →',
       placeholderAtCommand: "Type {'@'} for built-in commands",
+      placeholderCommand: "Type {'@'} or {'/'} for commands",
       send: 'Send',
       enqueue: 'Enqueue',
       quickMenu: 'Quick commands',
@@ -92,9 +93,12 @@ export default {
       confirmStop: 'Confirm stop',
     },
     atCommand: {
-      title: 'Commands',
+      title: 'ClawBench Commands',
       chatsearchDesc: 'Search chat history',
       taskDesc: 'Manage scheduled tasks',
+    },
+    slashCommand: {
+      title: 'Agent Commands',
     },
     actions: {
       session: 'Chat',
@@ -115,6 +119,16 @@ export default {
     },
     modelSwitcher: {
       title: 'Select model',
+    },
+    modeSwitcher: {
+      title: 'Session mode',
+    },
+    plan: {
+      title: 'Execution Plan',
+      completedCount: '{completed}/{total} done',
+      priorityHigh: 'High',
+      priorityMedium: 'Med',
+      priorityLow: 'Low',
     },
     modelModal: {
       searchPlaceholder: 'Search models...',
@@ -146,7 +160,7 @@ export default {
       openDirectory: 'Open directory',
     },
     quickSend: {
-      title: 'Quick send',
+      title: 'Quick Send Message',
       tapToFill: 'Hold to send',
       edit: 'Edit',
       addItem: 'Add item',
@@ -277,6 +291,9 @@ export default {
       time: 'Time:',
       relatedFile: 'Related file:',
       backend: 'Backend:',
+      transport: 'Transport:',
+      mode: 'Mode:',
+      thinkingEffort: 'Thinking effort:',
       model: 'Model:',
       inputTokens: 'Input tokens:',
       outputTokens: 'Output tokens:',
@@ -779,8 +796,29 @@ export default {
       pattern: 'pattern',
       path: 'path',
     },
+    ls: {
+      currentDir: 'Current directory',
+    },
     webFetch: {
       url: 'URL',
+    },
+    todoRead: {
+      label: 'Read todo list',
+    },
+    task: {
+      subject: 'Subject',
+      description: 'Description',
+      name: 'Name',
+      cron: 'Cron',
+      prompt: 'Prompt',
+      agent: 'Agent',
+      status: 'Status',
+      owner: 'Owner',
+      activeForm: 'In progress',
+      noDetails: '(No details)',
+    },
+    sendMessage: {
+      to: 'To',
     },
     askUser: {
       noQuestions: '(No questions)',
@@ -789,6 +827,13 @@ export default {
       name: 'Ask Question',
       supplementary: 'Additional info',
       supplementaryPlaceholder: 'Optional, add extra details…',
+    },
+    permission: {
+      title: 'Permission Request',
+      file: 'File',
+      command: 'Command',
+      approved: 'Approved',
+      denied: 'Denied',
     },
   },
   agents: {

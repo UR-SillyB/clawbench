@@ -35,6 +35,13 @@
         <Cpu :size="14" />
         <span class="chat-action-label">{{ currentModelName }}</span>
       </button>
+      <!-- Mode chip — only visible when ACP agent supports session modes -->
+      <button v-if="availableModes.length > 0" ref="modeChipRef" class="chat-action-btn mode-chip clickable"
+        @click.stop="showModeMenu = !showModeMenu"
+        :title="t('chat.modeSwitcher.title')">
+        <Layers :size="14" />
+        <span class="chat-action-label">{{ currentModeName }}</span>
+      </button>
     </div>
     <!-- Input container -->
     <div class="chat-input-container" :class="{ 'drag-over': isDragOver }"
@@ -165,12 +172,29 @@
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
       />
+      <!-- Mode selection menu (ACP only) -->
+      <PopupMenu v-if="availableModes.length > 0" v-model:show="showModeMenu" :target-element="modeChipRef" :max-width="200" :max-height="280" :menu-items-count="availableModes.length">
+        <div class="mode-menu-title">{{ t('chat.modeSwitcher.title') }}</div>
+        <button v-for="mode in availableModes" :key="mode.id" class="mode-menu-item" :class="{ active: mode.id === currentModeId }" @click="handleModeSelect(mode)">
+          <Check v-if="mode.id === currentModeId" :size="14" />
+          <span v-else class="model-menu-check-spacer"></span>
+          <span class="mode-menu-item-name">{{ mode.name || mode.id }}</span>
+        </button>
+      </PopupMenu>
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
-      <!-- @ command autocomplete menu -->
-      <PopupMenu v-model:show="showAtMenu" :target-element="textareaRef" :max-width="260" :max-height="200" :menu-items-count="atMenuItems.length">
+      <!-- @ command autocomplete menu (ClawBench built-in) -->
+      <PopupMenu v-model:show="showAtMenu" :target-element="textareaRef" anchor="left" :max-width="260" :max-height="200" :menu-items-count="atMenuItems.length">
         <div class="at-menu-title">{{ t('chat.atCommand.title') }}</div>
         <button v-for="cmd in atMenuItems" :key="cmd.key" class="at-menu-item" @mousedown.prevent="handleAtSelect(cmd)">
           <span class="at-menu-label">{{ cmd.label }}</span>
+          <span class="at-menu-desc">{{ cmd.description }}</span>
+        </button>
+      </PopupMenu>
+      <!-- Slash command autocomplete menu (ACP backend commands) -->
+      <PopupMenu v-if="availableCommands.length > 0" v-model:show="showSlashMenu" :target-element="textareaRef" anchor="left" :max-width="300" :max-height="240" :menu-items-count="slashMenuItems.length">
+        <div class="at-menu-title">{{ t('chat.slashCommand.title') }}</div>
+        <button v-for="cmd in slashMenuItems" :key="cmd.key" class="at-menu-item" @mousedown.prevent="handleSlashSelect(cmd)">
+          <span class="at-menu-label slash-label">{{ cmd.label }}</span>
           <span class="at-menu-desc">{{ cmd.description }}</span>
         </button>
       </PopupMenu>
@@ -181,7 +205,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Cpu, Check, Brain, Zap } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Cpu, Check, Zap, Layers } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -191,8 +215,10 @@ import { createStopButtonMachine } from '@/utils/stopButtonMachine.ts'
 import { useDialog } from '@/composables/useDialog.ts'
 import { useQuickSend } from '@/composables/useQuickSend'
 import { useChatKeyboard } from '@/composables/useChatKeyboard'
+import { useSessionIdentity } from '@/composables/useSessionIdentity'
 
 const { t } = useI18n()
+const { availableCommands } = useSessionIdentity()
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
@@ -208,7 +234,7 @@ const placeholderHints = computed(() => {
   if (quickSendItems.value.length > 0) {
     hints.push(t('chat.input.placeholderQuickSend'))
   }
-  hints.push(t('chat.input.placeholderAtCommand'))
+  hints.push(t('chat.input.placeholderCommand'))
   return hints
 })
 
@@ -260,6 +286,9 @@ const props = defineProps({
   currentModelName: String,
   currentThinkingEffort: String,
   currentAgentId: String,
+  currentModeId: String,
+  currentModeName: String,
+  availableModes: { type: Array, default: () => [] },
   active: Boolean,
 })
 
@@ -279,6 +308,7 @@ const emit = defineEmits([
   'delete-session',
   'switch-model',
   'switch-thinking-effort',
+  'switch-mode',
 ])
 
 const inputText = ref('')
@@ -291,6 +321,8 @@ const attachMenuRef = ref(null)
 const showQuickMenu = ref(false)
 const sendBtnRef = ref(null)
 const showModelModal = ref(false)
+const showModeMenu = ref(false)
+const modeChipRef = ref(null)
 
 // ── @ command autocomplete ──
 const showAtMenu = ref(false)
@@ -299,25 +331,64 @@ const atCommands = [
   { key: '@task', label: '@task', description: t('chat.atCommand.taskDesc') },
 ]
 
+// ── Slash command autocomplete (ACP backend commands) ──
+const showSlashMenu = ref(false)
+
 const atMenuItems = computed(() => {
   const text = inputText.value
   if (!text.startsWith('@')) return []
-  const query = text.toLowerCase()
-  return atCommands.filter(cmd => cmd.key.startsWith(query))
+  const query = text.toLowerCase().slice(1) // strip leading '@'
+  if (!query) return atCommands // empty query → show all
+  return atCommands.filter(cmd => cmd.key.toLowerCase().includes(query))
+})
+
+const slashMenuItems = computed(() => {
+  const text = inputText.value
+  if (!text.startsWith('/')) return []
+  const query = text.toLowerCase().slice(1) // strip leading '/'
+  if (!query) return availableCommands.value.map(cmd => ({
+    key: '/' + cmd.name,
+    label: '/' + cmd.name,
+    description: cmd.description,
+    inputHint: cmd.inputHint || '',
+  }))
+  return availableCommands.value
+    .filter(cmd => cmd.name.toLowerCase().includes(query))
+    .map(cmd => ({
+      key: '/' + cmd.name,
+      label: '/' + cmd.name,
+      description: cmd.description,
+      inputHint: cmd.inputHint || '',
+    }))
 })
 
 // Directly control menu visibility from inputText changes
 watch(inputText, () => {
   const text = inputText.value
-  const shouldShow = text.startsWith('@')
+  // @ command menu
+  const shouldShowAt = text.startsWith('@')
     && !text.includes(' ')
     && atMenuItems.value.length > 0
-  showAtMenu.value = shouldShow
+  showAtMenu.value = shouldShowAt
+  // Slash command menu
+  const shouldShowSlash = text.startsWith('/')
+    && !text.includes(' ')
+    && slashMenuItems.value.length > 0
+  showSlashMenu.value = shouldShowSlash
 })
 
 function handleAtSelect(cmd) {
   inputText.value = cmd.key + ' '
   showAtMenu.value = false
+  nextTick(() => {
+    const el = textareaRef.value
+    if (el) el.focus()
+  })
+}
+
+function handleSlashSelect(cmd) {
+  inputText.value = cmd.key + ' '
+  showSlashMenu.value = false
   nextTick(() => {
     const el = textareaRef.value
     if (el) el.focus()
@@ -427,10 +498,11 @@ function onTextareaBlur() {
   if (!inputText.value.trim()) {
     startPlaceholderRotation()
   }
-  // Close @ command menu when textarea loses focus (clicking menu items uses
+  // Close @ and / command menus when textarea loses focus (clicking menu items uses
   // @mousedown.prevent so blur won't fire for those interactions)
   nextTick(() => {
     showAtMenu.value = false
+    showSlashMenu.value = false
   })
 }
 
@@ -605,10 +677,17 @@ function handleSwitchThinkingEffort(level) {
   emit('switch-thinking-effort', level)
 }
 
+function handleModeSelect(mode) {
+  showModeMenu.value = false
+  emit('switch-mode', mode)
+}
+
 // Menu mutual exclusion: opening one closes the others
-watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showModelModal.value = false } })
-watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showModelModal.value = false } })
-watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false } })
+watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showModelModal.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
+watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showModelModal.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
+watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
+watch(showModeMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
+watch(showSlashMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false; showModeMenu.value = false } })
 
 onMounted(() => {
   fetchItems()
@@ -616,11 +695,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearTimeout(stopPrimeTimer)
+  stopMachine.destroy()
   if (quickSendPressTimer) {
     clearTimeout(quickSendPressTimer)
     quickSendPressTimer = null
   }
+
   stopPlaceholderRotation()
 })
 
@@ -1184,6 +1264,21 @@ defineExpose({
   white-space: nowrap;
 }
 
+/* Mode switcher chip (same pattern as model-chip) */
+.mode-chip {
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mode-chip .chat-action-label {
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 </style>
 
 <!-- Unscoped styles for teleported menu content (PopupMenu uses Teleport to body, scoped styles won't reach it) -->
@@ -1400,11 +1495,67 @@ defineExpose({
   color: #a78bfa;
 }
 
+.at-menu-label.slash-label {
+  color: #0ea5e9;
+}
+
+:root[data-theme="dark"] .at-menu-label.slash-label {
+  color: #38bdf8;
+}
+
 .at-menu-desc {
   font-size: 12px;
   color: var(--text-secondary, #495057);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Mode switcher menu content styles */
+.mode-menu-title {
+  padding: 4px 10px 1px;
+  font-size: 10px;
+  color: var(--text-muted, #999);
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.mode-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.mode-menu-item:hover {
+  background: var(--accent-color, #0066cc);
+  color: #fff;
+}
+
+.mode-menu-item.active {
+  color: var(--accent-color, #0066cc);
+  font-weight: 500;
+}
+
+.mode-menu-item.active:hover {
+  color: #fff;
+}
+
+.mode-menu-item svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.mode-menu-item-name {
+  font-size: 12px;
 }
 </style>

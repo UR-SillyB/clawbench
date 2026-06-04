@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS agents (
 	models_auto_detected INTEGER NOT NULL DEFAULT 0,
 	source TEXT NOT NULL DEFAULT 'auto',
 	sort_order INTEGER NOT NULL DEFAULT 0,
+	transport TEXT NOT NULL DEFAULT 'cli',
+	acp_command TEXT NOT NULL DEFAULT '',
+	acp_mode_state TEXT NOT NULL DEFAULT '',
+	acp_commands TEXT NOT NULL DEFAULT '[]',
+	acp_thinking_state TEXT NOT NULL DEFAULT '',
+	acp_model_list_state TEXT NOT NULL DEFAULT '',
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -59,7 +65,9 @@ func LoadAgentsFromDB(db *sql.DB) ([]*model.Agent, error) {
 			thinking_effort, thinking_effort_levels,
 			preferred_model, preferred_thinking_effort,
 			system_prompt, models, models_auto_detected,
-			source, sort_order
+			source, sort_order,
+			transport, acp_command,
+			acp_mode_state, acp_commands, acp_thinking_state, acp_model_list_state
 		FROM agents ORDER BY id
 	`)
 	if err != nil {
@@ -79,6 +87,8 @@ func LoadAgentsFromDB(db *sql.DB) ([]*model.Agent, error) {
 			&a.PreferredModel, &a.PreferredThinkingEffort,
 			&a.SystemPrompt, &modelsJSON, &modelsAutoDetected,
 			&a.Source, &a.SortOrder,
+			&a.Transport, &a.AcpCommand,
+			&a.AcpModeState, &a.AcpCommands, &a.AcpThinkingState, &a.AcpModelListState,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
@@ -120,6 +130,10 @@ func SaveAgent(db DBExec, agent *model.Agent) error {
 	if err != nil {
 		return fmt.Errorf("marshal models: %w", err)
 	}
+	// json.Marshal(nil slice) produces "null" instead of "[]" — normalize to "[]"
+	if string(modelsJSON) == "null" {
+		modelsJSON = []byte("[]")
+	}
 	levelsJSON, err := json.Marshal(agent.ThinkingEffortLevels)
 	if err != nil {
 		return fmt.Errorf("marshal thinking_effort_levels: %w", err)
@@ -131,14 +145,20 @@ func SaveAgent(db DBExec, agent *model.Agent) error {
 	}
 
 	sortOrder := agent.SortOrder
+	transport := agent.Transport
+	if transport == "" {
+		transport = "cli"
+	}
 
 	_, err = db.Exec(`
 		INSERT INTO agents (id, name, icon, specialty, backend, command,
 			thinking_effort, thinking_effort_levels,
 			preferred_model, preferred_thinking_effort,
 			system_prompt, models, models_auto_detected,
-			source, sort_order)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			source, sort_order,
+			transport, acp_command,
+			acp_mode_state, acp_commands, acp_thinking_state, acp_model_list_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			icon = excluded.icon,
@@ -154,12 +174,20 @@ func SaveAgent(db DBExec, agent *model.Agent) error {
 			models_auto_detected = excluded.models_auto_detected,
 			source = excluded.source,
 			sort_order = excluded.sort_order,
+			transport = excluded.transport,
+			acp_command = excluded.acp_command,
+			acp_mode_state = excluded.acp_mode_state,
+			acp_commands = excluded.acp_commands,
+			acp_thinking_state = excluded.acp_thinking_state,
+			acp_model_list_state = excluded.acp_model_list_state,
 			updated_at = CURRENT_TIMESTAMP
 	`, agent.ID, agent.Name, agent.Icon, agent.Specialty, agent.Backend, agent.Command,
 		agent.ThinkingEffort, string(levelsJSON),
 		agent.PreferredModel, agent.PreferredThinkingEffort,
 		agent.SystemPrompt, string(modelsJSON), modelsAutoDetected,
-		agent.Source, sortOrder)
+		agent.Source, sortOrder,
+		transport, agent.AcpCommand,
+		agent.AcpModeState, agent.AcpCommands, agent.AcpThinkingState, agent.AcpModelListState)
 	if err != nil {
 		return fmt.Errorf("save agent %s: %w", agent.ID, err)
 	}
@@ -189,6 +217,43 @@ func PatchAgent(db *sql.DB, id, preferredModel, preferredThinkingEffort string) 
 	if err != nil {
 		return fmt.Errorf("patch agent %s: %w", id, err)
 	}
+	return nil
+}
+
+// UpdateAgentACPState persists ACP cached state (modes, commands, thinking effort, model list)
+// to the database. Only the ACP state columns are updated — this is a lightweight
+// operation that avoids a full SaveAgent round-trip.
+// Empty strings mean "no change"; pass the new value to update, or "" to skip.
+func UpdateAgentACPState(agentID, modeState, commands, thinkingState, modelListState string) error {
+	if DB == nil {
+		return nil
+	}
+	_, err := DB.Exec(`
+		UPDATE agents
+		SET acp_mode_state = ?, acp_commands = ?, acp_thinking_state = ?, acp_model_list_state = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		modeState, commands, thinkingState, modelListState, agentID)
+	if err != nil {
+		return fmt.Errorf("update acp state for agent %s: %w", agentID, err)
+	}
+
+	// Also update the in-memory agent so subsequent API calls see the new state
+	if a, ok := model.Agents[agentID]; ok {
+		if modeState != "" {
+			a.AcpModeState = modeState
+		}
+		if commands != "" {
+			a.AcpCommands = commands
+		}
+		if thinkingState != "" {
+			a.AcpThinkingState = thinkingState
+		}
+		if modelListState != "" {
+			a.AcpModelListState = modelListState
+		}
+	}
+
 	return nil
 }
 

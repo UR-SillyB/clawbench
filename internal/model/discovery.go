@@ -35,6 +35,7 @@ type BackendSpec struct {
 	ParseModels          func(string) []AgentModel // optional: parse command stdout into AgentModel list; nil = not supported
 	DiscoverModelsFunc   func() []AgentModel       // optional: custom model discovery function (e.g. binary strings scan); takes priority over ListModelsCmd
 	ThinkingEffortLevels []string                  // supported thinking effort levels, e.g. ["low","medium","high"]; nil = not supported
+	AcpCommand           string                    // ACP spawn command for stdio transport, e.g. "gemini --acp"; empty = no ACP support
 }
 
 // BackendRegistry lists all known AI backends for auto-discovery.
@@ -46,29 +47,35 @@ var BackendRegistry = []BackendSpec{
 		ID: "claude", Backend: "claude", DefaultCmd: "claude", Name: "Claude", Icon: "🤖", Specialty: "代码编写与推理",
 		DiscoverModelsFunc:   DiscoverClaudeModels,
 		ThinkingEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
+		AcpCommand:           "npx -y @agentclientprotocol/claude-agent-acp@latest",
 	},
 	{
 		ID: "codebuddy", Backend: "codebuddy", DefaultCmd: "codebuddy", Name: "Codebuddy", Icon: "🐛", Specialty: "全栈开发助手",
 		DiscoverModelsFunc:   DiscoverCodebuddyModels,
 		ThinkingEffortLevels: []string{"low", "medium", "high", "xhigh"},
+		AcpCommand:           "codebuddy --acp",
 	},
 	{
 		ID: "opencode", Backend: "opencode", DefaultCmd: "opencode", Name: "OpenCode", Icon: "📟", Specialty: "终端编码工具",
 		ListModelsCmd: []string{"models"}, ParseModels: ParseOpenCodeModels,
 		ThinkingEffortLevels: []string{"minimal", "high", "max"},
+		AcpCommand:           "opencode acp",
 	},
 	{
 		ID: "gemini", Backend: "gemini", DefaultCmd: "gemini", Name: "Gemini", Icon: "💎", Specialty: "多模态推理",
 		DiscoverModelsFunc: DiscoverGeminiModels,
+		AcpCommand:         "gemini --acp",
 	},
 	{
 		ID: "codex", Backend: "codex", DefaultCmd: "codex", Name: "Codex", Icon: "🐙", Specialty: "OpenAI 编码代理",
 		DiscoverModelsFunc:   DiscoverCodexModels,
 		ThinkingEffortLevels: []string{"low", "medium", "high"},
+		AcpCommand:           "npx -y @agentclientprotocol/codex-acp@latest",
 	},
 	{
 		ID: "qoder", Backend: "qoder", DefaultCmd: "qodercli", Name: "Qoder", Icon: "⚡", Specialty: "AI 编码助手",
 		DiscoverModelsFunc: DiscoverQoderModels,
+		AcpCommand:         "qodercli --acp",
 	},
 	{
 		ID: "vecli", Backend: "vecli", DefaultCmd: "vecli", Name: "VeCLI", Icon: "🌿", Specialty: "字节跳动 AI 助手",
@@ -82,6 +89,24 @@ var BackendRegistry = []BackendSpec{
 		ID: "pi", Backend: "pi", DefaultCmd: "pi", Name: "Pi", Icon: "🥧", Specialty: "极简编程智能体",
 		DiscoverModelsFunc:   DiscoverPiModels,
 		ThinkingEffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"},
+	},
+	{
+		ID: "cline", Backend: "cline", DefaultCmd: "cline", Name: "Cline", Icon: "🔮", Specialty: "自主编码智能体",
+		DiscoverModelsFunc:   DiscoverClineModels,
+		ThinkingEffortLevels: []string{"none", "low", "medium", "high", "xhigh"},
+		AcpCommand:           "cline --acp",
+	},
+	{
+		ID: "kimi", Backend: "kimi", DefaultCmd: "kimi", Name: "Kimi", Icon: "🌙", Specialty: "Kimi AI 编码助手",
+		DiscoverModelsFunc:   DiscoverKimiModels,
+		ThinkingEffortLevels: []string{"off", "on"},
+		AcpCommand:           "kimi acp",
+	},
+	{
+		ID: "copilot", Backend: "copilot", DefaultCmd: "copilot", Name: "Copilot", Icon: "🤝", Specialty: "GitHub Copilot 编码助手",
+		DiscoverModelsFunc:   DiscoverCopilotModels,
+		ThinkingEffortLevels: []string{"none", "low", "medium", "high", "xhigh", "max"},
+		AcpCommand:           "copilot --acp",
 	},
 }
 
@@ -640,11 +665,18 @@ func claudeIsDateStamped(modelID string) bool {
 // DiscoverClaudeModels discovers Claude model IDs by scanning the claude binary
 // with `strings`. Claude CLI does not have a --list-models command, so we extract
 // model IDs from the binary which contains hardcoded model name patterns.
-func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo // binary scanning model discovery
+func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary scanning model discovery
 	// Resolve the real path for the claude binary, handling Windows .cmd wrappers
 	path := platform.ResolveCLIPath("claude")
 	if path == "" {
-		return nil
+		// Claude binary not found — fall back to known defaults
+		models := make([]AgentModel, len(claudeDefaultModels))
+		copy(models, claudeDefaultModels)
+		if len(models) > 0 {
+			models[0].Default = true
+		}
+		slog.Info("claude model discovery: binary not found, using defaults", "models", len(models))
+		return models
 	}
 
 	// Extract printable strings from the binary (cross-platform replacement for
@@ -717,10 +749,27 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo // binary scanning m
 		}
 	}
 
+	// If binary scanning found no models, fall back to known defaults
+	if len(models) == 0 {
+		models = make([]AgentModel, len(claudeDefaultModels))
+		copy(models, claudeDefaultModels)
+		if len(models) > 0 {
+			models[0].Default = true
+		}
+		slog.Info("claude model discovery: binary scan found nothing, using defaults", "models", len(models))
+		return models
+	}
+
 	return models
 }
 
-// deepseekModelLineRe matches lines like "  deepseek-v4-flash (deepseek)" or "* deepseek-v4-pro (deepseek)"
+// claudeDefaultModels lists known Claude models as a fallback when binary
+// scanning fails (e.g. claude CLI not found or ExtractStrings returns nothing).
+var claudeDefaultModels = []AgentModel{
+	{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4"},
+	{ID: "claude-opus-4-20250514", Name: "Claude Opus 4"},
+	{ID: "claude-haiku-3-5-20241022", Name: "Claude 3.5 Haiku"},
+}
 var deepseekModelLineRe = regexp.MustCompile(`^(\*?)\s*(\S+)\s+\((\S+)\)`)
 
 // deepseekDefaultRe extracts the default model from the header line.
@@ -1555,13 +1604,23 @@ func SyncDiscoverAgentsDB(db *sql.DB) map[string]bool { //nolint:gocognit,gocycl
 
 		// Check if DB already has an agent for this backend
 		var count int
-		err := db.QueryRow("SELECT COUNT(*) FROM agents WHERE backend = ?", r.spec.Backend).Scan(&count)
+		var existingAcpCommand string
+		err := db.QueryRow("SELECT COUNT(*), COALESCE(acp_command, '') FROM agents WHERE backend = ?", r.spec.Backend).Scan(&count, &existingAcpCommand)
 		if err != nil {
 			slog.Warn("failed to query agents table", "backend", r.spec.Backend, "error", err)
 			continue
 		}
 		if count > 0 {
-			continue // Don't overwrite existing DB records
+			// Update acp_command if it changed in BackendSpec (e.g., claude moved
+			// from "claude acp" to the npx bridge adapter).
+			if r.spec.AcpCommand != "" && existingAcpCommand != r.spec.AcpCommand {
+				if _, updateErr := db.Exec("UPDATE agents SET acp_command = ?, transport = 'acp-stdio' WHERE backend = ? AND source = 'auto'", r.spec.AcpCommand, r.spec.Backend); updateErr != nil {
+					slog.Warn("failed to update acp_command", "backend", r.spec.Backend, "error", updateErr)
+				} else {
+					slog.Info("updated acp_command for auto-discovered agent", "backend", r.spec.Backend, "old", existingAcpCommand, "new", r.spec.AcpCommand)
+				}
+			}
+			continue // Don't overwrite other existing DB fields
 		}
 
 		if !r.exists {
@@ -1581,6 +1640,12 @@ func SyncDiscoverAgentsDB(db *sql.DB) map[string]bool { //nolint:gocognit,gocycl
 		// Set command to embedded path for pi backend
 		if r.spec.Backend == "pi" && embeddedPath != "" {
 			agent.Command = embeddedPath
+		}
+
+		// Set ACP transport info from BackendSpec
+		if r.spec.AcpCommand != "" {
+			agent.Transport = "acp-stdio"
+			agent.AcpCommand = r.spec.AcpCommand
 		}
 
 		if err := saveAgentToDB(db, agent); err != nil {
@@ -1613,18 +1678,29 @@ func saveAgentToDB(db *sql.DB, agent *Agent) error {
 	if err != nil {
 		return fmt.Errorf("marshal models: %w", err)
 	}
+	// json.Marshal(nil slice) produces "null" instead of "[]" — normalize to "[]"
+	if string(modelsJSON) == "null" {
+		modelsJSON = []byte("[]")
+	}
 	levelsJSON, err := json.Marshal(agent.ThinkingEffortLevels)
 	if err != nil {
 		return fmt.Errorf("marshal thinking_effort_levels: %w", err)
 	}
 
+	transport := agent.Transport
+	if transport == "" {
+		transport = "cli"
+	}
+
 	_, err = db.Exec(`INSERT INTO agents (id, name, icon, specialty, backend, command,
 		thinking_effort, thinking_effort_levels, preferred_model, preferred_thinking_effort,
-		system_prompt, models, models_auto_detected, source, sort_order)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		system_prompt, models, models_auto_detected, source, sort_order,
+		transport, acp_command)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		agent.ID, agent.Name, agent.Icon, agent.Specialty, agent.Backend, agent.Command,
 		agent.ThinkingEffort, string(levelsJSON), agent.PreferredModel, agent.PreferredThinkingEffort,
-		agent.SystemPrompt, string(modelsJSON), agent.ModelsAutoDetected, agent.Source, agent.SortOrder)
+		agent.SystemPrompt, string(modelsJSON), agent.ModelsAutoDetected, agent.Source, agent.SortOrder,
+		transport, agent.AcpCommand)
 	return err
 }
 
@@ -1707,7 +1783,7 @@ func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool)
 	}
 
 	// Step 3: Fill Models from cache for agents with empty models
-	rows, err = db.Query("SELECT id, backend, models FROM agents WHERE models = '[]' AND models_auto_detected = 0")
+	rows, err = db.Query("SELECT id, backend, COALESCE(models, '[]') FROM agents WHERE (models IS NULL OR models = '[]' OR models = 'null') AND models_auto_detected = 0")
 	if err != nil {
 		slog.Warn("failed to query agents for model fill", "error", err)
 		return
@@ -1771,7 +1847,9 @@ func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool)
 func loadAgentsFromDBRows(db *sql.DB) ([]*Agent, error) {
 	rows, err := db.Query(`SELECT id, name, icon, specialty, backend, command,
 		thinking_effort, thinking_effort_levels, preferred_model, preferred_thinking_effort,
-		system_prompt, models, models_auto_detected, source, sort_order
+		system_prompt, models, models_auto_detected, source, sort_order,
+		transport, acp_command,
+		acp_mode_state, acp_commands, acp_thinking_state, acp_model_list_state
 		FROM agents ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1788,7 +1866,9 @@ func loadAgentsFromDBRows(db *sql.DB) ([]*Agent, error) {
 			&agent.Backend, &agent.Command, &agent.ThinkingEffort, &levelsJSON,
 			&agent.PreferredModel, &agent.PreferredThinkingEffort,
 			&agent.SystemPrompt, &modelsJSON, &autoDetected,
-			&agent.Source, &agent.SortOrder)
+			&agent.Source, &agent.SortOrder,
+			&agent.Transport, &agent.AcpCommand,
+			&agent.AcpModeState, &agent.AcpCommands, &agent.AcpThinkingState, &agent.AcpModelListState)
 		if err != nil {
 			return nil, err
 		}
@@ -1805,4 +1885,79 @@ func loadAgentsFromDBRows(db *sql.DB) ([]*Agent, error) {
 		agents = append(agents, agent)
 	}
 	return agents, nil
+}
+
+// --- Cline model discovery ---
+
+// clineDefaultModels lists known models for Cline CLI.
+// Cline supports multiple providers; these are the most commonly used models.
+var clineDefaultModels = []AgentModel{
+	{ID: "anthropic/claude-sonnet-4-20250514", Name: "Claude Sonnet 4"},
+	{ID: "anthropic/claude-opus-4-20250514", Name: "Claude Opus 4"},
+	{ID: "openai/gpt-4.1", Name: "GPT-4.1"},
+	{ID: "openai/gpt-4o", Name: "GPT-4o"},
+	{ID: "openai/o3", Name: "o3"},
+	{ID: "openai/o4-mini", Name: "o4-mini"},
+	{ID: "google/gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
+	{ID: "google/gemini-2.5-flash", Name: "Gemini 2.5 Flash"},
+	{ID: "minimax/MiniMax-M1", Name: "MiniMax-M1"},
+	{ID: "minimax/MiniMax-M2.7", Name: "MiniMax-M2.7"},
+}
+
+// DiscoverClineModels discovers models for Cline CLI.
+func DiscoverClineModels() []AgentModel {
+	if _, err := exec.LookPath("cline"); err != nil {
+		return nil
+	}
+	models := make([]AgentModel, len(clineDefaultModels))
+	copy(models, clineDefaultModels)
+	slog.Info("cline model discovery: using hardcoded defaults", "models", len(models))
+	return models
+}
+
+// --- Kimi model discovery ---
+
+// kimiDefaultModels lists known models for Kimi CLI.
+var kimiDefaultModels = []AgentModel{
+	{ID: "kimi-k2-0711-chat", Name: "Kimi K2"},
+	{ID: "moonshot-v1-128k", Name: "Moonshot v1 128K"},
+	{ID: "moonshot-v1-32k", Name: "Moonshot v1 32K"},
+	{ID: "moonshot-v1-8k", Name: "Moonshot v1 8K"},
+	{ID: "kimi-latest", Name: "Kimi Latest"},
+}
+
+// DiscoverKimiModels discovers models for Kimi CLI.
+func DiscoverKimiModels() []AgentModel {
+	if _, err := exec.LookPath("kimi"); err != nil {
+		return nil
+	}
+	models := make([]AgentModel, len(kimiDefaultModels))
+	copy(models, kimiDefaultModels)
+	slog.Info("kimi model discovery: using hardcoded defaults", "models", len(models))
+	return models
+}
+
+// --- Copilot model discovery ---
+
+// copilotDefaultModels lists known models for GitHub Copilot CLI.
+var copilotDefaultModels = []AgentModel{
+	{ID: "gpt-4.1", Name: "GPT-4.1"},
+	{ID: "gpt-4o", Name: "GPT-4o"},
+	{ID: "o3", Name: "o3"},
+	{ID: "o4-mini", Name: "o4-mini"},
+	{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4"},
+	{ID: "claude-opus-4-20250514", Name: "Claude Opus 4"},
+	{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
+	{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash"},
+}
+
+// DiscoverCopilotModels discovers models for GitHub Copilot CLI.
+func DiscoverCopilotModels() []AgentModel {
+	if _, err := exec.LookPath("copilot"); err != nil {
+		return nil
+	}
+	models := make([]AgentModel, len(copilotDefaultModels))
+	copy(models, copilotDefaultModels)
+	slog.Info("copilot model discovery: using hardcoded defaults", "models", len(models))
+	return models
 }

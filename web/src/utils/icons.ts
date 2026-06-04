@@ -5,6 +5,7 @@ import {
   CircleDot, ListChecks, ListTodo, Target,
   FileText, Compass, CheckCircle2, FolderSync, Monitor,
   Users, MessageSquare, Send, Save, Camera, Wrench,
+  ShieldAlert, GitBranch,
   // Fallback
   Wrench as WrenchFallback,
   // Thinking
@@ -25,6 +26,7 @@ export const TOOL_ICONS: Record<string, { icon: typeof Wrench; category: string 
   'WebSearch':         { icon: Globe,            category: 'search' },
   'WebFetch':          { icon: Globe,            category: 'search' },
   'Agent':             { icon: Bot,              category: 'agent' },
+  'Task':              { icon: Bot,              category: 'agent' },  // ACP generic Task = sub-agent delegation
   'Skill':             { icon: Sparkles,         category: 'skill' },
   'AskUserQuestion':   { icon: MessageSquarePlus, category: 'ask' },
   'TaskCreate':        { icon: Plus,             category: 'task' },
@@ -54,6 +56,10 @@ export const TOOL_ICONS: Record<string, { icon: typeof Wrench; category: string 
   'StructuredOutput':  { icon: FileText,         category: 'file' },
   'SkillManage':       { icon: Sparkles,         category: 'skill' },
   'Monitor':           { icon: Monitor,          category: 'bash' },
+  'PermissionApproval':{ icon: ShieldAlert,      category: 'permission' },
+  'MultiEdit':         { icon: FilePenLine,      category: 'file' },
+  'TodoRead':          { icon: ListChecks,       category: 'task' },
+  'Git':               { icon: GitBranch,        category: 'bash' },
 }
 
 export const FALLBACK_TOOL_ICON = { icon: WrenchFallback, category: 'fallback' }

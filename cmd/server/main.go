@@ -432,6 +432,10 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	}
 	defer service.CloseDB()
 
+	// Kill orphan AI subprocesses from a previous server crash.
+	// On Linux, scans /proc for CLAWBENCH_CHILD=1 env marker.
+	ai.CleanupOrphans()
+
 	// Resolve summarize API key from agent_api_keys table if not in config.
 	// New setups write the key directly to config.yaml. This fallback resolves
 	// the key from DB for legacy configs that have key="" and agent_id set.
@@ -452,6 +456,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		}
 		return p, cu, ak, true
 	})
+
+	// Inject ACP state persister (avoids import cycle between ai and service packages)
+	ai.SetACPStatePersister(service.UpdateAgentACPState)
 
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
 	// Language is now per-request (sent from frontend), not configured at startup.
@@ -601,6 +608,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	scheduler.Start()
 	defer scheduler.Stop()
 	service.GlobalScheduler = scheduler
+
+	// Stop ACP connection pool on shutdown (kills long-lived agent processes)
+	defer ai.GetACPConnectionPool().StopAll()
 
 	// Start periodic cleanup of stale WS subscriptions (every 60s)
 	go func() {

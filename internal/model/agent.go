@@ -33,6 +33,18 @@ type Agent struct {
 	PreferredThinkingEffort string       `yaml:"preferred_thinking_effort,omitempty" json:"preferredThinkingEffort"` // user's preferred thinking effort; empty = use ThinkingEffort
 	SystemPrompt            string       `yaml:"system_prompt,omitempty" json:"systemPrompt"`
 
+	// ACP configuration (only used when Transport != "cli")
+	Transport  string `yaml:"transport,omitempty" json:"transport,omitempty"`    // "cli"(default) | "acp-stdio"
+	AcpCommand string `yaml:"acp_command,omitempty" json:"acpCommand,omitempty"` // stdio: spawn command, e.g. "gemini --acp"
+
+	// ACP cached state persisted to DB — populated from ACP agent at runtime,
+	// used as fallback when the connection pool is empty (before first message
+	// or after idle timeout). Raw JSON strings, not parsed into the Agent struct.
+	AcpModeState      string `yaml:"-" json:"-"` // JSON: ModeState
+	AcpCommands       string `yaml:"-" json:"-"` // JSON: []AvailableCommandInfo
+	AcpThinkingState  string `yaml:"-" json:"-"` // JSON: ThinkingEffortState
+	AcpModelListState string `yaml:"-" json:"-"` // JSON: ModelListState
+
 	// ModelsAutoDetected indicates whether Models were filled by auto-discovery
 	// (from cache) rather than user-defined in YAML. Used by AsyncRefreshModelCache
 	// to know which agents should have their models updated.

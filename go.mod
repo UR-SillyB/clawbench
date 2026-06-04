@@ -3,6 +3,7 @@ module clawbench
 go 1.25.0
 
 require (
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
