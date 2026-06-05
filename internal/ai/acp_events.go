@@ -123,9 +123,16 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			case acp.SessionConfigOptionCategoryMode:
 				configState := buildConfigOptionStateFromSelect(sel, "mode")
 				forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
-				// Update cached mode state so re-emitted SSE events reflect the new mode
+				// Update cached config state and derived mode state so re-emitted
+				// SSE events and REST API responses reflect the new mode.
 				if conn != nil {
-					conn.UpdateCachedCurrentMode(string(sel.CurrentValue))
+					conn.SetCachedConfigState(configState)
+					// For agents that use ConfigOptions (ACP v2), SetCachedConfigState
+					// derives cachedModeState only when it's nil. When modes change
+					// mid-session via ConfigOptionUpdate, also update available modes.
+					if derived := modeStateFromConfigState(configState); derived != nil {
+						conn.SetCachedModeState(derived)
+					}
 				}
 
 			case acp.SessionConfigOptionCategoryThoughtLevel:
@@ -836,6 +843,32 @@ func extractConfigOptionsFromOpts(opts []acp.SessionConfigOption) *ConfigOptionS
 		}
 	}
 
+	return nil
+}
+
+// modeStateFromConfigState derives a ModeState from a ConfigOptionState that
+// has Category "mode". This handles ACP v2 agents (like OpenCode) that expose
+// modes via ConfigOptions instead of the legacy Modes field.
+// Returns nil if the config state doesn't contain mode options.
+func modeStateFromConfigState(cs *ConfigOptionState) *ModeState {
+	if cs == nil {
+		return nil
+	}
+	for _, opt := range cs.Options {
+		if opt.Category != "mode" {
+			continue
+		}
+		ms := &ModeState{
+			CurrentModeID: cs.CurrentID,
+		}
+		for _, v := range opt.Values {
+			ms.AvailableModes = append(ms.AvailableModes, ModeDef{ID: v.ID, Name: v.Name})
+		}
+		if len(ms.AvailableModes) == 0 && ms.CurrentModeID == "" {
+			return nil
+		}
+		return ms
+	}
 	return nil
 }
 

@@ -732,6 +732,15 @@ func (c *ACPConn) SetCachedConfigState(state *ConfigOptionState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedConfigState = state
+	// ACP v2 agents (e.g., OpenCode) expose modes via ConfigOptions instead of
+	// the legacy Modes field. If cachedModeState is nil (no v1 Modes in response),
+	// derive it from the config so REST APIs and DB persistence can populate mode
+	// chips without requiring SSE events.
+	if c.cachedModeState == nil {
+		if derived := modeStateFromConfigState(state); derived != nil {
+			c.cachedModeState = derived
+		}
+	}
 	c.debouncePersistACPState()
 }
 
