@@ -220,25 +220,30 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 }
 
 // isACPPeerDisconnected checks whether the error is an ACP peer-disconnect error
-// (code -32603 with "peer disconnected" in the data). These errors are retryable
-// because the agent process crashed and can be respawned + LoadSession recovered.
+// (code -32603 with "peer disconnected" or "broken pipe" in the data). These errors
+// are retryable because the agent process crashed and can be respawned + ResumeSession
+// recovered.
 func isACPPeerDisconnected(err error) bool {
 	var reqErr *acp.RequestError
 	if !errors.As(err, &reqErr) {
-		// Check wrapped errors by string matching as fallback
-		return strings.Contains(err.Error(), "peer disconnected")
+		return isPeerDisconnectMsg(err.Error())
 	}
 	if reqErr.Code != -32603 {
 		return false
 	}
-	// Check data field for "peer disconnected"
 	if dataMap, ok := reqErr.Data.(map[string]any); ok {
-		if errMsg, ok := dataMap["error"].(string); ok && strings.Contains(errMsg, "peer disconnected") {
+		if errMsg, ok := dataMap["error"].(string); ok && isPeerDisconnectMsg(errMsg) {
 			return true
 		}
 	}
-	// Fallback: check the full error string
-	return strings.Contains(reqErr.Error(), "peer disconnected")
+	return isPeerDisconnectMsg(reqErr.Error())
+}
+
+// isPeerDisconnectMsg checks whether an error message indicates the peer
+// process died or the connection pipe broke.
+func isPeerDisconnectMsg(msg string) bool {
+	return strings.Contains(msg, "peer disconnected") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 // buildPromptBlocks constructs ACP ContentBlock list from the chat request.

@@ -820,6 +820,55 @@ func TestNewACPBackend_InvalidTransport(t *testing.T) {
 	assert.Contains(t, err.Error(), "expected acp-stdio")
 }
 
+// --- shouldSetConfig / markConfigSet / resetLastSetConfig tests ---
+
+func TestACPConn_ShouldSetConfig_Initial(t *testing.T) {
+	conn := newACPConn(&model.Agent{ID: "test", AcpCommand: "ignored"}, "test-sid")
+	assert.True(t, conn.shouldSetConfig("model", "claude-3.5"), "first set should always proceed")
+	assert.True(t, conn.shouldSetConfig("thinkingEffort", "high"), "first set should always proceed")
+}
+
+func TestACPConn_ShouldSetConfig_SameValue(t *testing.T) {
+	conn := newACPConn(&model.Agent{ID: "test", AcpCommand: "ignored"}, "test-sid")
+	conn.markConfigSet("model", "claude-3.5")
+	assert.False(t, conn.shouldSetConfig("model", "claude-3.5"), "same value should skip")
+}
+
+func TestACPConn_ShouldSetConfig_DifferentValue(t *testing.T) {
+	conn := newACPConn(&model.Agent{ID: "test", AcpCommand: "ignored"}, "test-sid")
+	conn.markConfigSet("model", "claude-3.5")
+	assert.True(t, conn.shouldSetConfig("model", "gpt-4o"), "different value should proceed")
+}
+
+func TestACPConn_ShouldSetConfig_Reset(t *testing.T) {
+	conn := newACPConn(&model.Agent{ID: "test", AcpCommand: "ignored"}, "test-sid")
+	conn.markConfigSet("model", "claude-3.5")
+	conn.resetLastSetConfig()
+	assert.True(t, conn.shouldSetConfig("model", "claude-3.5"), "after reset, should proceed")
+}
+
+// --- isACPPeerDisconnected tests ---
+
+func TestIsACPPeerDisconnected_PeerDisconnected(t *testing.T) {
+	err := acp.NewInternalError(map[string]any{"error": "peer disconnected before response"})
+	assert.True(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_BrokenPipe(t *testing.T) {
+	err := acp.NewInternalError(map[string]any{"error": "write |1: broken pipe"})
+	assert.True(t, isACPPeerDisconnected(err), "broken pipe should trigger retry")
+}
+
+func TestIsACPPeerDisconnected_NormalError(t *testing.T) {
+	err := acp.NewInternalError(map[string]any{"error": "session not found"})
+	assert.False(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_WrappedBrokenPipe(t *testing.T) {
+	err := fmt.Errorf("acp: prompt: %w", acp.NewInternalError(map[string]any{"error": "write |1: broken pipe"}))
+	assert.True(t, isACPPeerDisconnected(err), "wrapped broken pipe should trigger retry")
+}
+
 func TestNewACPBackend_ValidStdio(t *testing.T) {
 	agent := &model.Agent{
 		ID:         "test",

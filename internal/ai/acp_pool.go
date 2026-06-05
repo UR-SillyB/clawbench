@@ -244,6 +244,13 @@ type ACPConn struct {
 	cachedThinkingEffortState *ThinkingEffortState
 	cachedModelListState      *ModelListState
 
+	// lastSetConfig tracks the last values successfully sent to the agent via
+	// setSessionConfigOption. Used to avoid re-sending unchanged values that
+	// may trigger expensive agent-side restarts (e.g., Claude bridge setModel).
+	lastSetConfigMu sync.Mutex
+	lastSetModel    string
+	lastSetEffort   string
+
 	// persistDebounce timer for batching ACP state DB writes
 	persistTimer *time.Timer
 	persistMu    sync.Mutex // separate mutex to avoid deadlock with mu
@@ -359,6 +366,9 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 		_ = c.cmd.Wait()
 	}
 
+	// Reset cached config values — the new process doesn't know about prior settings.
+	c.resetLastSetConfig()
+
 	cmdParts := strings.Fields(c.agent.AcpCommand)
 	if len(cmdParts) == 0 {
 		return fmt.Errorf("acp: no acp_command configured for agent %q", c.agent.ID)
@@ -439,6 +449,7 @@ func (c *ACPConn) watchProcessDeath() {
 		c.alive = false
 	}
 	c.mu.Unlock()
+	c.resetLastSetConfig()
 }
 
 // GetAndClearNewSessionResp returns the last NewSessionResponse and clears it.
@@ -493,14 +504,25 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		defer client.UnregisterSession(acpSID)
 	}
 
-	// Set model if configured (non-fatal)
-	if req.Model != "" {
+	// Set model if configured AND changed since last set (non-fatal).
+	// Avoid re-sending unchanged values that may trigger agent-side restarts.
+	// If the call kills the connection (agent crashed), abort early —
+	// the retry path in ACPBackend.ExecuteStream will handle respawn.
+	if req.Model != "" && c.shouldSetConfig("model", req.Model) {
 		c.setSessionConfigOption(ctx, acpSID, "model", req.Model)
+		if !c.IsAlive() {
+			return fmt.Errorf("acp: set_config_option(model) killed connection")
+		}
+		c.markConfigSet("model", req.Model)
 	}
 
-	// Set thinking effort if configured (non-fatal)
-	if req.ThinkingEffort != "" {
+	// Set thinking effort if configured AND changed since last set (non-fatal).
+	if req.ThinkingEffort != "" && c.shouldSetConfig("thinkingEffort", req.ThinkingEffort) {
 		c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", req.ThinkingEffort)
+		if !c.IsAlive() {
+			return fmt.Errorf("acp: set_config_option(thinkingEffort) killed connection")
+		}
+		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
 	}
 
 	// Send prompt
@@ -641,9 +663,11 @@ func (c *ACPConn) SetSessionConfigOption(ctx context.Context, configID, value st
 func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, configID, value string) {
 	c.mu.Lock()
 	conn := c.conn
+	alive := c.alive && c.isAliveLocked()
 	c.mu.Unlock()
 
-	if conn == nil {
+	if conn == nil || !alive {
+		slog.Debug("acp conn: skipping set_config_option on dead connection", "config_id", configID, "value", value)
 		return
 	}
 
@@ -656,6 +680,14 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 	})
 	if err != nil {
 		slog.Debug("acp conn: failed to set config option (non-fatal)", "config_id", configID, "value", value, "error", err)
+		// If the error indicates the peer died, mark the connection as dead
+		// so the next Prompt() triggers respawn + ResumeSession.
+		if isACPPeerDisconnected(err) {
+			c.mu.Lock()
+			c.alive = false
+			c.mu.Unlock()
+			slog.Info("acp conn: set_config_option detected peer disconnect, marking dead", "config_id", configID)
+		}
 	}
 }
 
@@ -721,6 +753,40 @@ func (c *ACPConn) GetCachedModelListState() *ModelListState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cachedModelListState
+}
+
+// shouldSetConfig returns true if the config value has changed since the last
+// successful set.
+func (c *ACPConn) shouldSetConfig(configID, value string) bool {
+	c.lastSetConfigMu.Lock()
+	defer c.lastSetConfigMu.Unlock()
+	switch configID {
+	case "model":
+		return c.lastSetModel != value
+	case "thinkingEffort":
+		return c.lastSetEffort != value
+	}
+	return true
+}
+
+// markConfigSet records that a config value was successfully sent.
+func (c *ACPConn) markConfigSet(configID, value string) {
+	c.lastSetConfigMu.Lock()
+	defer c.lastSetConfigMu.Unlock()
+	switch configID {
+	case "model":
+		c.lastSetModel = value
+	case "thinkingEffort":
+		c.lastSetEffort = value
+	}
+}
+
+// resetLastSetConfig clears cached config values (called on respawn).
+func (c *ACPConn) resetLastSetConfig() {
+	c.lastSetConfigMu.Lock()
+	defer c.lastSetConfigMu.Unlock()
+	c.lastSetModel = ""
+	c.lastSetEffort = ""
 }
 
 func (c *ACPConn) SetCachedModeState(state *ModeState) {
