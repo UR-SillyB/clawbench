@@ -189,6 +189,16 @@ func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
 		}
 	}
 
+	// Fallback: for execute-kind tools with no input from RawInput or Content,
+	// use the title as the command. Gemini CLI sends only title (e.g. "echo hello")
+	// with no rawInput or content at all.
+	if tool.Input == "" && tc.Kind == acp.ToolKindExecute && tc.Title != "" {
+		input := map[string]any{"command": tc.Title}
+		if inputBytes, err := json.Marshal(input); err == nil {
+			tool.Input = string(inputBytes)
+		}
+	}
+
 	return StreamEvent{Type: "tool_use", Tool: tool}
 }
 
@@ -290,6 +300,15 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 			if inputBytes, err := json.Marshal(input); err == nil {
 				tool.Input = string(inputBytes)
 			}
+		}
+	}
+
+	// Fallback: for execute-kind tools with no input from RawInput or Content,
+	// use the title as the command. Gemini CLI sends only title in updates.
+	if tool.Input == "" && tcu.Kind != nil && *tcu.Kind == acp.ToolKindExecute && tcu.Title != nil && *tcu.Title != "" {
+		input := map[string]any{"command": *tcu.Title}
+		if inputBytes, err := json.Marshal(input); err == nil {
+			tool.Input = string(inputBytes)
 		}
 	}
 
