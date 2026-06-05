@@ -167,7 +167,7 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 // mapACPToolCall converts an ACP ToolCall start event to a StreamEvent.
 func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
 	tool := &ToolCall{
-		Name: extractToolName(tc.Title, tc.Kind),
+		Name: extractToolName(tc.Title, tc.Kind, string(tc.ToolCallId)),
 		ID:   string(tc.ToolCallId),
 		Done: false,
 	}
@@ -207,6 +207,17 @@ func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
 		input := map[string]any{"command": tc.Title}
 		if inputBytes, err := json.Marshal(input); err == nil {
 			tool.Input = string(inputBytes)
+		}
+	}
+
+	// Gemini ACP: extract input from locations and title for read/search tools.
+	// Gemini sends file paths in `locations` and search targets in `title`
+	// instead of `rawInput`. Without this, the frontend shows empty tool bars.
+	if tool.Input == "" {
+		if input := extractInputFromLocationsAndTitle(tc.Locations, tc.Title, tc.Kind, string(tc.ToolCallId)); input != nil {
+			if inputBytes, err := json.Marshal(input); err == nil {
+				tool.Input = string(inputBytes)
+			}
 		}
 	}
 
@@ -260,6 +271,62 @@ func extractInputFromContentUpdate(tcu acp.SessionToolCallUpdate) map[string]any
 			}
 		}
 	}
+	if len(input) == 0 {
+		return nil
+	}
+	return input
+}
+
+// extractInputFromLocationsAndTitle extracts tool input from ACP locations and title fields.
+// Gemini ACP sends file paths in `locations` (for read-kind tools) and search targets in `title`
+// (for search-kind tools) instead of `rawInput`. Without this extraction, the frontend shows
+// empty tool bars with no summary text.
+//
+// Mapping logic:
+//   - kind=read + locations → {"file_path": locations[0].path}
+//   - kind=search + toolCallId prefix "glob-" → {"pattern": title}
+//   - kind=search + toolCallId prefix "list_directory-" → {"path": title}
+//   - kind=search + other → {"path": title} (generic search)
+func extractInputFromLocationsAndTitle(locations []acp.ToolCallLocation, title string, kind acp.ToolKind, toolCallId string) map[string]any {
+	input := make(map[string]any)
+
+	switch kind {
+	case acp.ToolKindRead:
+		// Read tools: extract file_path from locations (Gemini pattern)
+		if len(locations) > 0 {
+			input["file_path"] = locations[0].Path
+		} else if title != "" {
+			// Fallback: title is the file name/path
+			input["file_path"] = title
+		}
+	case acp.ToolKindSearch:
+		// Search tools: determine glob vs list_directory from toolCallId prefix
+		prefix := ""
+		if dashIdx := strings.Index(toolCallId, "-"); dashIdx > 0 {
+			prefix = toolCallId[:dashIdx]
+		}
+		switch prefix {
+		case "glob":
+			if title != "" {
+				input["pattern"] = title
+			}
+		case "list_directory", "search_directory":
+			if title != "" {
+				input["path"] = title
+			}
+		default:
+			// Generic search: use title as path/query
+			if title != "" {
+				input["path"] = title
+			}
+		}
+	case acp.ToolKindEdit:
+		// Edit tools: extract file_path from locations
+		if len(locations) > 0 {
+			input["file_path"] = locations[0].Path
+		}
+	}
+
 	if len(input) == 0 {
 		return nil
 	}
@@ -347,7 +414,27 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		if tcu.Kind != nil {
 			kind = *tcu.Kind
 		}
-		tool.Name = extractToolName(*tcu.Title, kind)
+		tool.Name = extractToolName(*tcu.Title, kind, string(tcu.ToolCallId))
+	}
+
+	// Gemini ACP: extract input from locations for read/search tools.
+	// When rawInput is absent, Gemini sends file paths in `locations` and
+	// search targets in `title`. Extract these so the frontend shows proper
+	// tool input (file_path, path, pattern) even in update events.
+	if tool.Input == "" {
+		title := ""
+		if tcu.Title != nil {
+			title = *tcu.Title
+		}
+		kind := acp.ToolKindOther
+		if tcu.Kind != nil {
+			kind = *tcu.Kind
+		}
+		if input := extractInputFromLocationsAndTitle(tcu.Locations, title, kind, string(tcu.ToolCallId)); input != nil {
+			if inputBytes, err := json.Marshal(input); err == nil {
+				tool.Input = string(inputBytes)
+			}
+		}
 	}
 
 	// Extract human-readable output from RawOutput.
@@ -356,6 +443,10 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 	// from known keys and fall back to pretty-printed JSON.
 	if tcu.RawOutput != nil {
 		tool.Output = truncateToolOutput(extractACPToolOutput(tcu.RawOutput))
+	} else if len(tcu.Content) > 0 {
+		// Gemini ACP sends tool output in Content blocks instead of RawOutput.
+		// Extract text from content blocks for the tool detail overlay.
+		tool.Output = truncateToolOutput(extractACPToolOutputFromContent(tcu.Content))
 	}
 
 	// Determine event type: if tool is done, emit tool_result; otherwise update tool_use
@@ -369,6 +460,27 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		"raw_input", fmt.Sprintf("%v", tcu.RawInput))
 
 	return StreamEvent{Type: eventType, Tool: tool}
+}
+
+// extractACPToolOutputFromContent extracts human-readable output text from ACP
+// Content blocks. Gemini ACP sends tool results in Content blocks (text, terminal)
+// instead of RawOutput. This function joins text from all content blocks into a
+// single string, similar to how extractACPToolOutput works for RawOutput.
+func extractACPToolOutputFromContent(contents []acp.ToolCallContent) string {
+	var parts []string
+	for _, c := range contents {
+		if c.Content != nil {
+			cb := c.Content.Content
+			if cb.Text != nil && cb.Text.Text != "" {
+				parts = append(parts, cb.Text.Text)
+			}
+		}
+		if c.Terminal != nil {
+			// Terminal content — output was already streamed to the terminal widget
+			// No text to extract here
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // extractACPToolOutput converts ACP RawOutput (any) to a human-readable string.
@@ -492,9 +604,23 @@ func extractArrayOutput(arr []any) string {
 	return fmt.Sprintf("%v", arr)
 }
 
-// and input formatting. We try prefix matching first, then kind-to-canonical,
+// and input formatting. We try toolCallId prefix first (Gemini pattern),
+// then title prefix/alias matching, then kind-to-canonical,
 // then fall back to the title itself.
-func extractToolName(title string, kind acp.ToolKind) string {
+func extractToolName(title string, kind acp.ToolKind, toolCallId ...string) string {
+	// Gemini ACP uses descriptive toolCallId prefixes that encode the tool type:
+	// "read_file-<ts>-<n>", "list_directory-<ts>-<n>", "glob-<ts>-<n>",
+	// "run_shell_command-<ts>-<n>", "ask-<uuid>". Extract the prefix for mapping.
+	if len(toolCallId) > 0 && toolCallId[0] != "" {
+		tid := toolCallId[0]
+		if dashIdx := strings.Index(tid, "-"); dashIdx > 0 {
+			prefix := tid[:dashIdx]
+			if canonical, ok := acpToolCallIdPrefix[prefix]; ok {
+				return canonical
+			}
+		}
+	}
+
 	if title != "" {
 		// Fast path: case-insensitive alias lookup for single-word titles.
 		// Some ACP agents send lowercase names (e.g. "bash", "terminal")
@@ -512,8 +638,10 @@ func extractToolName(title string, kind acp.ToolKind) string {
 				return p.canonical
 			}
 		}
-		// If title is a single word (no spaces), use it directly — it may already be canonical
-		if !strings.Contains(title, " ") {
+		// If title is a single word (no spaces), use it directly — it may already be canonical.
+		// But file paths with dots/slashes (e.g., "README.md", "cmd/server") are not canonical
+		// tool names — fall through to kind mapping instead.
+		if !strings.Contains(title, " ") && !strings.Contains(title, ".") && !strings.Contains(title, "/") {
 			return title
 		}
 	}
@@ -524,6 +652,23 @@ func extractToolName(title string, kind acp.ToolKind) string {
 		return canonical
 	}
 	return string(kind)
+}
+
+// acpToolCallIdPrefix maps Gemini-style toolCallId prefixes to canonical tool names.
+// Gemini ACP uses toolCallId formats like "read_file-<ts>-<n>", "list_directory-<ts>-<n>",
+// "glob-<ts>-<n>", "run_shell_command-<ts>-<n>", "ask-<uuid>".
+// The prefix before the first dash encodes the tool type.
+var acpToolCallIdPrefix = map[string]string{
+	"read_file":          "Read",
+	"list_directory":     "LS",
+	"glob":               "Glob",
+	"run_shell_command":  "Bash",
+	"ask":                "AskUserQuestion",
+	"write_file":         "Write",
+	"edit_file":          "Edit",
+	"replace":            "Edit",
+	"search_file":        "Grep",
+	"search_directory":   "Grep",
 }
 
 // acpLowerAlias maps lowercase single-word tool titles to canonical PascalCase names.

@@ -313,6 +313,32 @@ func TestMapACPToolCallUpdate_InProgressWithDescriptiveTitle(t *testing.T) {
 
 // --- extractToolName tests ---
 
+func TestExtractToolName_ToolCallIdPrefix(t *testing.T) {
+	// Gemini ACP uses toolCallId prefixes like "read_file-", "list_directory-",
+	// "glob-", "run_shell_command-", "ask-" to encode the tool type.
+	assert.Equal(t, "Read", extractToolName("README.md", acp.ToolKindRead, "read_file-1780647417975-1"))
+	assert.Equal(t, "LS", extractToolName("cmd/server", acp.ToolKindSearch, "list_directory-1780647430067-5"))
+	assert.Equal(t, "Glob", extractToolName("'cmd/server/**/*.go'", acp.ToolKindSearch, "glob-1780647418037-4"))
+	assert.Equal(t, "Bash", extractToolName("ls -R cmd/server", acp.ToolKindExecute, "run_shell_command-1780647441920-8"))
+	assert.Equal(t, "AskUserQuestion", extractToolName("ask", acp.ToolKindOther, "ask-4f1164a8-5d96-4ea6-b3b7-7babeb2c8809"))
+	assert.Equal(t, "Write", extractToolName("file.txt", acp.ToolKindEdit, "write_file-123-1"))
+	assert.Equal(t, "Edit", extractToolName("file.go", acp.ToolKindEdit, "edit_file-123-2"))
+	assert.Equal(t, "Grep", extractToolName("pattern", acp.ToolKindSearch, "search_file-123-3"))
+	assert.Equal(t, "Grep", extractToolName("dir", acp.ToolKindSearch, "search_directory-123-4"))
+}
+
+func TestExtractToolName_ToolCallIdPrefixPriority(t *testing.T) {
+	// toolCallId prefix takes priority over title matching for Gemini ACP
+	assert.Equal(t, "Read", extractToolName("README.md", acp.ToolKindRead, "read_file-1-1"))
+	// Without toolCallId, "README.md" has a dot → treated as non-canonical word → kind fallback
+	assert.Equal(t, "Read", extractToolName("README.md", acp.ToolKindRead))
+}
+
+func TestExtractToolName_ToolCallIdPrefixUnknown(t *testing.T) {
+	// Unknown prefix falls through to title/kind matching
+	assert.Equal(t, "Bash", extractToolName("Bash", acp.ToolKindExecute, "unknown_prefix-123"))
+}
+
 func TestExtractToolName_TitlePreferred(t *testing.T) {
 	assert.Equal(t, "Read", extractToolName("Read", acp.ToolKindRead))
 	assert.Equal(t, "MyCustomTool", extractToolName("MyCustomTool", acp.ToolKindEdit))
@@ -366,6 +392,320 @@ func TestExtractToolName_LowerCaseAliases(t *testing.T) {
 func TestExtractToolName_TerminalPrefix(t *testing.T) {
 	// "Terminal" should map to "Bash" via acpToolNamePatterns
 	assert.Equal(t, "Bash", extractToolName("Terminal", acp.ToolKindExecute))
+}
+
+// --- Gemini ACP tool call pattern tests ---
+
+func TestMapACPToolCall_GeminiReadFile(t *testing.T) {
+	// Gemini ACP read_file: kind=read, title=filename, locations=[{path}], no rawInput
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("read_file-1780647417975-1"),
+		Title:      "README.md",
+		Kind:       acp.ToolKindRead,
+		Locations: []acp.ToolCallLocation{
+			{Path: "/home/user/project/README.md"},
+		},
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "tool_use", event.Type)
+	require.NotNil(t, event.Tool)
+	assert.Equal(t, "Read", event.Tool.Name, "toolCallId prefix 'read_file' should map to Read")
+	assert.Equal(t, "read_file-1780647417975-1", event.Tool.ID)
+	assert.False(t, event.Tool.Done)
+	assert.Contains(t, event.Tool.Input, "file_path")
+	assert.Contains(t, event.Tool.Input, "/home/user/project/README.md")
+}
+
+func TestMapACPToolCall_GeminiListDirectory(t *testing.T) {
+	// Gemini ACP list_directory: kind=search, title=dirname, no locations
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("list_directory-1780647430067-5"),
+		Title:      "cmd/server",
+		Kind:       acp.ToolKindSearch,
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "tool_use", event.Type)
+	require.NotNil(t, event.Tool)
+	assert.Equal(t, "LS", event.Tool.Name, "toolCallId prefix 'list_directory' should map to LS")
+	assert.Contains(t, event.Tool.Input, "path")
+	assert.Contains(t, event.Tool.Input, "cmd/server")
+}
+
+func TestMapACPToolCall_GeminiGlob(t *testing.T) {
+	// Gemini ACP glob: kind=search, title=pattern, no locations
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("glob-1780647418037-4"),
+		Title:      "'cmd/server/**/*.go'",
+		Kind:       acp.ToolKindSearch,
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "tool_use", event.Type)
+	require.NotNil(t, event.Tool)
+	assert.Equal(t, "Glob", event.Tool.Name, "toolCallId prefix 'glob' should map to Glob")
+	assert.Contains(t, event.Tool.Input, "pattern")
+	assert.Contains(t, event.Tool.Input, "cmd/server")
+}
+
+func TestMapACPToolCall_GeminiShellCommand(t *testing.T) {
+	// Gemini ACP run_shell_command: kind=execute, title=command, no rawInput
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("run_shell_command-1780647441920-8"),
+		Title:      "ls -R cmd/server",
+		Kind:       acp.ToolKindExecute,
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "tool_use", event.Type)
+	require.NotNil(t, event.Tool)
+	assert.Equal(t, "Bash", event.Tool.Name, "toolCallId prefix 'run_shell_command' should map to Bash")
+	assert.Contains(t, event.Tool.Input, "command")
+	assert.Contains(t, event.Tool.Input, "ls -R cmd/server")
+}
+
+func TestMapACPToolCall_GeminiReadFileNoLocations(t *testing.T) {
+	// Gemini ACP read_file with no locations — should use title as file_path fallback
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("read_file-123-1"),
+		Title:      "main.go",
+		Kind:       acp.ToolKindRead,
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "Read", event.Tool.Name)
+	assert.Contains(t, event.Tool.Input, "file_path")
+	assert.Contains(t, event.Tool.Input, "main.go")
+}
+
+func TestMapACPToolCallUpdate_GeminiCompleted(t *testing.T) {
+	// Gemini ACP completed tool_call_update with locations
+	completed := acp.ToolCallStatusCompleted
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("read_file-1780647417975-1"),
+		Status:     &completed,
+		Kind:       nil,
+		Title:      nil,
+		Locations: []acp.ToolCallLocation{
+			{Path: "/home/user/project/README.md"},
+		},
+		RawOutput: map[string]any{"result": "file contents here"},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_result", event.Type)
+	assert.True(t, event.Tool.Done)
+	assert.Equal(t, "success", event.Tool.Status)
+	assert.Contains(t, event.Tool.Output, "file contents here")
+}
+
+func TestMapACPToolCallUpdate_GeminiCompletedWithContent(t *testing.T) {
+	// Gemini ACP completed update with Content blocks instead of RawOutput
+	completed := acp.ToolCallStatusCompleted
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("glob-1780647418037-4"),
+		Status:     &completed,
+		Content: []acp.ToolCallContent{
+			{
+				Content: &acp.ToolCallContentContent{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "No files found"},
+					},
+					Type: "content",
+				},
+			},
+		},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_result", event.Type)
+	assert.True(t, event.Tool.Done)
+	assert.Contains(t, event.Tool.Output, "No files found")
+}
+
+func TestMapACPToolCallUpdate_GeminiFailedWithContent(t *testing.T) {
+	// Gemini ACP failed update with Content blocks
+	failed := acp.ToolCallStatusFailed
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("read_file-1780647453119-9"),
+		Status:     &failed,
+		Content: []acp.ToolCallContent{
+			{
+				Content: &acp.ToolCallContentContent{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "File path is ignored by configured ignore patterns."},
+					},
+					Type: "content",
+				},
+			},
+		},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_result", event.Type)
+	assert.True(t, event.Tool.Done)
+	assert.Equal(t, "error", event.Tool.Status)
+	assert.Contains(t, event.Tool.Output, "ignored by configured ignore patterns")
+}
+
+func TestMapACPToolCallUpdate_RawOutputPreferredOverContent(t *testing.T) {
+	// When both RawOutput and Content exist, RawOutput takes precedence
+	completed := acp.ToolCallStatusCompleted
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("tc-both"),
+		Status:     &completed,
+		RawOutput:  map[string]any{"result": "from rawOutput"},
+		Content: []acp.ToolCallContent{
+			{
+				Content: &acp.ToolCallContentContent{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "from content"},
+					},
+					Type: "content",
+				},
+			},
+		},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Contains(t, event.Tool.Output, "from rawOutput")
+	assert.NotContains(t, event.Tool.Output, "from content")
+}
+
+// --- extractACPToolOutputFromContent tests ---
+
+func TestExtractACPToolOutputFromContent_SingleText(t *testing.T) {
+	result := extractACPToolOutputFromContent([]acp.ToolCallContent{
+		{
+			Content: &acp.ToolCallContentContent{
+				Content: acp.ContentBlock{
+					Text: &acp.ContentBlockText{Text: "No files found"},
+				},
+				Type: "content",
+			},
+		},
+	})
+	assert.Equal(t, "No files found", result)
+}
+
+func TestExtractACPToolOutputFromContent_MultipleText(t *testing.T) {
+	result := extractACPToolOutputFromContent([]acp.ToolCallContent{
+		{
+			Content: &acp.ToolCallContentContent{
+				Content: acp.ContentBlock{
+					Text: &acp.ContentBlockText{Text: "line 1"},
+				},
+				Type: "content",
+			},
+		},
+		{
+			Content: &acp.ToolCallContentContent{
+				Content: acp.ContentBlock{
+					Text: &acp.ContentBlockText{Text: "line 2"},
+				},
+				Type: "content",
+			},
+		},
+	})
+	assert.Equal(t, "line 1\nline 2", result)
+}
+
+func TestExtractACPToolOutputFromContent_Empty(t *testing.T) {
+	result := extractACPToolOutputFromContent(nil)
+	assert.Equal(t, "", result)
+}
+
+func TestExtractACPToolOutputFromContent_TerminalOnly(t *testing.T) {
+	// Terminal content doesn't produce text output
+	result := extractACPToolOutputFromContent([]acp.ToolCallContent{
+		{
+			Terminal: &acp.ToolCallContentTerminal{
+				TerminalId: "term-1",
+				Type:       "terminal",
+			},
+		},
+	})
+	assert.Equal(t, "", result)
+}
+
+// --- extractInputFromLocationsAndTitle tests ---
+
+func TestExtractInputFromLocationsAndTitle_ReadWithLocations(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		[]acp.ToolCallLocation{{Path: "/home/user/project/main.go"}},
+		"main.go",
+		acp.ToolKindRead,
+		"read_file-123-1",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "/home/user/project/main.go", input["file_path"])
+}
+
+func TestExtractInputFromLocationsAndTitle_ReadNoLocations(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		nil,
+		"main.go",
+		acp.ToolKindRead,
+		"read_file-123-1",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "main.go", input["file_path"])
+}
+
+func TestExtractInputFromLocationsAndTitle_Glob(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		nil,
+		"'cmd/server/**/*.go'",
+		acp.ToolKindSearch,
+		"glob-123-4",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "'cmd/server/**/*.go'", input["pattern"])
+}
+
+func TestExtractInputFromLocationsAndTitle_ListDirectory(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		nil,
+		"cmd/server",
+		acp.ToolKindSearch,
+		"list_directory-123-5",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "cmd/server", input["path"])
+}
+
+func TestExtractInputFromLocationsAndTitle_GenericSearch(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		nil,
+		"some query",
+		acp.ToolKindSearch,
+		"unknown_search-123",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "some query", input["path"])
+}
+
+func TestExtractInputFromLocationsAndTitle_EditWithLocations(t *testing.T) {
+	input := extractInputFromLocationsAndTitle(
+		[]acp.ToolCallLocation{{Path: "/home/user/project/main.go"}},
+		"main.go",
+		acp.ToolKindEdit,
+		"edit_file-123-2",
+	)
+	require.NotNil(t, input)
+	assert.Equal(t, "/home/user/project/main.go", input["file_path"])
+}
+
+func TestExtractInputFromLocationsAndTitle_ExecuteReturnsNil(t *testing.T) {
+	// Execute kind is handled by the title→command fallback, not locations
+	input := extractInputFromLocationsAndTitle(
+		nil,
+		"ls -la",
+		acp.ToolKindExecute,
+		"run_shell_command-123-8",
+	)
+	assert.Nil(t, input)
 }
 
 // --- mapACPError tests ---
