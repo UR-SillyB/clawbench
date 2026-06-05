@@ -3,10 +3,12 @@ package handler
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"clawbench/internal/ai"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
 )
@@ -155,6 +157,16 @@ func DeleteSession(w http.ResponseWriter, r *http.Request) {
 	backend := r.URL.Query().Get("backend")
 	if backend == "" {
 		backend = "codebuddy"
+	}
+
+	// Close the ACP connection for this session before soft-delete
+	// (GetSessionAgentID queries WHERE deleted=0, so we must read it first)
+	agentID := service.GetSessionAgentID(sessionID)
+	if agentID != "" {
+		if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+			slog.Info("acp: closing connection for deleted session", "session_id", sessionID, "agent_id", agentID)
+			ai.GetACPConnManager().CloseConn(sessionID)
+		}
 	}
 
 	if err := service.DeleteSession(projectPath, backend, sessionID); err != nil {

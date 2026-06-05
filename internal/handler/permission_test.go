@@ -116,13 +116,13 @@ func TestServePermissionRespond_ACPClientNoSessionMapping(t *testing.T) {
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "Test Session", "claude", "", "default", "chat")
 	require.NoError(t, err)
 
-	// Inject a pool entry with a client but no session mapping for this ClawBench session
-	pool := ai.GetACPConnectionPool()
+	// Inject a connection with a client but no session for this ClawBench session
+	mgr := ai.GetACPConnManager()
 	client := ai.NewClawBenchACPClient()
-	entry := &ai.ACPConnEntry{}
-	entry.SetClientForTest(client)
-	pool.SetEntryForTest("claude", entry)
-	defer pool.CloseConnection("claude")
+	conn := &ai.ACPConn{}
+	conn.SetClientForTest(client)
+	mgr.SetConnForTest(sessionID, conn)
+	defer mgr.CloseConn(sessionID)
 
 	body := map[string]any{
 		"sessionId":  sessionID,
@@ -142,14 +142,14 @@ func TestServePermissionRespond_PermissionNotFound(t *testing.T) {
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "Test Session", "claude", "", "default", "chat")
 	require.NoError(t, err)
 
-	// Inject a pool entry with a client and session mapping
-	pool := ai.GetACPConnectionPool()
+	// Inject a connection with a client and session mapping
+	mgr := ai.GetACPConnManager()
 	client := ai.NewClawBenchACPClient()
-	entry := &ai.ACPConnEntry{}
-	entry.SetClientForTest(client)
-	entry.SetSessionMappingForTest(sessionID, "acp-session-123")
-	pool.SetEntryForTest("claude", entry)
-	defer pool.CloseConnection("claude")
+	conn := &ai.ACPConn{}
+	conn.SetClientForTest(client)
+	conn.SetSessionMappingForTest(sessionID, "acp-session-123")
+	mgr.SetConnForTest(sessionID, conn)
+	defer mgr.CloseConn(sessionID)
 
 	// No pending permission registered — RespondPermission returns false
 	body := map[string]any{
@@ -171,14 +171,14 @@ func TestServePermissionRespond_Success(t *testing.T) {
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "Test Session", "claude", "", "default", "chat")
 	require.NoError(t, err)
 
-	// Set up ACP pool with client and session mapping
-	pool := ai.GetACPConnectionPool()
+	// Set up ACP connection with client and session mapping
+	mgr := ai.GetACPConnManager()
 	client := ai.NewClawBenchACPClient()
-	entry := &ai.ACPConnEntry{}
-	entry.SetClientForTest(client)
-	entry.SetSessionMappingForTest(sessionID, "acp-session-456")
-	pool.SetEntryForTest("claude", entry)
-	defer pool.CloseConnection("claude")
+	conn := &ai.ACPConn{}
+	conn.SetClientForTest(client)
+	conn.SetSessionMappingForTest(sessionID, "acp-session-456")
+	mgr.SetConnForTest(sessionID, conn)
+	defer mgr.CloseConn(sessionID)
 
 	// Register a pending permission so RespondPermission finds it
 	key := ai.PermissionKey("acp-session-456", "toolcall-1")
@@ -204,14 +204,14 @@ func TestServePermissionRespond_Cancelled(t *testing.T) {
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "Test Session", "claude", "", "default", "chat")
 	require.NoError(t, err)
 
-	// Set up ACP pool with client and session mapping
-	pool := ai.GetACPConnectionPool()
+	// Set up ACP connection with client and session mapping
+	mgr := ai.GetACPConnManager()
 	client := ai.NewClawBenchACPClient()
-	entry := &ai.ACPConnEntry{}
-	entry.SetClientForTest(client)
-	entry.SetSessionMappingForTest(sessionID, "acp-session-789")
-	pool.SetEntryForTest("claude", entry)
-	defer pool.CloseConnection("claude")
+	conn := &ai.ACPConn{}
+	conn.SetClientForTest(client)
+	conn.SetSessionMappingForTest(sessionID, "acp-session-789")
+	mgr.SetConnForTest(sessionID, conn)
+	defer mgr.CloseConn(sessionID)
 
 	// Register a pending permission
 	key := ai.PermissionKey("acp-session-789", "toolcall-2")

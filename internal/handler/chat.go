@@ -190,7 +190,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		var modeState, thinkingEffortState, modelListState any
 		var commands []ai.AvailableCommandInfo
 		if sessionID != "" {
-			if ms, _, es, cmds, ml := ai.GetACPConnectionPool().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil {
+			if ms, _, es, cmds, ml := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil {
 				modeState = ms
 				thinkingEffortState = es
 				commands = cmds
@@ -199,12 +199,12 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				// No session-level mapping yet (new session, never sent a message).
 				// Fall back to agent-level cache so mode/thinking/command chips
 				// appear immediately without requiring the first message.
-				if ms, _, es, ml := ai.GetACPConnectionPool().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil {
+				if ms, _, es, ml := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil {
 					modeState = ms
 					thinkingEffortState = es
 					modelListState = ml
 				}
-				if cmds := ai.GetACPConnectionPool().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
+				if cmds := ai.GetACPConnManager().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
 					commands = cmds
 				}
 			}
@@ -806,7 +806,7 @@ func finalizeStreamRun(
 	responseMetadata.WallMs = wallMs
 
 	// Inject ACP mode and thinking effort into metadata (if available)
-	if ms, _, es, _, _ := ai.GetACPConnectionPool().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
+	if ms, _, es, _, _ := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
 		if ms != nil && ms.CurrentModeID != "" {
 			responseMetadata.Mode = ms.CurrentModeID
 			_ = service.UpdateSessionMode(sessionID, ms.CurrentModeID)

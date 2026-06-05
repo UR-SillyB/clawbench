@@ -39,7 +39,8 @@ type ClawBenchACPClient struct {
 	sessionRoutes     map[string]chan<- StreamEvent // acpSessionID → streamCh
 	commands          []acp.AvailableCommand        // cached from available_commands_update
 	pendingPermission map[string]*pendingPermission // PermissionKey → pending request
-	poolEntry         *ACPConnEntry                 // reference to pool entry for cache updates
+	poolEntry         *ACPConnEntry                 // reference to pool entry for cache updates (deprecated alias)
+	connRef           *ACPConn                      // reference to ACPConn for cache updates
 }
 
 // NewClawBenchACPClient creates a new ACP client with session routing support.
@@ -110,8 +111,8 @@ func (c *ClawBenchACPClient) SetCommands(cmds []acp.AvailableCommand) {
 	defer c.mu.Unlock()
 	c.commands = cmds
 	// Trigger persist so commands are saved to DB
-	if c.poolEntry != nil {
-		c.poolEntry.debouncePersistACPState()
+	if c.connRef != nil {
+		c.connRef.debouncePersistACPState()
 	}
 }
 
@@ -138,7 +139,7 @@ func (c *ClawBenchACPClient) SessionUpdate(ctx context.Context, n acp.SessionNot
 		return nil
 	}
 
-	mapACPSessionUpdate(n.Update, ch, ctx, c.poolEntry)
+	mapACPSessionUpdate(n.Update, ch, ctx, c.connRef)
 	return nil
 }
 

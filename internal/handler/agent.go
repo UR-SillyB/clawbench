@@ -53,7 +53,7 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		ModelList *ai.ModelListState        `json:"modelListState,omitempty"`
 	}
 	states := make(map[string]*acpState, len(agents))
-	pool := ai.GetACPConnectionPool()
+	mgr := ai.GetACPConnManager()
 	for _, a := range agents {
 		if a.Transport != transportACP {
 			continue
@@ -63,17 +63,17 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		var cmds []ai.AvailableCommandInfo
 		var ml *ai.ModelListState
 
-		// Try pool cache first
-		if pms, _, pes, pml := pool.GetCachedStateByAgentID(a.ID); pms != nil || pes != nil || pml != nil {
+		// Try connection manager cache first
+		if pms, _, pes, pml := mgr.GetCachedStateByAgentID(a.ID); pms != nil || pes != nil || pml != nil {
 			ms = pms
 			es = pes
 			ml = pml
 		}
-		if pcmds := pool.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
+		if pcmds := mgr.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
 			cmds = pcmds
 		}
 
-		// Fall back to DB-persisted state when pool is empty
+		// Fall back to DB-persisted state when cache is empty
 		if ms == nil && es == nil && len(cmds) == 0 && ml == nil {
 			if a.AcpModeState != "" {
 				var dbMs ai.ModeState

@@ -12,14 +12,12 @@ import (
 )
 
 // ACPBackend implements the AIBackend interface using the Agent Client Protocol.
-// It uses ACPConnectionPool for long-lived stdio connections and session reuse.
+// Each ClawBench session gets its own dedicated agent process (one-to-one model).
 //
-// With connection pooling:
-//   - Each agent gets one long-lived subprocess (stdio)
-//   - Multiple ClawBench sessions share the same connection (different ACP sessions)
-//   - Multiple prompt turns within the same ClawBench session reuse the ACP session
-//   - Cancel uses session/cancel (not process kill), session stays open
-//   - Idle connections are killed after 5 minutes of inactivity
+//   - Each ClawBench session = one agent subprocess (stdio)
+//   - Agent processes are never idle-reaped
+//   - If the process dies, it is respawned and the session is recovered via LoadSession
+//   - Cancel marks the connection as dead; next prompt triggers respawn + LoadSession
 type ACPBackend struct {
 	agent *model.Agent // resolved agent config
 
@@ -44,20 +42,17 @@ func (b *ACPBackend) Name() string {
 }
 
 // ExecuteStream runs the ACP agent and returns a channel of streaming events.
-// It uses the connection pool to reuse long-lived connections and sessions.
 //
-// For the first message in a session: pool.GetOrCreate → new session → prompt
-// For subsequent messages: pool.GetOrCreate → reuse session → prompt
-// On cancel: session/cancel (session stays open for next prompt)
+// Flow: GetOrCreateConn → (LoadSession or NewSession) → emit cached state → Prompt
 func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocognit,gocyclo // complex ACP protocol handler, refactoring would reduce readability
 	ch := make(chan StreamEvent, streamChanSize)
 
 	go func() {
 		defer close(ch)
 
-		// Step 1: Get or create a long-lived connection from the pool
-		pool := GetACPConnectionPool()
-		entry, err := pool.GetOrCreate(ctx, b.agent)
+		// Step 1: Get or create a dedicated connection for this session
+		mgr := GetACPConnManager()
+		conn, isNew, err := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
 		if err != nil {
 			// ACP connection failed (e.g., agent binary doesn't support ACP mode).
 			// Fall back to CLI backend so the user can still chat.
@@ -86,33 +81,42 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			return
 		}
 
-		// Step 2: Get or create an ACP session for this ClawBench session
-		// req.SessionID is the ClawBench session UUID on first call,
-		// or the external_session_id (ACP session ID) on resume.
-		// The pool entry tracks the mapping internally.
-		acpSessionID, isNew, err := entry.GetOrCreateSession(ctx, req.SessionID, req.WorkDir)
-		if err != nil {
-			forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: session: %v", err), Reason: ReasonBackendExit})
-			return
-		}
+		acpSessionID := conn.AcpSID()
 
-		// Step 3: Emit session_capture for new sessions (handler persists ACP session ID)
+		// Step 2: Handle new vs recovered session
 		if isNew {
+			// New session — emit session_capture for handler to persist ACP session ID
 			forwardACPEvent(ch, StreamEvent{Type: "session_capture", Content: acpSessionID})
 
 			// Extract and cache mode/config/thinking effort state from NewSessionResponse
-			if sessResp := entry.GetAndClearSessionResp(); sessResp != nil {
+			if sessResp := conn.GetAndClearNewSessionResp(); sessResp != nil {
 				if modeState := extractACPModeState(sessResp); modeState != nil {
-					entry.SetCachedModeState(modeState)
+					conn.SetCachedModeState(modeState)
 				}
 				if configState := extractACPConfigOptions(sessResp); configState != nil {
-					entry.SetCachedConfigState(configState)
+					conn.SetCachedConfigState(configState)
 				}
 				if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-					entry.SetCachedThinkingEffortState(effortState)
+					conn.SetCachedThinkingEffortState(effortState)
 				}
 				if modelList := extractACPModelList(sessResp); modelList != nil {
-					entry.SetCachedModelListState(modelList)
+					conn.SetCachedModelListState(modelList)
+				}
+			}
+		} else {
+			// Recovered session (via LoadSession) — update cached state
+			if loadResp := conn.GetAndClearLoadSessionResp(); loadResp != nil {
+				if modeState := extractACPModeStateFromLoad(loadResp); modeState != nil {
+					conn.SetCachedModeState(modeState)
+				}
+				if configState := extractACPConfigOptionsFromLoad(loadResp); configState != nil {
+					conn.SetCachedConfigState(configState)
+				}
+				if effortState := extractACPThinkingEffortFromLoad(loadResp); effortState != nil {
+					conn.SetCachedThinkingEffortState(effortState)
+				}
+				if modelList := extractACPModelListFromLoad(loadResp); modelList != nil {
+					conn.SetCachedModelListState(modelList)
 				}
 			}
 		}
@@ -121,26 +125,26 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		// The frontend resets these states on page load / session switch, so
 		// they need to be repopulated even for resumed ACP sessions.
 		// These events are idempotent — re-emitting them is harmless.
-		if modeState := entry.GetCachedModeState(); modeState != nil {
+		if modeState := conn.GetCachedModeState(); modeState != nil {
 			slog.Info("acp: re-emitting cached mode_update", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 			forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
 		}
-		if configState := entry.GetCachedConfigState(); configState != nil {
+		if configState := conn.GetCachedConfigState(); configState != nil {
 			slog.Info("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
 			forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 		}
-		if effortState := entry.GetCachedThinkingEffortState(); effortState != nil {
+		if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
 			slog.Info("acp: re-emitting cached thinking_effort_update", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
 			forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
 		}
-		if modelListState := entry.GetCachedModelListState(); modelListState != nil {
+		if modelListState := conn.GetCachedModelListState(); modelListState != nil {
 			slog.Info("acp: re-emitting cached model_list_update", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
 			forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
 		}
 
 		// Emit commands_update if cached from available_commands_update.
 		// Also re-emitted for every stream to repopulate frontend state.
-		if client := entry.GetClient(); client != nil {
+		if client := conn.GetClient(); client != nil {
 			if cmds := client.GetCommands(); len(cmds) > 0 {
 				infos := make([]AvailableCommandInfo, 0, len(cmds))
 				for _, c := range cmds {
@@ -158,12 +162,11 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			}
 		}
 
-		// Step 4: Send prompt via the pooled connection
+		// Step 3: Send prompt
 		promptBlocks := b.buildPromptBlocks(req)
-		err = entry.Prompt(ctx, acpSessionID, promptBlocks, ch, req)
+		err = conn.Prompt(ctx, promptBlocks, ch, req)
 		if err != nil {
 			if ctx.Err() != nil {
-				// User cancel — session stays open for next prompt
 				slog.Info("acp: prompt cancelled", "session_id", req.SessionID, "acp_sid", acpSessionID)
 				forwardACPEvent(ch, StreamEvent{Type: "done"})
 				return
@@ -172,7 +175,7 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			return
 		}
 
-		// Step 5: Prompt completed normally
+		// Step 4: Prompt completed normally
 		forwardACPEvent(ch, StreamEvent{Type: "done"})
 	}()
 

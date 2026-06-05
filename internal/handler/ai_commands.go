@@ -43,8 +43,8 @@ func ServeAICommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool := ai.GetACPConnectionPool()
-	client := pool.GetClient(agent.ID)
+	mgr := ai.GetACPConnManager()
+	client := mgr.GetClientByAgentID(agent.ID)
 	if client == nil {
 		writeJSON(w, http.StatusOK, map[string]any{keyCommands: []any{}})
 		return

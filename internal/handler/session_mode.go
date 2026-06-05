@@ -56,21 +56,26 @@ func ServeSessionMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the ACP connection pool and find the agent's connection
-	pool := ai.GetACPConnectionPool()
+	// Get the ACP connection manager and find the session's connection
+	mgr := ai.GetACPConnManager()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	entry, err := pool.GetOrCreate(ctx, agent)
-	if err != nil {
-		slog.Warn("session mode: failed to get ACP connection", "agent_id", agentID, "error", err)
-		writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotRunning")
-		return
+	conn := mgr.GetConn(req.SessionID)
+	if conn == nil {
+		// No connection for this session — try to get one for the agent
+		var err error
+		conn, err = mgr.GetOrCreate(ctx, agent)
+		if err != nil {
+			slog.Warn("session mode: failed to get ACP connection", "agent_id", agentID, "error", err)
+			writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotRunning")
+			return
+		}
 	}
 
 	// Set the mode via SetSessionConfigOption (v2 style, works for both v1 and v2)
-	entry.SetSessionConfigOption(ctx, req.SessionID, "mode", req.ModeID)
+	conn.SetSessionConfigOption(ctx, "mode", req.ModeID)
 
 	// Persist mode to session DB so it survives restarts
 	_ = service.UpdateSessionMode(req.SessionID, req.ModeID)

@@ -460,6 +460,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// Inject ACP state persister (avoids import cycle between ai and service packages)
 	ai.SetACPStatePersister(service.UpdateAgentACPState)
 
+	// Inject external session ID getter for LoadSession recovery
+	ai.SetExternalSessionIDGetter(service.GetExternalSessionID)
+
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
 	// Language is now per-request (sent from frontend), not configured at startup.
 	summarizeBackend := cfg.Summarize.Backend
@@ -610,7 +613,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	service.GlobalScheduler = scheduler
 
 	// Stop ACP connection pool on shutdown (kills long-lived agent processes)
-	defer ai.GetACPConnectionPool().StopAll()
+	defer ai.GetACPConnManager().StopAll()
 
 	// Start periodic cleanup of stale WS subscriptions (every 60s)
 	go func() {

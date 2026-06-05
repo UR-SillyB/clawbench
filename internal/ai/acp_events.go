@@ -15,9 +15,9 @@ import (
 // mapACPSessionUpdate converts an ACP SessionUpdate to StreamEvent(s) and
 // sends them to the stream channel. Called from ClawBenchACPClient.SessionUpdate,
 // which runs on the SDK's internal goroutine.
-// If entry is non-nil, mode/config/thinking cache updates are applied to the pool entry
+// If conn is non-nil, mode/config/thinking cache updates are applied to the connection
 // so that re-emitted SSE events reflect the latest state.
-func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx context.Context, entry *ACPConnEntry) { //nolint:gocognit,gocyclo,revive,unparam // ACP protocol has many event types, each branch is simple; ctx position follows ACP SDK convention; ctx reserved for future use
+func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx context.Context, conn *ACPConn) { //nolint:gocognit,gocyclo,revive,unparam // ACP protocol has many event types, each branch is simple; ctx position follows ACP SDK convention; ctx reserved for future use
 	switch {
 	case update.AgentMessageChunk != nil:
 		// When the agent transitions from thinking to content output, emit
@@ -96,8 +96,8 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 		}
 		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
 		// Update cached mode state so re-emitted SSE events reflect the new mode
-		if entry != nil {
-			entry.UpdateCachedCurrentMode(string(mu.CurrentModeId))
+		if conn != nil {
+			conn.UpdateCachedCurrentMode(string(mu.CurrentModeId))
 		}
 
 	case update.ConfigOptionUpdate != nil:
@@ -117,8 +117,8 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 				configState := buildConfigOptionStateFromSelect(sel, "mode")
 				forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 				// Update cached mode state so re-emitted SSE events reflect the new mode
-				if entry != nil {
-					entry.UpdateCachedCurrentMode(string(sel.CurrentValue))
+				if conn != nil {
+					conn.UpdateCachedCurrentMode(string(sel.CurrentValue))
 				}
 
 			case acp.SessionConfigOptionCategoryThoughtLevel:
@@ -126,8 +126,8 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 				if effortState != nil {
 					forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
 					// Update cached thinking effort so re-emitted SSE events reflect the new level
-					if entry != nil {
-						entry.UpdateCachedCurrentThinkingEffort(string(sel.CurrentValue))
+					if conn != nil {
+						conn.UpdateCachedCurrentThinkingEffort(string(sel.CurrentValue))
 					}
 				}
 
@@ -135,8 +135,8 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 				modelList := buildModelListStateFromSelect(sel)
 				if modelList != nil {
 					forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelList})
-					if entry != nil {
-						entry.SetCachedModelListState(modelList)
+					if conn != nil {
+						conn.SetCachedModelListState(modelList)
 					}
 				}
 			}
@@ -577,15 +577,30 @@ func mapACPSelectOptions(opts acp.SessionConfigSelectOptions, optDef *ConfigOpti
 // extractACPModeState extracts ModeState from an ACP NewSessionResponse.
 // Returns nil if no modes are available.
 func extractACPModeState(sessResp *acp.NewSessionResponse) *ModeState {
-	if sessResp == nil || sessResp.Modes == nil {
+	if sessResp == nil {
+		return nil
+	}
+	return extractModeStateFromModes(sessResp.Modes)
+}
+
+// extractACPModeStateFromLoad extracts ModeState from a LoadSessionResponse.
+func extractACPModeStateFromLoad(loadResp *acp.LoadSessionResponse) *ModeState {
+	if loadResp == nil {
+		return nil
+	}
+	return extractModeStateFromModes(loadResp.Modes)
+}
+
+func extractModeStateFromModes(modes *acp.SessionModeState) *ModeState {
+	if modes == nil {
 		return nil
 	}
 
 	modeState := &ModeState{
-		CurrentModeID: string(sessResp.Modes.CurrentModeId),
+		CurrentModeID: string(modes.CurrentModeId),
 	}
 
-	for _, m := range sessResp.Modes.AvailableModes {
+	for _, m := range modes.AvailableModes {
 		modeState.AvailableModes = append(modeState.AvailableModes, ModeDef{
 			ID:   string(m.Id),
 			Name: m.Name,
@@ -602,18 +617,31 @@ func extractACPModeState(sessResp *acp.NewSessionResponse) *ModeState {
 // extractACPConfigOptions extracts mode-relevant ConfigOptionState from an ACP NewSessionResponse.
 // Returns nil if no mode-relevant config options are available.
 func extractACPConfigOptions(sessResp *acp.NewSessionResponse) *ConfigOptionState {
-	if sessResp == nil || len(sessResp.ConfigOptions) == 0 {
+	if sessResp == nil {
+		return nil
+	}
+	return extractConfigOptionsFromOpts(sessResp.ConfigOptions)
+}
+
+// extractACPConfigOptionsFromLoad extracts mode-relevant ConfigOptionState from a LoadSessionResponse.
+func extractACPConfigOptionsFromLoad(loadResp *acp.LoadSessionResponse) *ConfigOptionState {
+	if loadResp == nil {
+		return nil
+	}
+	return extractConfigOptionsFromOpts(loadResp.ConfigOptions)
+}
+
+func extractConfigOptionsFromOpts(opts []acp.SessionConfigOption) *ConfigOptionState {
+	if len(opts) == 0 {
 		return nil
 	}
 
-	// Find the "mode" config option
-	for _, opt := range sessResp.ConfigOptions {
+	for _, opt := range opts {
 		if opt.Select == nil {
 			continue
 		}
 		sel := opt.Select
 
-		// Check if this is a mode-related config option
 		if sel.Category != nil && *sel.Category == acp.SessionConfigOptionCategoryMode {
 			configState := &ConfigOptionState{
 				ConfigID:  string(sel.Id),
@@ -639,11 +667,26 @@ func extractACPConfigOptions(sessResp *acp.NewSessionResponse) *ConfigOptionStat
 // extractACPThinkingEffort extracts ThinkingEffortState from an ACP NewSessionResponse.
 // Looks for config options with Category "thought_level". Returns nil if none found.
 func extractACPThinkingEffort(sessResp *acp.NewSessionResponse) *ThinkingEffortState {
-	if sessResp == nil || len(sessResp.ConfigOptions) == 0 {
+	if sessResp == nil {
+		return nil
+	}
+	return extractThinkingEffortFromOpts(sessResp.ConfigOptions)
+}
+
+// extractACPThinkingEffortFromLoad extracts ThinkingEffortState from a LoadSessionResponse.
+func extractACPThinkingEffortFromLoad(loadResp *acp.LoadSessionResponse) *ThinkingEffortState {
+	if loadResp == nil {
+		return nil
+	}
+	return extractThinkingEffortFromOpts(loadResp.ConfigOptions)
+}
+
+func extractThinkingEffortFromOpts(opts []acp.SessionConfigOption) *ThinkingEffortState {
+	if len(opts) == 0 {
 		return nil
 	}
 
-	for _, opt := range sessResp.ConfigOptions {
+	for _, opt := range opts {
 		if opt.Select == nil {
 			continue
 		}
@@ -693,11 +736,26 @@ func buildModelListStateFromSelect(sel *acp.SessionConfigOptionSelect) *ModelLis
 // extractACPModelList extracts ModelListState from an ACP NewSessionResponse.
 // Looks for config options with Category "model". Returns nil if none found.
 func extractACPModelList(sessResp *acp.NewSessionResponse) *ModelListState {
-	if sessResp == nil || len(sessResp.ConfigOptions) == 0 {
+	if sessResp == nil {
+		return nil
+	}
+	return extractModelListFromOpts(sessResp.ConfigOptions)
+}
+
+// extractACPModelListFromLoad extracts ModelListState from a LoadSessionResponse.
+func extractACPModelListFromLoad(loadResp *acp.LoadSessionResponse) *ModelListState {
+	if loadResp == nil {
+		return nil
+	}
+	return extractModelListFromOpts(loadResp.ConfigOptions)
+}
+
+func extractModelListFromOpts(opts []acp.SessionConfigOption) *ModelListState {
+	if len(opts) == 0 {
 		return nil
 	}
 
-	for _, opt := range sessResp.ConfigOptions {
+	for _, opt := range opts {
 		if opt.Select == nil {
 			continue
 		}

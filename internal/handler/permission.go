@@ -49,17 +49,22 @@ func ServePermissionRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the ACP session ID for this ClawBench session
-	pool := ai.GetACPConnectionPool()
-	client := pool.GetClient(agentID)
+	// Look up the ACP connection for this ClawBench session
+	mgr := ai.GetACPConnManager()
+	conn := mgr.GetConn(req.SessionID)
+	if conn == nil {
+		writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotRunning")
+		return
+	}
+
+	client := conn.GetClient()
 	if client == nil {
 		writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotRunning")
 		return
 	}
 
 	// We need the ACP session ID to construct the permission key.
-	// Get it from the pool entry's session mapping.
-	acpSessionID := pool.GetACPSessionID(agentID, req.SessionID)
+	acpSessionID := conn.AcpSID()
 	if acpSessionID == "" {
 		writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotFound")
 		return
