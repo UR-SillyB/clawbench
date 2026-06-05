@@ -173,6 +173,17 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 					payload := map[string]any{
 						"id": event.Tool.ID,
 					}
+					// Include input if provided (ACP tool_call_update completed events
+					// may carry rawInput that was missing from earlier tool_use events)
+					if event.Tool.Input != "" {
+						var input any
+						if json.Unmarshal([]byte(event.Tool.Input), &input) == nil {
+							payload["input"] = input
+						}
+					}
+					if event.Tool.Name != "" {
+						payload["name"] = event.Tool.Name
+					}
 					if event.Tool.Output != "" {
 						payload["output"] = event.Tool.Output
 					}

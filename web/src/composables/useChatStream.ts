@@ -439,6 +439,12 @@ export function useChatStream(options: UseChatStreamOptions) {
       // Find the matching tool_use block and update output/status/done
       const existing = blocks.find(b => b.type === 'tool_use' && b.id === data.id)
       if (existing) {
+        // Update input if provided (ACP tool_call_update completed events
+        // may carry rawInput that was missing from earlier tool_use events)
+        if (data.input && Object.keys(data.input).length > 0) {
+          existing.input = data.input
+        }
+        if (data.name) existing.name = data.name
         if (data.output !== undefined) existing.output = data.output
         if (data.status !== undefined) existing.status = data.status
         existing.done = true

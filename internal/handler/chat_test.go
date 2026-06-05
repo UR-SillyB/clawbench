@@ -2815,3 +2815,94 @@ func TestBuildChatRequest_ContinuedSessionUsesExternalSessionID(t *testing.T) {
 	assert.Equal(t, "pi-cli-session-abc", req.SessionID,
 		"continued session should use inherited external_session_id for --resume")
 }
+
+func TestAccumulateBlock_ACPToolCallUpdateWithInput(t *testing.T) {
+	// Simulate OpenCode ACP task tool flow:
+	// 1. tool_call (pending, rawInput={}) → mapACPToolCall → tool_use event with Input="{}"
+	// 2. tool_call_update (in_progress, rawInput has description/prompt) → mapACPToolCallUpdate → tool_use event with Input
+	// 3. tool_call_update (completed) → mapACPToolCallUpdate → tool_result event with output
+	var blocks []model.ContentBlock
+
+	// Step 1: Initial tool_call (pending, empty rawInput like OpenCode sends for task tool)
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_use",
+		Tool: &ai.ToolCall{Name: "Agent", ID: "call_1", Input: "{}", Done: false},
+	})
+	assert.Len(t, blocks, 1)
+	assert.Equal(t, "Agent", blocks[0].Name)
+	t.Logf("After step 1: Input=%v", blocks[0].Input)
+
+	// Step 2: tool_call_update (in_progress, with rawInput containing description/prompt)
+	inputJSON, _ := json.Marshal(map[string]any{
+		"description":   "Explore project structure",
+		"prompt":        "Explore the codebase thoroughly",
+		"subagent_type": "explore",
+	})
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_use",
+		Tool: &ai.ToolCall{Name: "Agent", ID: "call_1", Input: string(inputJSON), Done: false},
+	})
+
+	// Verify input was updated
+	assert.Len(t, blocks, 1, "should still be 1 block (deduped by ID)")
+	t.Logf("After step 2: Input=%v", blocks[0].Input)
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"],
+		"input description should be updated from tool_call_update")
+	assert.Equal(t, "explore", blocks[0].Input["subagent_type"],
+		"input subagent_type should be updated from tool_call_update")
+
+	// Step 3: tool_result (completed with output)
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_result",
+		Tool: &ai.ToolCall{ID: "call_1", Output: "result text", Status: "success", Done: true},
+	})
+
+	// Verify final state — input should survive tool_result
+	assert.Len(t, blocks, 1)
+	assert.True(t, blocks[0].Done)
+	assert.Equal(t, "success", blocks[0].Status)
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"],
+		"input should still have description after tool_result")
+}
+
+func TestAccumulateBlock_ACPToolResultWithInput(t *testing.T) {
+	// Regression test: ACP tool_call_update (completed) emits tool_result with
+	// rawInput. The tool_result event should update input if it carries input data.
+	// This covers the case where earlier tool_use events didn't carry input
+	// (e.g., due to channel full or ACP agent sending rawInput only in completed update).
+	var blocks []model.ContentBlock
+
+	// Step 1: Initial tool_call (pending, empty rawInput)
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_use",
+		Tool: &ai.ToolCall{Name: "Agent", ID: "call_2", Input: "{}", Done: false},
+	})
+
+	// Step 2: tool_call_update (in_progress, no rawInput — some ACP agents skip this)
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_use",
+		Tool: &ai.ToolCall{Name: "Agent", ID: "call_2", Input: "", Done: false},
+	})
+
+	// Input should still be empty map (not overwritten by empty)
+	assert.Len(t, blocks[0].Input, 0, "input should still be empty after tool_use with no input")
+
+	// Step 3: tool_result (completed with rawInput — ACP completed update carries it)
+	inputJSON, _ := json.Marshal(map[string]any{
+		"description":   "Explore project structure",
+		"prompt":        "Explore the codebase",
+		"subagent_type": "explore",
+	})
+	ai.AccumulateBlock(&blocks, ai.StreamEvent{
+		Type: "tool_result",
+		Tool: &ai.ToolCall{ID: "call_2", Input: string(inputJSON), Output: "result", Status: "success", Done: true},
+	})
+
+	// Verify input was updated from tool_result
+	assert.Len(t, blocks, 1)
+	assert.True(t, blocks[0].Done)
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"],
+		"input should be updated from tool_result when it carries rawInput")
+	assert.Equal(t, "explore", blocks[0].Input["subagent_type"])
+	assert.Equal(t, "result", blocks[0].Output)
+}
