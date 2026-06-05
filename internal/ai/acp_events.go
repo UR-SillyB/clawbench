@@ -220,6 +220,31 @@ func extractInputFromContent(tc acp.SessionUpdateToolCall) map[string]any {
 	return input
 }
 
+// extractInputFromContentUpdate extracts tool input from Content in tool_call_update events.
+// Same logic as extractInputFromContent but works with SessionToolCallUpdate (Title is *string).
+func extractInputFromContentUpdate(tcu acp.SessionToolCallUpdate) map[string]any {
+	input := make(map[string]any)
+	for _, c := range tcu.Content {
+		if c.Terminal != nil {
+			// Terminal content — use title as command
+			if tcu.Title != nil && *tcu.Title != "" {
+				input["command"] = *tcu.Title
+			}
+			return input
+		}
+		if c.Content != nil {
+			cb := c.Content.Content
+			if cb.Text != nil && cb.Text.Text != "" {
+				input["description"] = cb.Text.Text
+			}
+		}
+	}
+	if len(input) == 0 {
+		return nil
+	}
+	return input
+}
+
 // mapACPToolCallUpdate converts an ACP ToolCallUpdate to a StreamEvent.
 func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 	tool := &ToolCall{
@@ -240,6 +265,39 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		}
 	}
 
+	// Extract input from RawInput or Content.
+	// Claude ACP agent sends command info in tool_call_update (not in the initial tool_call),
+	// e.g. raw_input={"command":"ls /tmp","description":"List /tmp contents"}.
+	// We update the tool input so the frontend can display the command.
+	if tcu.RawInput != nil {
+		if inputBytes, err := json.Marshal(tcu.RawInput); err == nil && string(inputBytes) != "{}" {
+			normalized, normErr := normalizeToolInput(inputBytes, map[string]string{
+				"oldString": "old_string",
+				"newString": "new_string",
+				"dirPath":   "path",
+				"cellIndex": "cell_index",
+				"cellType":  "cell_type",
+			})
+			if normErr == nil {
+				tool.Input = string(normalized)
+			} else {
+				tool.Input = string(inputBytes)
+			}
+		}
+	} else if len(tcu.Content) > 0 {
+		input := extractInputFromContentUpdate(tcu)
+		if input != nil {
+			if inputBytes, err := json.Marshal(input); err == nil {
+				tool.Input = string(inputBytes)
+			}
+		}
+	}
+
+	// Also update the title/name if provided (Claude sends title in updates)
+	if tcu.Title != nil && *tcu.Title != "" {
+		tool.Name = extractToolName(*tcu.Title, acp.ToolKindExecute)
+	}
+
 	// Extract human-readable output from RawOutput.
 	// ACP agents return structured output (map[string]any), but the frontend
 	// expects plain text like CLI mode produces. We extract the text content
@@ -254,7 +312,9 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		eventType = "tool_result"
 	}
 
-	slog.Debug("acp: tool_call_update", "tool_call_id", tool.ID, "done", tool.Done, "event_type", eventType, "has_output", tool.Output != "")
+	slog.Debug("acp: tool_call_update", "tool_call_id", tool.ID, "done", tool.Done, "event_type", eventType, "has_output", tool.Output != "",
+		"status", fmt.Sprintf("%v", tcu.Status), "content_count", len(tcu.Content), "title", tcu.Title,
+		"raw_input", fmt.Sprintf("%v", tcu.RawInput))
 
 	return StreamEvent{Type: eventType, Tool: tool}
 }

@@ -68,16 +68,20 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 			if event.Tool.Input != "" {
 				_ = json.Unmarshal([]byte(event.Tool.Input), &input)
 			}
-			if input == nil {
-				input = make(map[string]any)
-			}
 			// Find existing block by tool ID and update, or append new
 			found := false
 			for i := len(*blocks) - 1; i >= 0; i-- {
 				if (*blocks)[i].Type != "tool_use" || (*blocks)[i].ID != event.Tool.ID {
 					continue
 				}
-				(*blocks)[i].Input = input
+				// Only update input if new input has content (avoid overwriting with empty)
+				if input != nil && len(input) > 0 {
+					(*blocks)[i].Input = input
+				}
+				// Update name if provided (ACP agents may send name in updates)
+				if event.Tool.Name != "" {
+					(*blocks)[i].Name = event.Tool.Name
+				}
 				(*blocks)[i].Done = event.Tool.Done
 				if event.Tool.Output != "" {
 					(*blocks)[i].Output = event.Tool.Output
@@ -89,6 +93,9 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 				break
 			}
 			if !found {
+				if input == nil {
+					input = make(map[string]any)
+				}
 				*blocks = append(*blocks, model.ContentBlock{
 					Type:   "tool_use",
 					Name:   event.Tool.Name,
