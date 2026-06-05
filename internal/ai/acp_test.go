@@ -56,6 +56,74 @@ func TestMapACPToolCall_NoTitleUsesKind(t *testing.T) {
 	assert.Equal(t, "Read", event.Tool.Name)
 }
 
+func TestMapACPToolCall_ContentWithTerminal(t *testing.T) {
+	// Simulates Claude ACP agent sending Terminal tool call with Content instead of RawInput
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("tc-term-1"),
+		Title:      "Terminal",
+		Kind:       acp.ToolKindExecute,
+		Content: []acp.ToolCallContent{
+			{
+				Terminal: &acp.ToolCallContentTerminal{
+					TerminalId: "term-1",
+					Type:       "terminal",
+				},
+			},
+		},
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "Bash", event.Tool.Name)
+	assert.Contains(t, event.Tool.Input, "command")
+	assert.Contains(t, event.Tool.Input, "Terminal")
+}
+
+func TestMapACPToolCall_ContentWithText(t *testing.T) {
+	// Simulates ACP tool call with text content block but no RawInput
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("tc-text-1"),
+		Title:      "Bash",
+		Kind:       acp.ToolKindExecute,
+		Content: []acp.ToolCallContent{
+			{
+				Content: &acp.ToolCallContentContent{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "Run a command"},
+					},
+					Type: "content",
+				},
+			},
+		},
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "Bash", event.Tool.Name)
+	assert.Contains(t, event.Tool.Input, "description")
+	assert.Contains(t, event.Tool.Input, "Run a command")
+}
+
+func TestMapACPToolCall_RawInputPreferredOverContent(t *testing.T) {
+	// When both RawInput and Content exist, RawInput takes precedence
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("tc-both"),
+		Title:      "Bash",
+		Kind:       acp.ToolKindExecute,
+		RawInput:   map[string]any{"command": "ls -la", "description": "List files"},
+		Content: []acp.ToolCallContent{
+			{
+				Terminal: &acp.ToolCallContentTerminal{
+					TerminalId: "term-1",
+					Type:       "terminal",
+				},
+			},
+		},
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "Bash", event.Tool.Name)
+	assert.Contains(t, event.Tool.Input, "ls -la")
+}
+
 // --- mapACPToolCallUpdate tests ---
 
 func TestMapACPToolCallUpdate_Completed(t *testing.T) {
@@ -153,6 +221,24 @@ func TestExtractToolName_PrefixOrdering(t *testing.T) {
 	assert.Equal(t, "ExitPlanMode", extractToolName("ExitPlanMode", acp.ToolKindSwitchMode))
 }
 
+func TestExtractToolName_LowerCaseAliases(t *testing.T) {
+	// Lowercase single-word titles should map to canonical PascalCase
+	assert.Equal(t, "Bash", extractToolName("bash", acp.ToolKindExecute))
+	assert.Equal(t, "Bash", extractToolName("terminal", acp.ToolKindExecute))
+	assert.Equal(t, "Bash", extractToolName("shell", acp.ToolKindExecute))
+	assert.Equal(t, "Read", extractToolName("read", acp.ToolKindRead))
+	assert.Equal(t, "Write", extractToolName("write", acp.ToolKindEdit))
+	assert.Equal(t, "Edit", extractToolName("edit", acp.ToolKindEdit))
+	assert.Equal(t, "Glob", extractToolName("glob", acp.ToolKindSearch))
+	assert.Equal(t, "Grep", extractToolName("grep", acp.ToolKindSearch))
+	assert.Equal(t, "LS", extractToolName("ls", acp.ToolKindOther))
+}
+
+func TestExtractToolName_TerminalPrefix(t *testing.T) {
+	// "Terminal" should map to "Bash" via acpToolNamePatterns
+	assert.Equal(t, "Bash", extractToolName("Terminal", acp.ToolKindExecute))
+}
+
 // --- mapACPError tests ---
 
 func TestMapACPError_ParseError(t *testing.T) {
@@ -231,35 +317,27 @@ func TestMapACPSessionUpdate_PlanUpdate(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, nil)
 
-	// Assert exactly 1 event on channel
-	select {
-	case event := <-ch:
-		assert.Equal(t, "plan_update", event.Type)
-		require.NotNil(t, event.Plan)
-		assert.Len(t, event.Plan.Entries, 3)
+	// Drain events, skipping raw_output, expect exactly 1 plan_update
+	events := drainACPEvents(ch, 1)
+	require.Len(t, events, 1)
+	assert.Equal(t, "plan_update", events[0].Type)
+	require.NotNil(t, events[0].Plan)
+	assert.Len(t, events[0].Plan.Entries, 3)
 
-		// Verify each entry's fields
-		assert.Equal(t, "Read project files", event.Plan.Entries[0].Content)
-		assert.Equal(t, "high", event.Plan.Entries[0].Priority)
-		assert.Equal(t, "completed", event.Plan.Entries[0].Status)
+	// Verify each entry's fields
+	assert.Equal(t, "Read project files", events[0].Plan.Entries[0].Content)
+	assert.Equal(t, "high", events[0].Plan.Entries[0].Priority)
+		assert.Equal(t, "completed", events[0].Plan.Entries[0].Status)
 
-		assert.Equal(t, "Implement feature", event.Plan.Entries[1].Content)
-		assert.Equal(t, "high", event.Plan.Entries[1].Priority)
-		assert.Equal(t, "in_progress", event.Plan.Entries[1].Status)
+	assert.Equal(t, "Implement feature", events[0].Plan.Entries[1].Content)
+	assert.Equal(t, "high", events[0].Plan.Entries[1].Priority)
+	assert.Equal(t, "in_progress", events[0].Plan.Entries[1].Status)
 
-		assert.Equal(t, "Write tests", event.Plan.Entries[2].Content)
-		assert.Equal(t, "medium", event.Plan.Entries[2].Priority)
-		assert.Equal(t, "pending", event.Plan.Entries[2].Status)
-	default:
-		t.Fatal("expected plan_update event on channel")
-	}
+	assert.Equal(t, "Write tests", events[0].Plan.Entries[2].Content)
+	assert.Equal(t, "medium", events[0].Plan.Entries[2].Priority)
+	assert.Equal(t, "pending", events[0].Plan.Entries[2].Status)
 
-	// Assert no extra events
-	select {
-	case <-ch:
-		t.Fatal("expected only one event")
-	default:
-	}
+	assertNoMoreACPEvents(ch, t)
 }
 
 func TestNewACPBackend_InvalidTransport(t *testing.T) {
@@ -320,6 +398,48 @@ func TestMapACPSessionUpdate_AgentMessageChunk(t *testing.T) {
 	assert.Equal(t, "hello world", events[1].Content)
 
 	assertNoMoreACPEvents(ch, t)
+}
+
+func TestMapACPSessionUpdate_RawOutputEmitted(t *testing.T) {
+	// Every ACP notification should emit a raw_output event for debugging/storage
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	update := acp.SessionUpdate{
+		AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+			Content: acp.ContentBlock{
+				Text: &acp.ContentBlockText{Text: "hello"},
+			},
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, nil)
+
+	// Drain all events including raw_output
+	var rawEvents []StreamEvent
+	var otherEvents []StreamEvent
+	for {
+		select {
+		case event := <-ch:
+			if event.Type == "raw_output" {
+				rawEvents = append(rawEvents, event)
+			} else {
+				otherEvents = append(otherEvents, event)
+			}
+		default:
+			goto done
+		}
+	}
+done:
+
+	// Should have exactly 1 raw_output event
+	assert.Len(t, rawEvents, 1, "expected exactly 1 raw_output event")
+	if len(rawEvents) > 0 {
+		assert.Contains(t, rawEvents[0].RawOutput, "agent_message_chunk")
+	}
+
+	// Other events should be present (thinking_done + content)
+	assert.Len(t, otherEvents, 2)
 }
 
 func TestMapACPSessionUpdate_AgentMessageChunk_NilText(t *testing.T) {
@@ -1017,26 +1137,40 @@ func TestTruncateToolOutput_Empty(t *testing.T) {
 
 // --- ACP test helpers ---
 
-// drainACPEvents reads exactly count events from ch, failing the test if fewer are available.
+// drainACPEvents reads exactly count non-raw_output events from ch, skipping raw_output events.
+// It reads up to count*2 events to account for interleaved raw_output events.
 func drainACPEvents(ch chan StreamEvent, count int) []StreamEvent {
 	events := make([]StreamEvent, 0, count)
-	for range count {
+	maxReads := count * 3 // allow for interleaved raw_output events
+	for range maxReads {
 		select {
 		case event := <-ch:
+			if event.Type == "raw_output" {
+				continue // skip debug raw output events
+			}
 			events = append(events, event)
+			if len(events) == count {
+				return events
+			}
 		default:
-			// Return what we have; caller will assert length
+			return events
 		}
 	}
 	return events
 }
 
-// assertNoMoreACPEvents fails the test if there are pending events on ch.
+// assertNoMoreACPEvents fails the test if there are pending non-raw_output events on ch.
 func assertNoMoreACPEvents(ch chan StreamEvent, t *testing.T) {
 	t.Helper()
-	select {
-	case <-ch:
-		t.Fatal("expected no more events on channel")
-	default:
+	for {
+		select {
+		case event := <-ch:
+			if event.Type == "raw_output" {
+				continue // skip debug raw output events
+			}
+			t.Fatalf("expected no more events on channel, got %q", event.Type)
+		default:
+			return
+		}
 	}
 }

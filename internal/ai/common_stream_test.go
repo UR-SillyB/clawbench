@@ -94,3 +94,42 @@ func TestNormalizeToolInput_AllPathMappings(t *testing.T) {
 	assert.Nil(t, parsed["dirPath"], "dirPath should be removed")
 	assert.Nil(t, parsed["oldString"], "oldString should be removed")
 }
+
+func TestNormalizeToolInput_CmdToCommand(t *testing.T) {
+	// "cmd" should be normalized to "command" via default mapping
+	input := json.RawMessage(`{"cmd":"ls -la","description":"List files"}`)
+	norm, err := normalizeToolInput(input, nil)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(norm, &parsed))
+
+	assert.Equal(t, "ls -la", parsed["command"], "cmd should be remapped to command")
+	assert.Nil(t, parsed["cmd"], "cmd key should be removed")
+	assert.Equal(t, "List files", parsed["description"])
+}
+
+func TestNormalizeToolInput_ExecToCommand(t *testing.T) {
+	// "exec" should be normalized to "command" via default mapping
+	input := json.RawMessage(`{"exec":"echo hello"}`)
+	norm, err := normalizeToolInput(input, nil)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(norm, &parsed))
+
+	assert.Equal(t, "echo hello", parsed["command"], "exec should be remapped to command")
+	assert.Nil(t, parsed["exec"], "exec key should be removed")
+}
+
+func TestNormalizeToolInput_AlreadyHasCommand(t *testing.T) {
+	// If input already has "command", no remapping needed
+	input := json.RawMessage(`{"command":"git status"}`)
+	norm, err := normalizeToolInput(input, nil)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(norm, &parsed))
+
+	assert.Equal(t, "git status", parsed["command"])
+}

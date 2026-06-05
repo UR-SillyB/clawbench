@@ -697,37 +697,101 @@ func TestClawBenchACPClient_WriteTextFile_PathValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "not under allowed roots")
 }
 
-// --- Terminal stubs tests ---
+// --- Terminal tests ---
 
-func TestClawBenchACPClient_CreateTerminal_NotSupported(t *testing.T) {
+func TestClawBenchACPClient_CreateTerminal_EchoCommand(t *testing.T) {
 	c := NewClawBenchACPClient()
-	_, err := c.CreateTerminal(context.Background(), acp.CreateTerminalRequest{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "terminal not supported")
+	resp, err := c.CreateTerminal(context.Background(), acp.CreateTerminalRequest{
+		Command: "echo hello",
+	})
+	assert.NoError(t, err)
+	assert.NotEmpty(t, resp.TerminalId)
+
+	// Wait for command to complete
+	exitResp, err := c.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{
+		TerminalId: resp.TerminalId,
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, exitResp.ExitCode)
+	assert.Equal(t, 0, *exitResp.ExitCode)
+
+	// Get output
+	outResp, err := c.TerminalOutput(context.Background(), acp.TerminalOutputRequest{
+		TerminalId: resp.TerminalId,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, outResp.Output, "hello")
+	assert.NotNil(t, outResp.ExitStatus)
+	assert.NotNil(t, outResp.ExitStatus.ExitCode)
+	assert.Equal(t, 0, *outResp.ExitStatus.ExitCode)
 }
 
-func TestClawBenchACPClient_TerminalOutput_NotSupported(t *testing.T) {
+func TestClawBenchACPClient_CreateTerminal_FailingCommand(t *testing.T) {
 	c := NewClawBenchACPClient()
-	_, err := c.TerminalOutput(context.Background(), acp.TerminalOutputRequest{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "terminal not supported")
+	resp, err := c.CreateTerminal(context.Background(), acp.CreateTerminalRequest{
+		Command: "exit 42",
+	})
+	assert.NoError(t, err)
+
+	exitResp, err := c.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{
+		TerminalId: resp.TerminalId,
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, exitResp.ExitCode)
+	assert.Equal(t, 42, *exitResp.ExitCode)
 }
 
-func TestClawBenchACPClient_WaitForTerminalExit_NotSupported(t *testing.T) {
+func TestClawBenchACPClient_CreateTerminal_OutputByteLimit(t *testing.T) {
 	c := NewClawBenchACPClient()
-	_, err := c.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{})
+	limit := 10
+	resp, err := c.CreateTerminal(context.Background(), acp.CreateTerminalRequest{
+		Command:         "echo abcdefghijklmnopqrstuvwxyz",
+		OutputByteLimit: &limit,
+	})
+	assert.NoError(t, err)
+
+	_, _ = c.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{
+		TerminalId: resp.TerminalId,
+	})
+
+	outResp, err := c.TerminalOutput(context.Background(), acp.TerminalOutputRequest{
+		TerminalId: resp.TerminalId,
+	})
+	assert.NoError(t, err)
+	assert.LessOrEqual(t, len(outResp.Output), limit)
+	assert.True(t, outResp.Truncated)
+}
+
+func TestClawBenchACPClient_TerminalOutput_NotFound(t *testing.T) {
+	c := NewClawBenchACPClient()
+	_, err := c.TerminalOutput(context.Background(), acp.TerminalOutputRequest{
+		TerminalId: "nonexistent",
+	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "terminal not supported")
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestClawBenchACPClient_WaitForTerminalExit_NotFound(t *testing.T) {
+	c := NewClawBenchACPClient()
+	_, err := c.WaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{
+		TerminalId: "nonexistent",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestClawBenchACPClient_KillTerminal_NoError(t *testing.T) {
 	c := NewClawBenchACPClient()
-	_, err := c.KillTerminal(context.Background(), acp.KillTerminalRequest{})
+	_, err := c.KillTerminal(context.Background(), acp.KillTerminalRequest{
+		TerminalId: "nonexistent",
+	})
 	assert.NoError(t, err)
 }
 
 func TestClawBenchACPClient_ReleaseTerminal_NoError(t *testing.T) {
 	c := NewClawBenchACPClient()
-	_, err := c.ReleaseTerminal(context.Background(), acp.ReleaseTerminalRequest{})
+	_, err := c.ReleaseTerminal(context.Background(), acp.ReleaseTerminalRequest{
+		TerminalId: "nonexistent",
+	})
 	assert.NoError(t, err)
 }

@@ -76,7 +76,7 @@ func normalizeToolName(toolName string) string {
 		return "Write"
 	case "edit_file", "replace", "edit":
 		return "Edit"
-	case "shell", "run_command", "bash", "exec_shell":
+	case "shell", "run_command", "bash", "exec_shell", "terminal":
 		return "Bash"
 	case "list_files", "list_directory", "ls", "list_dir":
 		return "LS"
@@ -129,6 +129,8 @@ func normalizeToolInput(rawInput []byte, pathMappings map[string]string) ([]byte
 	// for the same source key (e.g., filePath → custom_path).
 	defaultMappings := map[string]string{
 		"filePath": "file_path",
+		"cmd":      "command",
+		"exec":     "command",
 	}
 
 	// Merge: caller pathMappings take precedence over defaults.

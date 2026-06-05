@@ -635,7 +635,10 @@ func executeStreamRun(
 			}
 			// Capture raw output for debugging (not forwarded to SSE)
 			if event.Type == "raw_output" {
-				rawOutput = event.RawOutput
+				if rawOutput != "" {
+					rawOutput += "\n"
+				}
+				rawOutput += event.RawOutput
 				continue
 			}
 			// Early capture of external session ID.
@@ -902,8 +905,11 @@ func finalizeStreamRun(
 			if !ok {
 				goto saveRaw
 			}
-			if event.Type == "raw_output" && rawOutput == "" {
-				rawOutput = event.RawOutput
+			if event.Type == "raw_output" {
+				if rawOutput != "" {
+					rawOutput += "\n"
+				}
+				rawOutput += event.RawOutput
 			}
 		default:
 			goto saveRaw

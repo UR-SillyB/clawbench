@@ -18,6 +18,13 @@ import (
 // If conn is non-nil, mode/config/thinking cache updates are applied to the connection
 // so that re-emitted SSE events reflect the latest state.
 func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx context.Context, conn *ACPConn) { //nolint:gocognit,gocyclo,revive,unparam // ACP protocol has many event types, each branch is simple; ctx position follows ACP SDK convention; ctx reserved for future use
+	// Emit raw_output event for each ACP notification so the handler can
+	// persist the original protocol data to ai_raw_responses for debugging.
+	// This mirrors how CLIBackend collects raw stdout lines.
+	if rawJSON, err := json.Marshal(update); err == nil {
+		forwardACPEvent(ch, StreamEvent{Type: "raw_output", RawOutput: string(rawJSON)})
+	}
+
 	switch {
 	case update.AgentMessageChunk != nil:
 		// When the agent transitions from thinking to content output, emit
@@ -171,9 +178,46 @@ func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
 				tool.Input = string(inputBytes)
 			}
 		}
+	} else if len(tc.Content) > 0 {
+		// Some ACP agents (e.g., Claude) use Content blocks instead of RawInput
+		// for tool calls like Terminal/Bash. Extract input from Content fields.
+		input := extractInputFromContent(tc)
+		if input != nil {
+			if inputBytes, err := json.Marshal(input); err == nil {
+				tool.Input = string(inputBytes)
+			}
+		}
 	}
 
 	return StreamEvent{Type: "tool_use", Tool: tool}
+}
+
+// extractInputFromContent extracts tool input parameters from ACP Content blocks.
+// Terminal content blocks contain the command being executed; text content blocks
+// may contain the description or command text.
+func extractInputFromContent(tc acp.SessionUpdateToolCall) map[string]any {
+	input := make(map[string]any)
+	for _, c := range tc.Content {
+		if c.Terminal != nil {
+			// Terminal content — the command text is typically in the title
+			// For Terminal/Bash tools, use the tool call title as the command
+			if tc.Title != "" {
+				input["command"] = tc.Title
+			}
+			return input
+		}
+		if c.Content != nil {
+			// Text content block — extract text as description
+			cb := c.Content.Content
+			if cb.Text != nil && cb.Text.Text != "" {
+				input["description"] = cb.Text.Text
+			}
+		}
+	}
+	if len(input) == 0 {
+		return nil
+	}
+	return input
 }
 
 // mapACPToolCallUpdate converts an ACP ToolCallUpdate to a StreamEvent.
@@ -340,6 +384,14 @@ func extractArrayOutput(arr []any) string {
 // then fall back to the title itself.
 func extractToolName(title string, kind acp.ToolKind) string {
 	if title != "" {
+		// Fast path: case-insensitive alias lookup for single-word titles.
+		// Some ACP agents send lowercase names (e.g. "bash", "terminal")
+		// while the frontend expects PascalCase ("Bash").
+		if !strings.Contains(title, " ") {
+			if canonical, ok := acpLowerAlias[strings.ToLower(title)]; ok {
+				return canonical
+			}
+		}
 		// Try matching title against known canonical tool name prefixes.
 		// Longer/more-specific prefixes must appear before shorter ones
 		// (e.g. "MultiEdit" before "Edit", "WebSearch" before "Web").
@@ -360,6 +412,23 @@ func extractToolName(title string, kind acp.ToolKind) string {
 		return canonical
 	}
 	return string(kind)
+}
+
+// acpLowerAlias maps lowercase single-word tool titles to canonical PascalCase names.
+// Used for case-insensitive matching of titles like "bash" → "Bash", "terminal" → "Bash".
+var acpLowerAlias = map[string]string{
+	"bash":      "Bash",
+	"terminal":  "Bash",
+	"shell":     "Bash",
+	"read":      "Read",
+	"write":     "Write",
+	"edit":      "Edit",
+	"glob":      "Glob",
+	"grep":      "Grep",
+	"ls":        "LS",
+	"list":      "LS",
+	"agent":     "Agent",
+	"skill":     "Skill",
 }
 
 // acpToolNamePatterns maps ACP tool title prefixes to canonical tool names.
@@ -408,6 +477,7 @@ var acpToolNamePatterns = []struct{ prefix, canonical string }{
 	{"Write", "Write"},
 	{"Edit", "Edit"},
 	{"Bash", "Bash"},
+	{"Terminal", "Bash"},
 	{"Glob", "Glob"},
 	{"Grep", "Grep"},
 	{"LS", "LS"},
