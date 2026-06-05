@@ -308,8 +308,8 @@ function startThinkingCollapse() {
     collapsingThinking.value = newCollapsing
     collapsingMaxHeight.value = newMaxHeights
 
-    // Next frame: transition to collapsed height
-    requestAnimationFrame(() => {
+    // Delay before starting collapse animation so user can read the thinking output
+    setTimeout(() => {
       const updatedMaxHeights = {}
       Object.keys(newCollapsing).forEach(idx => {
         updatedMaxHeights[idx] = 28 // header-only height
@@ -321,7 +321,7 @@ function startThinkingCollapse() {
         collapsingThinking.value = {}
         collapsingMaxHeight.value = {}
       }, 400) // match CSS transition duration
-    })
+    }, 3000)
   }
 }
 
@@ -463,7 +463,8 @@ watch(() => props.blocks.filter(b => b.type === 'thinking' && b.done).map(b => b
     }
     Object.assign(collapsingThinking.value, newCollapsing)
     Object.assign(collapsingMaxHeight.value, newMaxHeights)
-    requestAnimationFrame(() => {
+    // Delay before starting collapse animation so user can read the thinking output
+    setTimeout(() => {
       const updatedMaxHeights = {}
       Object.keys(newCollapsing).forEach(idx => {
         updatedMaxHeights[idx] = 28
@@ -475,7 +476,7 @@ watch(() => props.blocks.filter(b => b.type === 'thinking' && b.done).map(b => b
           delete collapsingMaxHeight.value[idx]
         }
       }, 400)
-    })
+    }, 3000)
   }
 })
 

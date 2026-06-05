@@ -121,8 +121,7 @@ const sessionCount = computed(() => store.state.sessionCount)
 const sessionMaxCount = computed(() => store.state.sessionMaxCount)
 const sessionPct = computed(() => sessionMaxCount.value > 0 ? Math.min((sessionCount.value / sessionMaxCount.value) * 100, 100) : 0)
 const sessionBarColor = computed(() => {
-  if (sessionPct.value >= 80) return '#ef4444'
-  if (sessionPct.value >= 60) return '#f59e0b'
+  if (sessionPct.value >= 80) return '#f59e0b'
   return 'var(--accent-color, #0066cc)'
 })
 
