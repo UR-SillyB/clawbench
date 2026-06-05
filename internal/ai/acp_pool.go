@@ -515,10 +515,88 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			c.mu.Unlock()
 			return ctx.Err()
 		}
-		return fmt.Errorf("acp: prompt: %w", err)
+
+		// Peer disconnected — collect crash diagnostics (stderr, exit code)
+		// and mark the connection as dead for respawn on retry.
+		diag := c.collectCrashDiagnostics()
+		c.mu.Lock()
+		c.alive = false
+		c.mu.Unlock()
+
+		slog.Error("acp conn: prompt failed (peer disconnected)",
+			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID,
+			"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+
+		return fmt.Errorf("acp: prompt: %w%s", err, diag.String())
 	}
 
 	return nil
+}
+
+// crashDiagnostics holds crash info collected after an agent process exits unexpectedly.
+type crashDiagnostics struct {
+	ExitCode    int
+	StderrTail  string // last ~2KB of stderr
+	WasAlive    bool   // was conn.Done() already closed?
+}
+
+func (d crashDiagnostics) String() string {
+	if d.ExitCode == 0 && d.StderrTail == "" {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if d.ExitCode != 0 {
+		parts = append(parts, fmt.Sprintf("exit_code=%d", d.ExitCode))
+	}
+	if d.StderrTail != "" {
+		parts = append(parts, fmt.Sprintf("stderr: %s", d.StderrTail))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// collectCrashDiagnostics gathers exit code and stderr from the crashed agent process.
+// Must be called after Prompt() returns a peer-disconnect error.
+func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
+	var diag crashDiagnostics
+
+	c.mu.Lock()
+	cmd := c.cmd
+	conn := c.conn
+	c.mu.Unlock()
+
+	// Check if the connection's Done channel is closed (confirming peer disconnect)
+	if conn != nil {
+		select {
+		case <-conn.Done():
+			diag.WasAlive = false
+		default:
+			diag.WasAlive = true
+		}
+	}
+
+	if cmd == nil || cmd.Process == nil {
+		return diag
+	}
+
+	// Try to get the exit code (non-blocking: process should already be dead)
+	if state, err := cmd.Process.Wait(); err == nil {
+		diag.ExitCode = state.ExitCode()
+	}
+
+	// Extract stderr from the strings.Builder
+	c.mu.Lock()
+	if c.cmd != nil {
+		if sb, ok := c.cmd.Stderr.(*strings.Builder); ok {
+			stderr := sb.String()
+			if len(stderr) > 2048 {
+				stderr = "..." + stderr[len(stderr)-2048:]
+			}
+			diag.StderrTail = stderr
+		}
+	}
+	c.mu.Unlock()
+
+	return diag
 }
 
 // CancelTurn cancels the current in-progress prompt turn.

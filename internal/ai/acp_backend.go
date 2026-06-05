@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -44,6 +46,7 @@ func (b *ACPBackend) Name() string {
 // ExecuteStream runs the ACP agent and returns a channel of streaming events.
 //
 // Flow: GetOrCreateConn → (LoadSession or NewSession) → emit cached state → Prompt
+// On peer disconnect during Prompt, automatically retries once after respawn + LoadSession.
 func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocognit,gocyclo // complex ACP protocol handler, refactoring would reduce readability
 	ch := make(chan StreamEvent, streamChanSize)
 
@@ -84,83 +87,7 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		acpSessionID := conn.AcpSID()
 
 		// Step 2: Handle new vs recovered session
-		if isNew {
-			// New session — emit session_capture for handler to persist ACP session ID
-			forwardACPEvent(ch, StreamEvent{Type: "session_capture", Content: acpSessionID})
-
-			// Extract and cache mode/config/thinking effort state from NewSessionResponse
-			if sessResp := conn.GetAndClearNewSessionResp(); sessResp != nil {
-				if modeState := extractACPModeState(sessResp); modeState != nil {
-					conn.SetCachedModeState(modeState)
-				}
-				if configState := extractACPConfigOptions(sessResp); configState != nil {
-					conn.SetCachedConfigState(configState)
-				}
-				if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-					conn.SetCachedThinkingEffortState(effortState)
-				}
-				if modelList := extractACPModelList(sessResp); modelList != nil {
-					conn.SetCachedModelListState(modelList)
-				}
-			}
-		} else {
-			// Recovered session (via LoadSession) — update cached state
-			if loadResp := conn.GetAndClearLoadSessionResp(); loadResp != nil {
-				if modeState := extractACPModeStateFromLoad(loadResp); modeState != nil {
-					conn.SetCachedModeState(modeState)
-				}
-				if configState := extractACPConfigOptionsFromLoad(loadResp); configState != nil {
-					conn.SetCachedConfigState(configState)
-				}
-				if effortState := extractACPThinkingEffortFromLoad(loadResp); effortState != nil {
-					conn.SetCachedThinkingEffortState(effortState)
-				}
-				if modelList := extractACPModelListFromLoad(loadResp); modelList != nil {
-					conn.SetCachedModelListState(modelList)
-				}
-			}
-		}
-
-		// Always re-emit cached mode_update and config_update for every stream.
-		// The frontend resets these states on page load / session switch, so
-		// they need to be repopulated even for resumed ACP sessions.
-		// These events are idempotent — re-emitting them is harmless.
-		if modeState := conn.GetCachedModeState(); modeState != nil {
-			slog.Info("acp: re-emitting cached mode_update", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
-			forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
-		}
-		if configState := conn.GetCachedConfigState(); configState != nil {
-			slog.Info("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
-			forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
-		}
-		if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
-			slog.Info("acp: re-emitting cached thinking_effort_update", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
-			forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
-		}
-		if modelListState := conn.GetCachedModelListState(); modelListState != nil {
-			slog.Info("acp: re-emitting cached model_list_update", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
-			forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
-		}
-
-		// Emit commands_update if cached from available_commands_update.
-		// Also re-emitted for every stream to repopulate frontend state.
-		if client := conn.GetClient(); client != nil {
-			if cmds := client.GetCommands(); len(cmds) > 0 {
-				infos := make([]AvailableCommandInfo, 0, len(cmds))
-				for _, c := range cmds {
-					info := AvailableCommandInfo{
-						Name:        c.Name,
-						Description: c.Description,
-					}
-					if c.Input != nil && c.Input.Unstructured != nil {
-						info.InputHint = c.Input.Unstructured.Hint
-					}
-					infos = append(infos, info)
-				}
-				slog.Info("acp: re-emitting cached commands_update", "count", len(infos))
-				forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
-			}
-		}
+		b.emitSessionAndCacheState(conn, isNew, ch)
 
 		// Step 3: Send prompt
 		promptBlocks := b.buildPromptBlocks(req)
@@ -171,6 +98,33 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				forwardACPEvent(ch, StreamEvent{Type: "done"})
 				return
 			}
+
+			// If the error is a peer disconnect, retry once after respawn + LoadSession.
+			if isACPPeerDisconnected(err) {
+				slog.Warn("acp: peer disconnected during prompt, retrying after respawn", "session_id", req.SessionID, "acp_sid", acpSessionID, "error", err)
+				conn2, isNew2, retryErr := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
+				if retryErr != nil {
+					forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v (retry respawn failed: %v)", err, retryErr), Reason: ReasonBackendExit})
+					return
+				}
+				// Re-emit session/cache state for the respawned connection
+				b.emitSessionAndCacheState(conn2, isNew2, ch)
+				promptBlocks2 := b.buildPromptBlocks(req)
+				retryPromptErr := conn2.Prompt(ctx, promptBlocks2, ch, req)
+				if retryPromptErr != nil {
+					if ctx.Err() != nil {
+						slog.Info("acp: prompt cancelled after retry", "session_id", req.SessionID)
+						forwardACPEvent(ch, StreamEvent{Type: "done"})
+						return
+					}
+					forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v (retry also failed: %v)", err, retryPromptErr), Reason: ReasonBackendExit})
+					return
+				}
+				// Retry succeeded
+				forwardACPEvent(ch, StreamEvent{Type: "done"})
+				return
+			}
+
 			forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v", err), Reason: ReasonBackendExit})
 			return
 		}
@@ -180,6 +134,111 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 	}()
 
 	return ch, nil
+}
+
+// emitSessionAndCacheState emits session_capture + cached ACP state events to the stream channel.
+func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan<- StreamEvent) {
+	acpSessionID := conn.AcpSID()
+
+	if isNew {
+		// New session — emit session_capture for handler to persist ACP session ID
+		forwardACPEvent(ch, StreamEvent{Type: "session_capture", Content: acpSessionID})
+
+		// Extract and cache mode/config/thinking effort state from NewSessionResponse
+		if sessResp := conn.GetAndClearNewSessionResp(); sessResp != nil {
+			if modeState := extractACPModeState(sessResp); modeState != nil {
+				conn.SetCachedModeState(modeState)
+			}
+			if configState := extractACPConfigOptions(sessResp); configState != nil {
+				conn.SetCachedConfigState(configState)
+			}
+			if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
+				conn.SetCachedThinkingEffortState(effortState)
+			}
+			if modelList := extractACPModelList(sessResp); modelList != nil {
+				conn.SetCachedModelListState(modelList)
+			}
+		}
+	} else {
+		// Recovered session (via LoadSession) — update cached state
+		if loadResp := conn.GetAndClearLoadSessionResp(); loadResp != nil {
+			if modeState := extractACPModeStateFromLoad(loadResp); modeState != nil {
+				conn.SetCachedModeState(modeState)
+			}
+			if configState := extractACPConfigOptionsFromLoad(loadResp); configState != nil {
+				conn.SetCachedConfigState(configState)
+			}
+			if effortState := extractACPThinkingEffortFromLoad(loadResp); effortState != nil {
+				conn.SetCachedThinkingEffortState(effortState)
+			}
+			if modelList := extractACPModelListFromLoad(loadResp); modelList != nil {
+				conn.SetCachedModelListState(modelList)
+			}
+		}
+	}
+
+	// Always re-emit cached mode_update and config_update for every stream.
+	// The frontend resets these states on page load / session switch, so
+	// they need to be repopulated even for resumed ACP sessions.
+	// These events are idempotent — re-emitting them is harmless.
+	if modeState := conn.GetCachedModeState(); modeState != nil {
+		slog.Info("acp: re-emitting cached mode_update", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
+	}
+	if configState := conn.GetCachedConfigState(); configState != nil {
+		slog.Info("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
+		forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
+	}
+	if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
+		slog.Info("acp: re-emitting cached thinking_effort_update", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
+		forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
+	}
+	if modelListState := conn.GetCachedModelListState(); modelListState != nil {
+		slog.Info("acp: re-emitting cached model_list_update", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
+		forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
+	}
+
+	// Emit commands_update if cached from available_commands_update.
+	// Also re-emitted for every stream to repopulate frontend state.
+	if client := conn.GetClient(); client != nil {
+		if cmds := client.GetCommands(); len(cmds) > 0 {
+			infos := make([]AvailableCommandInfo, 0, len(cmds))
+			for _, c := range cmds {
+				info := AvailableCommandInfo{
+					Name:        c.Name,
+					Description: c.Description,
+				}
+				if c.Input != nil && c.Input.Unstructured != nil {
+					info.InputHint = c.Input.Unstructured.Hint
+				}
+				infos = append(infos, info)
+			}
+			slog.Info("acp: re-emitting cached commands_update", "count", len(infos))
+			forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
+		}
+	}
+}
+
+// isACPPeerDisconnected checks whether the error is an ACP peer-disconnect error
+// (code -32603 with "peer disconnected" in the data). These errors are retryable
+// because the agent process crashed and can be respawned + LoadSession recovered.
+func isACPPeerDisconnected(err error) bool {
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) {
+		// Check wrapped errors by string matching as fallback
+		return strings.Contains(err.Error(), "peer disconnected")
+	}
+	if reqErr.Code != -32603 {
+		return false
+	}
+	// Check data field for "peer disconnected"
+	if dataMap, ok := reqErr.Data.(map[string]any); ok {
+		if errMsg, ok := dataMap["error"].(string); ok && strings.Contains(errMsg, "peer disconnected") {
+			return true
+		}
+	}
+	// Fallback: check the full error string
+	return strings.Contains(reqErr.Error(), "peer disconnected")
 }
 
 // buildPromptBlocks constructs ACP ContentBlock list from the chat request.
