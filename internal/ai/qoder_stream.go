@@ -17,7 +17,7 @@ func buildQoderStreamArgs(req ChatRequest) []string {
 		args = append(args, "--cwd", req.WorkDir)
 	}
 	args = append(args, "--dangerously-skip-permissions",
-		"--disallowed-tools", "CronCreate,CronDelete,CronList")
+		"--disallowed-tools", "CronCreate,CronDelete,CronList,AskUserQuestion")
 
 	if req.SystemPrompt != "" {
 		args = append(args, "--system-prompt", req.SystemPrompt)

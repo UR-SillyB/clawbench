@@ -81,7 +81,7 @@ func TestBuildQoderStreamArgs_DisallowedTools(t *testing.T) {
 		SessionID: "550e8400-e29b-41d4-a716-446655440000",
 	}
 	args := buildQoderStreamArgs(req)
-	assertArg(t, args, "--disallowed-tools", "CronCreate,CronDelete,CronList")
+	assertArg(t, args, "--disallowed-tools", "CronCreate,CronDelete,CronList,AskUserQuestion")
 }
 
 func TestBuildQoderStreamArgs_NoWorkDir(t *testing.T) {
