@@ -218,6 +218,78 @@ func TestAccumulateBlock_ToolUseMalformedJSON(t *testing.T) {
 	assert.Empty(t, blocks[0].Input, "malformed JSON should produce empty input map")
 }
 
+func TestAccumulateBlock_ACPToolCallFlow(t *testing.T) {
+	// Simulate the ACP tool_call flow observed in message 8858:
+	// 1. tool_call: rawInput={}, title="task", status=pending → tool_use with empty input
+	// 2. tool_call_update: rawInput={"description":"..."}, status="" → tool_use with input
+	// 3. tool_call_update: rawInput=None, status="" → tool_use with empty input (no overwrite)
+	// 4. tool_call_update: rawInput=None, status=completed → tool_result with output
+	blocks := []model.ContentBlock{}
+
+	// Step 1: Initial tool_call with empty input
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_use",
+		Tool: &ToolCall{Name: "Agent", ID: "call_1", Input: `{}`, Done: false},
+	})
+	assert.Len(t, blocks, 1)
+	assert.Equal(t, "Agent", blocks[0].Name)
+	assert.Empty(t, blocks[0].Input, "initial input should be empty")
+	assert.False(t, blocks[0].Done)
+
+	// Step 2: tool_call_update with description/prompt (status="" or in_progress)
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_use",
+		Tool: &ToolCall{Name: "Agent", ID: "call_1", Input: `{"description":"Explore project structure","prompt":"Explore the codebase"}`, Done: false},
+	})
+	assert.Len(t, blocks, 1, "should still be 1 block after update")
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"], "input should be updated from tool_call_update")
+	assert.Equal(t, "Explore the codebase", blocks[0].Input["prompt"], "prompt should be in input")
+
+	// Step 3: tool_call_update with empty input (RawInput=None) — should NOT overwrite
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_use",
+		Tool: &ToolCall{ID: "call_1", Done: false},
+	})
+	assert.Len(t, blocks, 1, "should still be 1 block after empty update")
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"], "input should persist after empty update")
+
+	// Step 4: tool_result (completed) — should update output but keep input
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_result",
+		Tool: &ToolCall{ID: "call_1", Output: "result text", Status: "success"},
+	})
+	assert.Len(t, blocks, 1, "should still be 1 block after tool_result")
+	assert.Equal(t, "Explore project structure", blocks[0].Input["description"], "input should persist after tool_result")
+	assert.Equal(t, "result text", blocks[0].Output)
+	assert.Equal(t, "success", blocks[0].Status)
+	assert.True(t, blocks[0].Done)
+}
+
+func TestAccumulateBlock_ToolResultPreservesInput(t *testing.T) {
+	// When tool_result event carries input, AccumulateBlock should merge it
+	// into the existing block (especially when the existing block has empty input)
+	blocks := []model.ContentBlock{}
+
+	// Step 1: tool_use with empty input (initial ACP tool_call)
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_use",
+		Tool: &ToolCall{Name: "Bash", ID: "t1", Input: `{}`, Done: false},
+	})
+	assert.Empty(t, blocks[0].Input)
+
+	// Step 2: tool_result with output AND input
+	// This happens when ACP tool_call_update status=completed carries rawInput
+	AccumulateBlock(&blocks, StreamEvent{
+		Type: "tool_result",
+		Tool: &ToolCall{ID: "t1", Input: `{"command":"ls -la"}`, Output: "file1.go\nfile2.go", Status: "success"},
+	})
+	assert.Len(t, blocks, 1)
+	assert.Equal(t, "ls -la", blocks[0].Input["command"], "tool_result should merge input when existing is empty")
+	assert.Equal(t, "file1.go\nfile2.go", blocks[0].Output)
+	assert.Equal(t, "success", blocks[0].Status)
+	assert.True(t, blocks[0].Done)
+}
+
 func TestAccumulateBlock_ThinkingAndContentInterleaved(t *testing.T) {
 	// Thinking and content without tool_use boundaries should coalesce correctly
 	blocks := []model.ContentBlock{}

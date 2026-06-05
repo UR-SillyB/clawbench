@@ -279,6 +279,11 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 	// Claude ACP agent sends command info in tool_call_update (not in the initial tool_call),
 	// e.g. raw_input={"command":"ls /tmp","description":"List /tmp contents"}.
 	// We update the tool input so the frontend can display the command.
+	//
+	// IMPORTANT: Only extract input from updates that carry RawInput (with actual values)
+	// or Title. Skip updates that only have Content text — these carry output text
+	// (e.g. command results), not input. Extracting description from output text
+	// would overwrite the command from a prior RawInput update.
 	if tcu.RawInput != nil {
 		if inputBytes, err := json.Marshal(tcu.RawInput); err == nil && string(inputBytes) != "{}" {
 			normalized, normErr := normalizeToolInput(inputBytes, map[string]string{
@@ -294,27 +299,39 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 				tool.Input = string(inputBytes)
 			}
 		}
-	} else if len(tcu.Content) > 0 {
-		input := extractInputFromContentUpdate(tcu)
-		if input != nil {
+	} else if tcu.Kind != nil && *tcu.Kind == acp.ToolKindExecute {
+		// For execute-kind tools without RawInput, try title as command (Gemini CLI)
+		// or Content terminal blocks. Do NOT extract text Content as description —
+		// that carries output, not input.
+		if tcu.Title != nil && *tcu.Title != "" {
+			input := map[string]any{"command": *tcu.Title}
 			if inputBytes, err := json.Marshal(input); err == nil {
 				tool.Input = string(inputBytes)
 			}
-		}
-	}
-
-	// Fallback: for execute-kind tools with no input from RawInput or Content,
-	// use the title as the command. Gemini CLI sends only title in updates.
-	if tool.Input == "" && tcu.Kind != nil && *tcu.Kind == acp.ToolKindExecute && tcu.Title != nil && *tcu.Title != "" {
-		input := map[string]any{"command": *tcu.Title}
-		if inputBytes, err := json.Marshal(input); err == nil {
-			tool.Input = string(inputBytes)
+		} else {
+			// Check for terminal content blocks (rare, but some agents may use them)
+			for _, c := range tcu.Content {
+				if c.Terminal != nil {
+					input := make(map[string]any)
+					if tcu.Title != nil && *tcu.Title != "" {
+						input["command"] = *tcu.Title
+					}
+					if inputBytes, err := json.Marshal(input); err == nil && len(input) > 0 {
+						tool.Input = string(inputBytes)
+					}
+					break
+				}
+			}
 		}
 	}
 
 	// Also update the title/name if provided (Claude sends title in updates)
 	if tcu.Title != nil && *tcu.Title != "" {
-		tool.Name = extractToolName(*tcu.Title, acp.ToolKindExecute)
+		kind := acp.ToolKindExecute // default kind for title-based name extraction
+		if tcu.Kind != nil {
+			kind = *tcu.Kind
+		}
+		tool.Name = extractToolName(*tcu.Title, kind)
 	}
 
 	// Extract human-readable output from RawOutput.

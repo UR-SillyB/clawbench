@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -180,6 +181,62 @@ func TestMapACPToolCallUpdate_Pending(t *testing.T) {
 
 	assert.Equal(t, "tool_use", event.Type)
 	assert.False(t, event.Tool.Done)
+}
+
+func TestMapACPToolCallUpdate_InProgressWithRawInput(t *testing.T) {
+	// Simulates OpenCode ACP task tool: tool_call_update with rawInput containing
+	// description/prompt/subagent_type and status=in_progress
+	inProgress := acp.ToolCallStatusInProgress
+	title := "Explore project structure"
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("call_function_bla436bgujiz_1"),
+		Status:    &inProgress,
+		Title:     &title,
+		RawInput: map[string]any{
+			"description":   "Explore project structure",
+			"prompt":        "Explore the codebase thoroughly",
+			"subagent_type": "explore",
+		},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_use", event.Type, "in_progress update should emit tool_use")
+	require.NotNil(t, event.Tool)
+	assert.False(t, event.Tool.Done)
+	assert.NotEmpty(t, event.Tool.Input, "rawInput should be extracted as tool input")
+
+	// Verify input contains the expected fields
+	var input map[string]any
+	err := json.Unmarshal([]byte(event.Tool.Input), &input)
+	require.NoError(t, err)
+	assert.Equal(t, "Explore project structure", input["description"])
+	assert.Equal(t, "explore", input["subagent_type"])
+	assert.Contains(t, input, "prompt")
+}
+
+func TestMapACPToolCallUpdate_CompletedWithRawInput(t *testing.T) {
+	// Simulates completed tool_call_update that also has rawInput
+	completed := acp.ToolCallStatusCompleted
+	title := "Explore project structure"
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("call_function_bla436bgujiz_1"),
+		Status:    &completed,
+		Title:     &title,
+		RawInput: map[string]any{
+			"description":   "Explore project structure",
+			"prompt":        "Explore the codebase thoroughly",
+			"subagent_type": "explore",
+		},
+		RawOutput: map[string]any{"result": "project summary"},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_result", event.Type, "completed update should emit tool_result")
+	require.NotNil(t, event.Tool)
+	assert.True(t, event.Tool.Done)
+	assert.Equal(t, "success", event.Tool.Status)
+	// tool_result should still have input (for AccumulateBlock to potentially use)
+	assert.NotEmpty(t, event.Tool.Input, "completed tool_result should also carry input")
 }
 
 // --- extractToolName tests ---
