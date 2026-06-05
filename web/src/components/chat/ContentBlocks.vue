@@ -38,7 +38,7 @@
       </div>
       <!-- Tool use block -->
       <template v-else-if="block.type === 'tool_use'">
-        <div class="chat-tool-call" :class="{ done: block.done, 'tool-error': block.status === 'error' }" :data-category="getToolIcon(block.name).category" @click.stop="handleToolClick(block, key(bi))">
+        <div class="chat-tool-call" :class="{ done: block.done }" :data-category="getToolIcon(block.name).category" @click.stop="handleToolClick(block, key(bi))">
           <component :is="getToolIcon(block.name).icon" :size="12" class="tool-icon" />
           <span class="tool-name">{{ block.name }}</span>
           <span v-if="toolCallSummary(block)" class="tool-summary">{{ toolCallSummary(block) }}</span>
@@ -804,10 +804,6 @@ onUnmounted(() => {
   margin-left: auto;
 }
 
-.chat-tool-call.tool-error {
-  --tool-accent: #ef4444;
-}
-
 .chat-tool-call .tool-error-icon {
   flex-shrink: 0;
   margin-left: auto;
@@ -1157,7 +1153,6 @@ onUnmounted(() => {
 :root[data-theme="dark"] .content-blocks .chat-tool-call[data-category="task"]   { --tool-accent: #fbbf24; }
 :root[data-theme="dark"] .content-blocks .chat-tool-call[data-category="agent"]  { --tool-accent: #f472b6; }
 :root[data-theme="dark"] .content-blocks .chat-tool-call[data-category="skill"]  { --tool-accent: #22d3ee; }
-:root[data-theme="dark"] .content-blocks .chat-tool-call.tool-error              { --tool-accent: #f87171; }
 
 /* Tool output section */
 .content-blocks .tool-detail .tool-output-section {
