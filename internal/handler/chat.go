@@ -614,7 +614,11 @@ func executeStreamRun(
 	eventCount := 0
 
 	serializeBlocks := func() string {
-		contentMap := map[string]any{"blocks": blocks}
+		serializedBlocks := blocks
+		if serializedBlocks == nil {
+			serializedBlocks = []model.ContentBlock{}
+		}
+		contentMap := map[string]any{"blocks": serializedBlocks}
 		if responseMetadata != nil {
 			contentMap["metadata"] = responseMetadata
 		}
