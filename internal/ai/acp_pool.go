@@ -845,6 +845,70 @@ func (c *ACPConn) UpdateCachedCurrentMode(modeID string) {
 	}
 }
 
+// HasNewAvailableModes returns true if the given modes list contains mode IDs
+// not present in the cached available modes. Used to diff-check whether an ACP
+// agent's ConfigOptionUpdate should be forwarded to the frontend.
+func (c *ACPConn) HasNewAvailableModes(newModes []ModeDef) bool {
+	c.mu.Lock()
+	existing := c.cachedModeState
+	c.mu.Unlock()
+	if existing == nil || len(existing.AvailableModes) == 0 {
+		return len(newModes) > 0
+	}
+	seen := make(map[string]struct{}, len(existing.AvailableModes))
+	for _, m := range existing.AvailableModes {
+		seen[m.ID] = struct{}{}
+	}
+	for _, m := range newModes {
+		if _, ok := seen[m.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// HasNewAvailableThinkingEfforts returns true if the given levels list contains
+// IDs not present in the cached available levels.
+func (c *ACPConn) HasNewAvailableThinkingEfforts(newLevels []ThinkingEffortDef) bool {
+	c.mu.Lock()
+	existing := c.cachedThinkingEffortState
+	c.mu.Unlock()
+	if existing == nil || len(existing.AvailableLevels) == 0 {
+		return len(newLevels) > 0
+	}
+	seen := make(map[string]struct{}, len(existing.AvailableLevels))
+	for _, l := range existing.AvailableLevels {
+		seen[l.ID] = struct{}{}
+	}
+	for _, l := range newLevels {
+		if _, ok := seen[l.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// HasNewAvailableModels returns true if the given models list contains
+// IDs not present in the cached available models.
+func (c *ACPConn) HasNewAvailableModels(newModels []model.AgentModel) bool {
+	c.mu.Lock()
+	existing := c.cachedModelListState
+	c.mu.Unlock()
+	if existing == nil || len(existing.Models) == 0 {
+		return len(newModels) > 0
+	}
+	seen := make(map[string]struct{}, len(existing.Models))
+	for _, m := range existing.Models {
+		seen[m.ID] = struct{}{}
+	}
+	for _, m := range newModels {
+		if _, ok := seen[m.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *ACPConn) UpdateCachedCurrentThinkingEffort(effortID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

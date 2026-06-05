@@ -3,7 +3,7 @@ import { gt } from '@/composables/useLocale'
 import { useToast } from '@/composables/useToast.ts'
 import { useNotification } from '@/composables/useNotification.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
-import { clearModeState, updateModeState, clearCommandState, updateCommandState, updateThinkingEffortState, clearThinkingEffortState, currentAgentId as _currentAgentId } from '@/composables/useSessionIdentity.ts'
+import { clearModeState, updateAvailableModes, clearCommandState, updateCommandState, updateAvailableThinkingEfforts, clearThinkingEffortState, currentAgentId as _currentAgentId } from '@/composables/useSessionIdentity.ts'
 import { clearPlanState } from '@/composables/usePlanProgress'
 import { useAgents, restoreOriginalModels, populateACPStateFromCache } from '@/composables/useAgents'
 import { store } from '@/stores/app.ts'
@@ -215,13 +215,14 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
-      // Populate ACP mode state from REST response (avoids waiting for SSE events
-      // which may have already been consumed by a previous SSE handler).
+      // Populate ACP mode available modes from REST response.
+      // currentModeId comes from data.modeId (DB-persisted), not from modeState.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
-        updateModeState(data.modeState.currentModeId || '', data.modeState.availableModes)
+        updateAvailableModes(data.modeState.availableModes)
       }
+      // Only update available levels; currentId comes from data.thinkingEffort (DB-persisted)
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
-        updateThinkingEffortState(data.thinkingEffortState.currentId || '', data.thinkingEffortState.availableLevels)
+        updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
       }
       // Populate slash commands from REST response (cached ACP state)
       if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
@@ -326,13 +327,14 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
-      // Populate ACP mode state from REST response (avoids waiting for SSE events
-      // which may have already been consumed by a previous SSE handler).
+      // Populate ACP mode available modes from REST response.
+      // currentModeId comes from data.modeId (DB-persisted), not from modeState.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
-        updateModeState(data.modeState.currentModeId || '', data.modeState.availableModes)
+        updateAvailableModes(data.modeState.availableModes)
       }
+      // Only update available levels; currentId comes from data.thinkingEffort (DB-persisted)
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
-        updateThinkingEffortState(data.thinkingEffortState.currentId || '', data.thinkingEffortState.availableLevels)
+        updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
       }
       // Populate slash commands from REST response (cached ACP state)
       if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {

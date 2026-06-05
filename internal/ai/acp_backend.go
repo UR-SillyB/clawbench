@@ -177,25 +177,29 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 		}
 	}
 
-	// Always re-emit cached mode_update and config_update for every stream.
-	// The frontend resets these states on page load / session switch, so
-	// they need to be repopulated even for resumed ACP sessions.
-	// These events are idempotent — re-emitting them is harmless.
-	if modeState := conn.GetCachedModeState(); modeState != nil {
-		slog.Info("acp: re-emitting cached mode_update", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
-		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
+	// Only emit mode_update/thinking_effort_update/model_list_update on first
+	// session creation. After that, the frontend loads these from DB on startup
+	// and only updates via user action. ACP agent notifications are diff-checked
+	// in forwardACPUpdate before being forwarded.
+	if isNew {
+		if modeState := conn.GetCachedModeState(); modeState != nil {
+			slog.Info("acp: emitting mode_update for new session", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+			forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
+		}
+		if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
+			slog.Debug("acp: emitting thinking_effort_update for new session", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
+			forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
+		}
+		if modelListState := conn.GetCachedModelListState(); modelListState != nil {
+			slog.Debug("acp: emitting model_list_update for new session", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
+			forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
+		}
 	}
+	// config_update is still re-emitted every stream because the frontend
+	// resets config state on session switch and config covers more than just mode.
 	if configState := conn.GetCachedConfigState(); configState != nil {
-		slog.Info("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
+		slog.Debug("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
 		forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
-	}
-	if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
-		slog.Info("acp: re-emitting cached thinking_effort_update", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
-		forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
-	}
-	if modelListState := conn.GetCachedModelListState(); modelListState != nil {
-		slog.Info("acp: re-emitting cached model_list_update", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
-		forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
 	}
 
 	// Emit commands_update if cached from available_commands_update.

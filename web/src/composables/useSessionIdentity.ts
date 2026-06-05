@@ -111,17 +111,27 @@ function loadThinkingPref(agentId: string): string | null {
 
 // ───────────────────────────────────────────────────────────
 // Mode state — ACP session mode (ask/architect/code)
-// Updated from SSE mode_update/config_update events.
-// Only populated for ACP-backed sessions that support modes.
+// currentModeId is set by user action (POST /api/ai/session/mode)
+// or DB restore (initSessionFromAPI). SSE events only update
+// the available modes list (diff-check for new modes).
 // ───────────────────────────────────────────────────────────
 
-/** Update mode state from SSE mode_update or config_update event. */
+/** Update mode state from REST API or user action (full state). */
 export function updateModeState(modeId: string, modes: Array<{ id: string; name: string }>) {
   if (modeId) {
     currentModeId.value = modeId
     const mode = modes.find(m => m.id === modeId)
     currentModeName.value = mode?.name || modeId
   }
+  if (modes.length > 0) {
+    availableModes.value = modes
+  }
+}
+
+/** Update available modes list without changing current selection.
+ * Used by SSE mode_update/config_update handlers — currentModeId
+ * is managed by user action + DB, not by agent notifications. */
+export function updateAvailableModes(modes: Array<{ id: string; name: string }>) {
   if (modes.length > 0) {
     availableModes.value = modes
   }
@@ -156,10 +166,20 @@ export async function prefetchCommands(_agentId: string) {
 }
 
 /** Update thinking effort state from SSE thinking_effort_update event. */
+/** Update thinking effort state from REST API or user action (full state). */
 export function updateThinkingEffortState(currentId: string, levels: Array<{ id: string; name: string }>) {
   if (currentId) {
     currentThinkingEffort.value = currentId
   }
+  if (levels.length > 0) {
+    availableThinkingEfforts.value = levels
+  }
+}
+
+/** Update available thinking effort levels without changing current selection.
+ * Used by SSE thinking_effort_update handler — currentThinkingEffort
+ * is managed by user action + DB, not by agent notifications. */
+export function updateAvailableThinkingEfforts(levels: Array<{ id: string; name: string }>) {
   if (levels.length > 0) {
     availableThinkingEfforts.value = levels
   }

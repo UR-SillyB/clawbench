@@ -46,7 +46,7 @@ vi.mock('@/utils/chatSessionUtils', () => ({
     parseMessages: vi.fn().mockReturnValue([]),
 }))
 
-import { useSessionIdentity, registerSessionActions, initSessionFromAPI, resetIdentity, updateModeState, clearModeState, updateCommandState, clearCommandState, updateThinkingEffortState, clearThinkingEffortState } from '@/composables/useSessionIdentity'
+import { useSessionIdentity, registerSessionActions, initSessionFromAPI, resetIdentity, updateModeState, updateAvailableModes, clearModeState, updateCommandState, clearCommandState, updateThinkingEffortState, updateAvailableThinkingEfforts, clearThinkingEffortState } from '@/composables/useSessionIdentity'
 
 describe('useSessionIdentity', () => {
     beforeEach(() => {
@@ -615,6 +615,36 @@ describe('useSessionIdentity', () => {
         })
     })
 
+    // ── updateAvailableModes ──
+
+    describe('updateAvailableModes', () => {
+        beforeEach(() => { clearModeState() })
+
+        it('updates availableModes without changing currentModeId', () => {
+            const identity = useSessionIdentity()
+            updateModeState('code', [{ id: 'code', name: 'Code' }])
+            updateAvailableModes([
+                { id: 'ask', name: 'Ask' },
+                { id: 'code', name: 'Code' },
+                { id: 'architect', name: 'Architect' },
+            ])
+            expect(identity.currentModeId.value).toBe('code')
+            expect(identity.currentModeName.value).toBe('Code')
+            expect(identity.availableModes.value).toEqual([
+                { id: 'ask', name: 'Ask' },
+                { id: 'code', name: 'Code' },
+                { id: 'architect', name: 'Architect' },
+            ])
+        })
+
+        it('does not update when modes array is empty', () => {
+            const identity = useSessionIdentity()
+            updateModeState('code', [{ id: 'code', name: 'Code' }])
+            updateAvailableModes([])
+            expect(identity.availableModes.value).toEqual([{ id: 'code', name: 'Code' }])
+        })
+    })
+
     // ── ACP command state ──
 
     describe('updateCommandState / clearCommandState', () => {
@@ -712,6 +742,33 @@ describe('useSessionIdentity', () => {
             // Note: clearThinkingEffortState only clears availableThinkingEfforts,
             // not currentThinkingEffort (which is also used for CLI backends)
             expect(identity.availableThinkingEfforts.value).toEqual([])
+        })
+    })
+
+    // ── updateAvailableThinkingEfforts ──
+
+    describe('updateAvailableThinkingEfforts', () => {
+        beforeEach(() => { clearThinkingEffortState() })
+
+        it('updates available levels without changing current selection', () => {
+            const identity = useSessionIdentity()
+            updateThinkingEffortState('high', [{ id: 'high', name: 'High' }])
+            updateAvailableThinkingEfforts([
+                { id: 'low', name: 'Low' },
+                { id: 'high', name: 'High' },
+            ])
+            expect(identity.currentThinkingEffort.value).toBe('high')
+            expect(identity.availableThinkingEfforts.value).toEqual([
+                { id: 'low', name: 'Low' },
+                { id: 'high', name: 'High' },
+            ])
+        })
+
+        it('does not update when levels array is empty', () => {
+            const identity = useSessionIdentity()
+            updateThinkingEffortState('high', [{ id: 'high', name: 'High' }])
+            updateAvailableThinkingEfforts([])
+            expect(identity.availableThinkingEfforts.value).toEqual([{ id: 'high', name: 'High' }])
         })
     })
 

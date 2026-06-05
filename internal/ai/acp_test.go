@@ -1223,11 +1223,8 @@ func TestMapACPSessionUpdate_CurrentModeUpdate(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, nil)
 
-	events := drainACPEvents(ch, 1)
-	assert.Equal(t, "mode_update", events[0].Type)
-	require.NotNil(t, events[0].Mode)
-	assert.Equal(t, "code", events[0].Mode.CurrentModeID)
-
+	// CurrentModeUpdate no longer forwards mode_update SSE —
+	// currentModeId is managed by frontend user action + DB, not by agent notifications.
 	assertNoMoreACPEvents(ch, t)
 }
 
@@ -1247,11 +1244,8 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, entry)
 
-	events := drainACPEvents(ch, 1)
-	assert.Equal(t, "mode_update", events[0].Type)
-	assert.Equal(t, "code", events[0].Mode.CurrentModeID)
-
-	// Cache should be updated
+	// CurrentModeUpdate no longer forwards mode_update SSE —
+	// but cache should still be updated for DB persistence and REST responses.
 	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
 
 	assertNoMoreACPEvents(ch, t)
@@ -1300,6 +1294,104 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode(t *testing.T) {
 	assert.Equal(t, "ask", events[0].Config.Options[0].Values[0].ID)
 	assert.Equal(t, "Ask", events[0].Config.Options[0].Values[0].Name)
 	assert.Equal(t, "code", events[0].Config.Options[0].Values[1].ID)
+
+	assertNoMoreACPEvents(ch, t)
+}
+
+func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testing.T) {
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	entry := &ACPConnEntry{}
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "ask",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
+		[]acp.SessionConfigSelectOption{
+			{Name: "Ask", Value: acp.SessionConfigValueId("ask")},
+			{Name: "Code", Value: acp.SessionConfigValueId("code")},
+		},
+	)
+
+	update := acp.SessionUpdate{
+		ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Id:           acp.SessionConfigId("mode"),
+						Name:         "Mode",
+						Category:     &modeCategory,
+						CurrentValue: acp.SessionConfigValueId("code"),
+						Options:      acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
+					},
+				},
+			},
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, entry)
+
+	// Same available modes → no config_update SSE forwarded
+	assertNoMoreACPEvents(ch, t)
+
+	// Cache should still be updated
+	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+}
+
+func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_NewModeForward(t *testing.T) {
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	entry := &ACPConnEntry{}
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "ask",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
+		[]acp.SessionConfigSelectOption{
+			{Name: "Ask", Value: acp.SessionConfigValueId("ask")},
+			{Name: "Code", Value: acp.SessionConfigValueId("code")},
+			{Name: "Architect", Value: acp.SessionConfigValueId("architect")},
+		},
+	)
+
+	update := acp.SessionUpdate{
+		ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Id:           acp.SessionConfigId("mode"),
+						Name:         "Mode",
+						Category:     &modeCategory,
+						CurrentValue: acp.SessionConfigValueId("architect"),
+						Options:      acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
+					},
+				},
+			},
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, entry)
+
+	// New mode "architect" → config_update SSE forwarded
+	events := drainACPEvents(ch, 1)
+	assert.Equal(t, "config_update", events[0].Type)
+	require.NotNil(t, events[0].Config)
+
+	// Cache should be updated with new mode list
+	assert.Equal(t, "architect", entry.cachedModeState.CurrentModeID)
+	require.Len(t, entry.cachedModeState.AvailableModes, 3)
 
 	assertNoMoreACPEvents(ch, t)
 }

@@ -2,7 +2,7 @@ import { onMounted, onUnmounted, type Ref } from 'vue'
 import { cancelChat } from '@/utils/api'
 import { useReconnect } from './useReconnect'
 import { gt } from '@/composables/useLocale'
-import { updateModeState, updateCommandState, updateThinkingEffortState, currentAgentId } from './useSessionIdentity'
+import { updateModeState, updateAvailableModes, updateCommandState, updateThinkingEffortState, updateAvailableThinkingEfforts, currentAgentId } from './useSessionIdentity'
 import { updateACPModelList } from './useAgents'
 import { updatePlanEntries } from './usePlanProgress'
 import { FILE_MODIFYING_TOOLS, findLastBlockOfType, forceCleanupStreamingState as _forceCleanupStreamingState } from '@/utils/chatStreamUtils.ts'
@@ -552,7 +552,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (!guard()) return
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE mode_update: invalid JSON, skipping'); return }
-      updateModeState(data.currentModeId || '', data.availableModes || [])
+      // Only update available modes list; currentModeId is managed by user action + DB
+      if (data.availableModes?.length > 0) {
+        updateAvailableModes(data.availableModes)
+      }
     })
 
     eventSource.addEventListener('config_update', (e) => {
@@ -563,8 +566,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       for (const opt of (data.options || [])) {
         if (opt.category === 'mode' || opt.id === 'mode') {
           const modes = (opt.values || []).map((v: any) => ({ id: v.id, name: v.name || v.id }))
-          const currentId = data.currentValueId || ''
-          updateModeState(currentId, modes)
+          // Only update available modes list; currentModeId is managed by user action + DB
+          if (modes.length > 0) {
+            updateAvailableModes(modes)
+          }
         }
       }
     })
@@ -573,9 +578,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (!guard()) return
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE thinking_effort_update: invalid JSON, skipping'); return }
-      if (data.availableLevels) {
+      // Only update available levels; currentId is managed by user action + DB
+      if (data.availableLevels?.length > 0) {
         const levels = (data.availableLevels || []).map((l: any) => ({ id: l.id, name: l.name || l.id }))
-        updateThinkingEffortState(data.currentId || '', levels)
+        updateAvailableThinkingEfforts(levels)
       }
     })
 
@@ -592,10 +598,11 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (!guard()) return
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE model_list_update: invalid JSON, skipping'); return }
+      // Only update available models; currentModelId is managed by user action + DB
       if (Array.isArray(data.models) && data.models.length > 0) {
         const aid = currentAgentId.value
         if (aid) {
-          updateACPModelList(aid, data.models, data.currentModelId)
+          updateACPModelList(aid, data.models)
         }
       }
     })

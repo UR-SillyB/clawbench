@@ -127,10 +127,12 @@ vi.mock('@/composables/useSessionIdentity', () => ({
   }),
   currentAgentId: { value: '' },
   updateModeState: vi.fn(),
+  updateAvailableModes: vi.fn(),
   clearModeState: vi.fn(),
   updateCommandState: vi.fn(),
   clearCommandState: vi.fn(),
   updateThinkingEffortState: vi.fn(),
+  updateAvailableThinkingEfforts: vi.fn(),
   clearThinkingEffortState: vi.fn(),
 }))
 

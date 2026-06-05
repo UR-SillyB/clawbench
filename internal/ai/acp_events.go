@@ -96,13 +96,11 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 		})
 
 	case update.CurrentModeUpdate != nil:
-		// v1 mode update: only currentModeId; available modes were sent in session/new
+		// v1 mode update: only currentModeId; available modes were sent in session/new.
+		// Update cache for DB persistence and REST responses, but do NOT forward
+		// mode_update SSE — currentModeId is managed by frontend user action + DB,
+		// not by agent notifications mid-chat.
 		mu := update.CurrentModeUpdate
-		modeState := &ModeState{
-			CurrentModeID: string(mu.CurrentModeId),
-		}
-		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
-		// Update cached mode state so re-emitted SSE events reflect the new mode
 		if conn != nil {
 			conn.UpdateCachedCurrentMode(string(mu.CurrentModeId))
 		}
@@ -122,35 +120,49 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			switch *sel.Category {
 			case acp.SessionConfigOptionCategoryMode:
 				configState := buildConfigOptionStateFromSelect(sel, "mode")
-				forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
-				// Update cached config state and derived mode state so re-emitted
-				// SSE events and REST API responses reflect the new mode.
+				// Diff-check: only forward config_update SSE if available modes
+				// actually changed (new modes appeared). currentModeId is managed
+				// by frontend user action + DB, not by agent notifications mid-chat.
 				if conn != nil {
+					derived := modeStateFromConfigState(configState)
+					if derived != nil && conn.HasNewAvailableModes(derived.AvailableModes) {
+						forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
+					}
 					conn.SetCachedConfigState(configState)
-					// For agents that use ConfigOptions (ACP v2), SetCachedConfigState
-					// derives cachedModeState only when it's nil. When modes change
-					// mid-session via ConfigOptionUpdate, also update available modes.
-					if derived := modeStateFromConfigState(configState); derived != nil {
+					if derived != nil {
 						conn.SetCachedModeState(derived)
 					}
+				} else {
+					forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 				}
 
 			case acp.SessionConfigOptionCategoryThoughtLevel:
 				effortState := buildThinkingEffortStateFromSelect(sel)
 				if effortState != nil {
-					forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
-					// Update cached thinking effort so re-emitted SSE events reflect the new level
+					// Diff-check: only forward SSE if available levels actually changed.
+					// currentId is managed by frontend user action + DB.
 					if conn != nil {
+						if conn.HasNewAvailableThinkingEfforts(effortState.AvailableLevels) {
+							forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
+						}
 						conn.UpdateCachedCurrentThinkingEffort(string(sel.CurrentValue))
+					} else {
+						forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
 					}
 				}
 
 			case acp.SessionConfigOptionCategoryModel:
 				modelList := buildModelListStateFromSelect(sel)
 				if modelList != nil {
-					forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelList})
+					// Diff-check: only forward SSE if available models actually changed.
+					// currentModelId is managed by frontend user action + DB.
 					if conn != nil {
+						if conn.HasNewAvailableModels(modelList.Models) {
+							forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelList})
+						}
 						conn.SetCachedModelListState(modelList)
+					} else {
+						forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelList})
 					}
 				}
 			}
