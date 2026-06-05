@@ -125,6 +125,22 @@ func TestMapACPToolCall_RawInputPreferredOverContent(t *testing.T) {
 	assert.Contains(t, event.Tool.Input, "ls -la")
 }
 
+func TestMapACPToolCall_WithFilePathRawInput(t *testing.T) {
+	// Open Code ACP uses "filePath" (camelCase) in rawInput for read tools
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("tc-read-fp"),
+		Title:      "read",
+		Kind:       acp.ToolKindRead,
+		RawInput:   map[string]any{"filePath": "/home/user/project/main.go"},
+	}
+	event := mapACPToolCall(tc)
+
+	assert.Equal(t, "Read", event.Tool.Name)
+	assert.Contains(t, event.Tool.Input, "file_path")
+	assert.NotContains(t, event.Tool.Input, "filePath")
+	assert.Contains(t, event.Tool.Input, "/home/user/project/main.go")
+}
+
 // --- mapACPToolCallUpdate tests ---
 
 func TestMapACPToolCallUpdate_Completed(t *testing.T) {
@@ -237,6 +253,62 @@ func TestMapACPToolCallUpdate_CompletedWithRawInput(t *testing.T) {
 	assert.Equal(t, "success", event.Tool.Status)
 	// tool_result should still have input (for AccumulateBlock to potentially use)
 	assert.NotEmpty(t, event.Tool.Input, "completed tool_result should also carry input")
+}
+
+func TestMapACPToolCallUpdate_CompletedWithTitleNoOverride(t *testing.T) {
+	// Open Code ACP changes the title to a descriptive string (e.g. file path)
+	// when a tool call completes. The tool name should NOT be overwritten.
+	completed := acp.ToolCallStatusCompleted
+	readKind := acp.ToolKindRead
+	title := "cmd/server" // descriptive title, not a tool name
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("tc-read-path"),
+		Status:     &completed,
+		Kind:       &readKind,
+		Title:      &title,
+		RawOutput:  map[string]any{"output": "directory listing"},
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_result", event.Type)
+	// Name should remain empty (not overwritten by "cmd/server")
+	// because completed status should not update name from descriptive titles
+	assert.Equal(t, "", event.Tool.Name, "completed title should not override tool name")
+}
+
+func TestMapACPToolCallUpdate_InProgressWithTitleUpdate(t *testing.T) {
+	// In-progress updates SHOULD still update the tool name from title
+	inProgress := acp.ToolCallStatusInProgress
+	readKind := acp.ToolKindRead
+	title := "read"
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("tc-read-1"),
+		Status:     &inProgress,
+		Kind:       &readKind,
+		Title:      &title,
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_use", event.Type)
+	assert.Equal(t, "Read", event.Tool.Name, "in-progress title should update tool name")
+}
+
+func TestMapACPToolCallUpdate_InProgressWithDescriptiveTitle(t *testing.T) {
+	// In-progress execute tool with descriptive title (e.g. from Claude)
+	inProgress := acp.ToolCallStatusInProgress
+	executeKind := acp.ToolKindExecute
+	title := "Show all branches"
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("tc-bash-1"),
+		Status:     &inProgress,
+		Kind:       &executeKind,
+		Title:      &title,
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_use", event.Type)
+	// Descriptive title for execute kind won't match patterns, but that's OK
+	// for in-progress — the tool name was already set by the initial tool_call
 }
 
 // --- extractToolName tests ---

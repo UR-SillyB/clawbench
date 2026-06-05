@@ -151,6 +151,9 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 
 	case update.SessionInfoUpdate != nil:
 		slog.Debug("acp: session info update")
+
+	case update.UsageUpdate != nil:
+		slog.Debug("acp: usage update", "size", update.UsageUpdate.Size, "used", update.UsageUpdate.Used)
 	}
 }
 
@@ -169,6 +172,7 @@ func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
 				"oldString": "old_string",
 				"newString": "new_string",
 				"dirPath":   "path",
+				"filePath":  "file_path",
 				"cellIndex": "cell_index",
 				"cellType":  "cell_type",
 			})
@@ -290,6 +294,7 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 				"oldString": "old_string",
 				"newString": "new_string",
 				"dirPath":   "path",
+				"filePath":  "file_path",
 				"cellIndex": "cell_index",
 				"cellType":  "cell_type",
 			})
@@ -325,8 +330,12 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		}
 	}
 
-	// Also update the title/name if provided (Claude sends title in updates)
-	if tcu.Title != nil && *tcu.Title != "" {
+	// Update the title/name if provided — but only for non-completed updates.
+	// Open Code ACP changes the title to a descriptive string (e.g. file path
+	// like "cmd/server", "go.mod") when a tool call completes, which would
+	// overwrite the correct tool name from earlier updates.
+	// Claude sends the tool name in in_progress updates, so we keep those.
+	if tcu.Title != nil && *tcu.Title != "" && !tool.Done {
 		kind := acp.ToolKindExecute // default kind for title-based name extraction
 		if tcu.Kind != nil {
 			kind = *tcu.Kind
