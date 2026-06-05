@@ -23,7 +23,7 @@ import (
 
 // ACPConnManager manages one ACP stdio connection per ClawBench session.
 // Each session gets its own dedicated agent process that is never idle-reaped.
-// If the process dies, it is respawned and the session is recovered via LoadSession.
+// If the process dies, it is respawned and the session is recovered via ResumeSession.
 type ACPConnManager struct {
 	mu    sync.Mutex
 	conns map[string]*ACPConn // keyed by clawbenchSID
@@ -56,7 +56,7 @@ func (m *ACPConnManager) StopAll() {
 
 // GetOrCreateConn returns the ACPConn for a ClawBench session, creating one if needed.
 // If the existing connection is dead, it respawns and tries to recover the session
-// via LoadSession. If recovery fails or there's no prior session, it creates a new one.
+// via ResumeSession. If recovery fails or there's no prior session, it creates a new one.
 // Returns (conn, isNew, error) where isNew indicates whether a new ACP session was created.
 func (m *ACPConnManager) GetOrCreateConn(ctx context.Context, agent *model.Agent, clawbenchSID, cwd string) (*ACPConn, bool, error) {
 	m.mu.Lock()
@@ -220,7 +220,7 @@ type ACPConn struct {
 	conn   *acp.ClientSideConnection
 	client *ClawBenchACPClient
 
-	// acpSID is the ACP session ID. Populated from DB (LoadSession) or
+	// acpSID is the ACP session ID. Populated from DB (ResumeSession) or
 	// from NewSession response. Empty means no session yet.
 	acpSID string
 
@@ -228,15 +228,15 @@ type ACPConn struct {
 	// session/new so ExecuteStream can extract mode/config state. Cleared after reading.
 	lastNewSessionResp *acp.NewSessionResponse
 
-	// lastLoadSessionResp stores the LoadSessionResponse from the most recent
-	// session/load so ExecuteStream can extract mode/config state. Cleared after reading.
-	lastLoadSessionResp *acp.LoadSessionResponse
+	// lastResumeSessionResp stores the ResumeSessionResponse from the most recent
+	// session/resume so ExecuteStream can extract mode/config state. Cleared after reading.
+	lastResumeSessionResp *acp.ResumeSessionResponse
 
 	// liveness
 	lastUsed time.Time
 	alive    bool
 
-	// cached state — populated from NewSession/LoadSession responses and
+	// cached state — populated from NewSession/ResumeSession responses and
 	// re-emitted for every ExecuteStream call so the frontend always has
 	// up-to-date mode/command state, even after page refreshes or SSE reconnects.
 	cachedModeState           *ModeState
@@ -292,7 +292,7 @@ func newACPConn(agent *model.Agent, clawbenchSID string) *ACPConn {
 }
 
 // ensureAliveWithSession ensures the connection is alive and has a valid ACP session.
-// If the process is dead, it respawns and tries LoadSession recovery, falling back to NewSession.
+// If the process is dead, it respawns and tries ResumeSession recovery, falling back to NewSession.
 // Returns isNew=true if a new ACP session was created, false if reusing or recovered.
 func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool, error) {
 	c.mu.Lock()
@@ -310,26 +310,26 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		return false, err
 	}
 
-	// Try to recover session via LoadSession
+	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
 	acpSID := getExternalSessionID(c.clawbenchSID)
 	if acpSID != "" {
-		loadResp, err := c.conn.LoadSession(ctx, acp.LoadSessionRequest{
+		resumeResp, err := c.conn.ResumeSession(ctx, acp.ResumeSessionRequest{
 			SessionId: acp.SessionId(acpSID),
 			Cwd:       cwd,
 			McpServers: []acp.McpServer{},
 		})
 		if err != nil {
-			slog.Warn("acp conn: LoadSession failed, creating new session", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
+			slog.Warn("acp conn: ResumeSession failed, creating new session", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
 		} else {
 			c.acpSID = acpSID
-			c.lastLoadSessionResp = &loadResp
+			c.lastResumeSessionResp = &resumeResp
 			c.lastUsed = time.Now()
-			slog.Info("acp conn: recovered session via LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
+			slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
 			return false, nil // not new — recovered
 		}
 	}
 
-	// LoadSession failed or no prior session — create new
+	// ResumeSession failed or no prior session — create new
 	sessResp, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
@@ -378,7 +378,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	cmdArgs := cmdParts[1:]
 
 	cmd := exec.CommandContext(context.Background(), cmdName, cmdArgs...)
-	cmd.Dir = "" // cwd is per-session, set during NewSession/LoadSession
+	cmd.Dir = "" // cwd is per-session, set during NewSession/ResumeSession
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, OrphanChildEnvVar)
 
@@ -462,13 +462,13 @@ func (c *ACPConn) GetAndClearNewSessionResp() *acp.NewSessionResponse {
 	return resp
 }
 
-// GetAndClearLoadSessionResp returns the last LoadSessionResponse and clears it.
+// GetAndClearResumeSessionResp returns the last ResumeSessionResponse and clears it.
 // Used by ExecuteStream to update mode/config cache for recovered sessions.
-func (c *ACPConn) GetAndClearLoadSessionResp() *acp.LoadSessionResponse {
+func (c *ACPConn) GetAndClearResumeSessionResp() *acp.ResumeSessionResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	resp := c.lastLoadSessionResp
-	c.lastLoadSessionResp = nil
+	resp := c.lastResumeSessionResp
+	c.lastResumeSessionResp = nil
 	return resp
 }
 
@@ -533,7 +533,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if err != nil {
 		if ctx.Err() != nil {
 			slog.Info("acp conn: prompt cancelled", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
-			// Mark connection as dead so next prompt triggers respawn + LoadSession
+			// Mark connection as dead so next prompt triggers respawn + ResumeSession
 			c.mu.Lock()
 			c.alive = false
 			c.mu.Unlock()

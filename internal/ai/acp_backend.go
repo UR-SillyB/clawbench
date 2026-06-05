@@ -18,8 +18,8 @@ import (
 //
 //   - Each ClawBench session = one agent subprocess (stdio)
 //   - Agent processes are never idle-reaped
-//   - If the process dies, it is respawned and the session is recovered via LoadSession
-//   - Cancel marks the connection as dead; next prompt triggers respawn + LoadSession
+//   - If the process dies, it is respawned and the session is recovered via ResumeSession
+//   - Cancel marks the connection as dead; next prompt triggers respawn + ResumeSession
 type ACPBackend struct {
 	agent *model.Agent // resolved agent config
 
@@ -45,8 +45,8 @@ func (b *ACPBackend) Name() string {
 
 // ExecuteStream runs the ACP agent and returns a channel of streaming events.
 //
-// Flow: GetOrCreateConn → (LoadSession or NewSession) → emit cached state → Prompt
-// On peer disconnect during Prompt, automatically retries once after respawn + LoadSession.
+// Flow: GetOrCreateConn → (ResumeSession or NewSession) → emit cached state → Prompt
+// On peer disconnect during Prompt, automatically retries once after respawn + ResumeSession.
 func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocognit,gocyclo // complex ACP protocol handler, refactoring would reduce readability
 	ch := make(chan StreamEvent, streamChanSize)
 
@@ -99,7 +99,7 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				return
 			}
 
-			// If the error is a peer disconnect, retry once after respawn + LoadSession.
+			// If the error is a peer disconnect, retry once after respawn + ResumeSession.
 			if isACPPeerDisconnected(err) {
 				slog.Warn("acp: peer disconnected during prompt, retrying after respawn", "session_id", req.SessionID, "acp_sid", acpSessionID, "error", err)
 				conn2, isNew2, retryErr := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
@@ -160,18 +160,18 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 			}
 		}
 	} else {
-		// Recovered session (via LoadSession) — update cached state
-		if loadResp := conn.GetAndClearLoadSessionResp(); loadResp != nil {
-			if modeState := extractACPModeStateFromLoad(loadResp); modeState != nil {
+		// Recovered session (via ResumeSession) — update cached state
+		if resumeResp := conn.GetAndClearResumeSessionResp(); resumeResp != nil {
+			if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
 				conn.SetCachedModeState(modeState)
 			}
-			if configState := extractACPConfigOptionsFromLoad(loadResp); configState != nil {
+			if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
 				conn.SetCachedConfigState(configState)
 			}
-			if effortState := extractACPThinkingEffortFromLoad(loadResp); effortState != nil {
+			if effortState := extractACPThinkingEffortFromResume(resumeResp); effortState != nil {
 				conn.SetCachedThinkingEffortState(effortState)
 			}
-			if modelList := extractACPModelListFromLoad(loadResp); modelList != nil {
+			if modelList := extractACPModelListFromResume(resumeResp); modelList != nil {
 				conn.SetCachedModelListState(modelList)
 			}
 		}

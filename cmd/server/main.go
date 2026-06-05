@@ -460,7 +460,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// Inject ACP state persister (avoids import cycle between ai and service packages)
 	ai.SetACPStatePersister(service.UpdateAgentACPState)
 
-	// Inject external session ID getter for LoadSession recovery
+	// Inject external session ID getter for ResumeSession recovery
 	ai.SetExternalSessionIDGetter(service.GetExternalSessionID)
 
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).

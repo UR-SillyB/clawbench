@@ -910,12 +910,12 @@ func extractACPModeState(sessResp *acp.NewSessionResponse) *ModeState {
 	return extractModeStateFromModes(sessResp.Modes)
 }
 
-// extractACPModeStateFromLoad extracts ModeState from a LoadSessionResponse.
-func extractACPModeStateFromLoad(loadResp *acp.LoadSessionResponse) *ModeState {
-	if loadResp == nil {
+// extractACPModeStateFromResume extracts ModeState from a ResumeSessionResponse.
+func extractACPModeStateFromResume(resumeResp *acp.ResumeSessionResponse) *ModeState {
+	if resumeResp == nil {
 		return nil
 	}
-	return extractModeStateFromModes(loadResp.Modes)
+	return extractModeStateFromModes(resumeResp.Modes)
 }
 
 func extractModeStateFromModes(modes *acp.SessionModeState) *ModeState {
@@ -950,12 +950,12 @@ func extractACPConfigOptions(sessResp *acp.NewSessionResponse) *ConfigOptionStat
 	return extractConfigOptionsFromOpts(sessResp.ConfigOptions)
 }
 
-// extractACPConfigOptionsFromLoad extracts mode-relevant ConfigOptionState from a LoadSessionResponse.
-func extractACPConfigOptionsFromLoad(loadResp *acp.LoadSessionResponse) *ConfigOptionState {
-	if loadResp == nil {
+// extractACPConfigOptionsFromResume extracts mode-relevant ConfigOptionState from a ResumeSessionResponse.
+func extractACPConfigOptionsFromResume(resumeResp *acp.ResumeSessionResponse) *ConfigOptionState {
+	if resumeResp == nil {
 		return nil
 	}
-	return extractConfigOptionsFromOpts(loadResp.ConfigOptions)
+	return extractConfigOptionsFromOpts(resumeResp.ConfigOptions)
 }
 
 func extractConfigOptionsFromOpts(opts []acp.SessionConfigOption) *ConfigOptionState {
@@ -1026,12 +1026,12 @@ func extractACPThinkingEffort(sessResp *acp.NewSessionResponse) *ThinkingEffortS
 	return extractThinkingEffortFromOpts(sessResp.ConfigOptions)
 }
 
-// extractACPThinkingEffortFromLoad extracts ThinkingEffortState from a LoadSessionResponse.
-func extractACPThinkingEffortFromLoad(loadResp *acp.LoadSessionResponse) *ThinkingEffortState {
-	if loadResp == nil {
+// extractACPThinkingEffortFromResume extracts ThinkingEffortState from a ResumeSessionResponse.
+func extractACPThinkingEffortFromResume(resumeResp *acp.ResumeSessionResponse) *ThinkingEffortState {
+	if resumeResp == nil {
 		return nil
 	}
-	return extractThinkingEffortFromOpts(loadResp.ConfigOptions)
+	return extractThinkingEffortFromOpts(resumeResp.ConfigOptions)
 }
 
 func extractThinkingEffortFromOpts(opts []acp.SessionConfigOption) *ThinkingEffortState {
@@ -1095,12 +1095,12 @@ func extractACPModelList(sessResp *acp.NewSessionResponse) *ModelListState {
 	return extractModelListFromOpts(sessResp.ConfigOptions)
 }
 
-// extractACPModelListFromLoad extracts ModelListState from a LoadSessionResponse.
-func extractACPModelListFromLoad(loadResp *acp.LoadSessionResponse) *ModelListState {
-	if loadResp == nil {
+// extractACPModelListFromResume extracts ModelListState from a ResumeSessionResponse.
+func extractACPModelListFromResume(resumeResp *acp.ResumeSessionResponse) *ModelListState {
+	if resumeResp == nil {
 		return nil
 	}
-	return extractModelListFromOpts(loadResp.ConfigOptions)
+	return extractModelListFromOpts(resumeResp.ConfigOptions)
 }
 
 func extractModelListFromOpts(opts []acp.SessionConfigOption) *ModelListState {
