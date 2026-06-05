@@ -109,7 +109,9 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) (mode
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	cmds = conn.client.GetCommandsAsInfo()
+	if conn.client != nil {
+		cmds = conn.client.GetCommandsAsInfo()
+	}
 	return conn.cachedModeState, conn.cachedConfigState, conn.cachedThinkingEffortState, cmds, conn.cachedModelListState
 }
 
