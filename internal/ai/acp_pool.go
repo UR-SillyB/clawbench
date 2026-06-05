@@ -250,6 +250,7 @@ type ACPConn struct {
 	lastSetConfigMu sync.Mutex
 	lastSetModel    string
 	lastSetEffort   string
+	lastSetMode     string
 
 	// persistDebounce timer for batching ACP state DB writes
 	persistTimer *time.Timer
@@ -525,6 +526,15 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
 	}
 
+	// Set mode if configured AND changed since last set (non-fatal).
+	if req.Mode != "" && c.shouldSetConfig("mode", req.Mode) {
+		c.setSessionConfigOption(ctx, acpSID, "mode", req.Mode)
+		if !c.IsAlive() {
+			return fmt.Errorf("acp: set_config_option(mode) killed connection")
+		}
+		c.markConfigSet("mode", req.Mode)
+	}
+
 	// Send prompt
 	_, err := conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(acpSID),
@@ -765,6 +775,8 @@ func (c *ACPConn) shouldSetConfig(configID, value string) bool {
 		return c.lastSetModel != value
 	case "thinkingEffort":
 		return c.lastSetEffort != value
+	case "mode":
+		return c.lastSetMode != value
 	}
 	return true
 }
@@ -778,6 +790,8 @@ func (c *ACPConn) markConfigSet(configID, value string) {
 		c.lastSetModel = value
 	case "thinkingEffort":
 		c.lastSetEffort = value
+	case "mode":
+		c.lastSetMode = value
 	}
 }
 
@@ -787,6 +801,7 @@ func (c *ACPConn) resetLastSetConfig() {
 	defer c.lastSetConfigMu.Unlock()
 	c.lastSetModel = ""
 	c.lastSetEffort = ""
+	c.lastSetMode = ""
 }
 
 func (c *ACPConn) SetCachedModeState(state *ModeState) {

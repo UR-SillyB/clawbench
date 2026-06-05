@@ -510,6 +510,16 @@ func UpdateSessionMode(sessionID, mode string) error {
 	return err
 }
 
+// GetSessionMode returns the ACP mode for a session, or empty string if not set.
+func GetSessionMode(sessionID string) string {
+	var mode string
+	err := DBRead.QueryRow("SELECT mode FROM chat_sessions WHERE id = ? AND deleted = 0", sessionID).Scan(&mode)
+	if err != nil {
+		return ""
+	}
+	return mode
+}
+
 // SaveMetadata persists message metadata to the chat_metadata table.
 // This enables SQL-based analytical queries (token usage, cost, model stats)
 // while the same metadata remains embedded in chat_history.content JSON for

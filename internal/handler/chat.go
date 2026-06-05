@@ -300,6 +300,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		AgentID        string   `json:"agentId"`
 		ModelID        string   `json:"modelId"`
 		ThinkingEffort string   `json:"thinkingEffort"`
+		ModeID         string   `json:"modeId"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -412,6 +413,12 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		service.UpdateSessionThinkingEffort(sessionID, req.ThinkingEffort)
 	}
 
+	// Persist mode selection for this session so subsequent loads
+	// restore the user's choice instead of the agent default.
+	if req.ModeID != "" {
+		service.UpdateSessionMode(sessionID, req.ModeID)
+	}
+
 	// Prevent concurrent sessions for the same session ID
 	if !service.TrySetSessionRunning(sessionID) {
 		// Session already running — enqueue the message
@@ -486,7 +493,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		defer service.UnregisterSessionCancel(sessionID)
 
 		// Build the first chat request
-		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, fileDir)
+		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, fileDir)
 
 		// Execute first message
 		result := executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, firstChatReq, fileDir)
@@ -965,11 +972,13 @@ saveRaw:
 // buildChatRequest constructs an ai.ChatRequest from the given parameters.
 // modelOverride, if non-empty, takes precedence over the agent's default model.
 // thinkingEffortOverride, if non-empty, takes precedence over the agent's YAML default.
-func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, fileDir string) ai.ChatRequest {
+// modeOverride, if non-empty, takes precedence over the current ACP session mode.
+func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, modeOverride, fileDir string) ai.ChatRequest {
 	systemPrompt := ""
 	agentModel := ""
 	agentCommand := ""
 	effectiveThinkingEffort := thinkingEffortOverride // Frontend selection takes priority
+	effectiveMode := modeOverride                     // Frontend selection takes priority
 
 	if agentID == "" {
 		agentID = model.GetDefaultAgentID()
@@ -1029,6 +1038,7 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 		Command:               agentCommand,
 		AgentID:               agentID,
 		ThinkingEffort:        effectiveThinkingEffort,
+		Mode:                  effectiveMode,
 		Resume:                resume,
 		AssistantMessageCount: service.GetAssistantMessageCount(sessionID),
 	}
@@ -1076,7 +1086,8 @@ func buildChatRequestFromQueue(qMsg model.QueuedMessage, sessionID, projectPath,
 	// Use session-persisted model (if user explicitly chose one) as modelOverride
 	// so queued messages respect the user's model choice, not just the agent default.
 	sessionModel := service.GetSessionModel(sessionID)
-	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, service.GetSessionThinkingEffort(sessionID), fileDir)
+	sessionMode := service.GetSessionMode(sessionID)
+	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, service.GetSessionThinkingEffort(sessionID), sessionMode, fileDir)
 }
 
 // CancelChat handles POST to cancel an ongoing AI stream for a session.

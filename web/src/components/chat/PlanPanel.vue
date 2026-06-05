@@ -77,7 +77,7 @@ const chipText = computed(() => {
 <style scoped>
 .plan-panel {
   width: auto;
-  margin: 0 10px;
+  margin: 0 10px 8px;
 }
 
 /* ── Collapsed chip ── */
