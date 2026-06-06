@@ -462,6 +462,13 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 	// Register stream channel BEFORE starting goroutine to avoid race with SSE connection
 	streamCh := service.RegisterSessionStream(sessionID)
 
+	// Create context and cancel AFTER TrySetSessionRunning succeeded, but BEFORE
+	// starting the goroutine. Registering the cancel function here (not inside the
+	// goroutine) prevents a race where CancelSession finds no cancel func but
+	// activeSessions is true, which would leave the session permanently stuck.
+	ctx, cancel := context.WithCancel(context.Background())
+	service.RegisterSessionCancel(sessionID, cancel)
+
 	slog.Info("about to start ai goroutine", slog.String("project", projectPath))
 
 	go func() {
@@ -475,6 +482,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				)
 				service.SetSessionRunning(sessionID, false)
 				service.UnregisterSessionCancel(sessionID)
+				cancel()
 				// Try to send error event to SSE stream
 				service.SendSessionEvent(sessionID, ai.StreamEvent{Type: "error", Error: "AI internal error, please retry", Reason: ai.ReasonPanic})
 				service.UnregisterSessionStream(sessionID)
@@ -487,13 +495,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		slog.Info("ai goroutine started", slog.String("project", projectPath))
 		defer service.SetSessionRunning(sessionID, false)
 		defer service.UnregisterSessionStream(sessionID)
-
-		// Use independent context with cancel to prevent goroutine leaks
-		// and support user-initiated cancellation (no timeout - let AI run indefinitely)
-		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-
-		service.RegisterSessionCancel(sessionID, cancel)
 		defer service.UnregisterSessionCancel(sessionID)
 
 		// Build the first chat request

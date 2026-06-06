@@ -126,6 +126,20 @@ func (m *ACPConnManager) GetConn(clawbenchSID string) *ACPConn {
 	return m.conns[clawbenchSID]
 }
 
+// CancelTurn sends an ACP Cancel notification for the given ClawBench session.
+// This tells the ACP agent to stop its current turn gracefully, which prevents
+// zombie processes when the user cancels mid-stream. Safe to call even if no
+// connection exists or the connection is dead.
+func (m *ACPConnManager) CancelTurn(clawbenchSID string) {
+	m.mu.Lock()
+	conn := m.conns[clawbenchSID]
+	m.mu.Unlock()
+
+	if conn != nil {
+		conn.CancelTurn(context.Background())
+	}
+}
+
 // CloseConn closes and removes the connection for the given ClawBench session ID.
 func (m *ACPConnManager) CloseConn(clawbenchSID string) {
 	m.mu.Lock()
@@ -409,8 +423,27 @@ func (c *ACPConn) isAliveLocked() bool {
 func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	// Kill any existing process first
 	if c.cmd != nil && c.cmd.Process != nil {
+		// Send ACP Cancel to let the agent stop gracefully before killing
+		if c.conn != nil && c.acpSID != "" {
+			cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = c.conn.Cancel(cancelCtx, acp.CancelNotification{SessionId: acp.SessionId(c.acpSID)})
+			cancelCancel()
+		}
 		_ = c.cmd.Process.Kill()
-		_ = c.cmd.Wait()
+		// Release the mutex while waiting for the old process to exit,
+		// since cmd.Wait() can block if the process is unresponsive.
+		// Another goroutine calling GetOrCreateConn during this window
+		// will find alive=false and attempt its own spawn — but that's
+		// safe because we clear c.cmd below after re-acquiring the lock.
+		oldCmd := c.cmd
+		c.mu.Unlock()
+		_ = oldCmd.Wait()
+		c.mu.Lock()
+		// Clear the old cmd reference only if it hasn't been replaced
+		// by another concurrent spawn (unlikely but defensive).
+		if c.cmd == oldCmd {
+			c.cmd = nil
+		}
 	}
 
 	// Reset cached config values — the new process doesn't know about prior settings.

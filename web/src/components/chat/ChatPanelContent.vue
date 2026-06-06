@@ -103,6 +103,7 @@
       @delete-session="() => manager.deleteCurrentSession((draftId) => inputBarRef.value?.deleteDraft(draftId))"
       @switch-model="handleSwitchModel"
       @switch-thinking-effort="handleSwitchThinkingEffort"
+      @switch-mode="handleSwitchMode"
     />
 
   </div>

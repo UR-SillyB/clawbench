@@ -165,6 +165,7 @@
         @update:show="showSettingsModal = $event"
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
+        @switch-mode="handleSwitchMode"
       />
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
       <!-- @ command autocomplete menu (ClawBench built-in) -->
@@ -290,6 +291,7 @@ const emit = defineEmits([
   'delete-session',
   'switch-model',
   'switch-thinking-effort',
+  'switch-mode',
 ])
 
 const inputText = ref('')
@@ -660,6 +662,10 @@ function handleSwitchModel(model) {
 
 function handleSwitchThinkingEffort(level) {
   emit('switch-thinking-effort', level)
+}
+
+function handleSwitchMode(mode) {
+  emit('switch-mode', mode)
 }
 
 // Menu mutual exclusion: opening one closes the others
