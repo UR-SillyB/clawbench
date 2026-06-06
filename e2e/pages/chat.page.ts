@@ -9,7 +9,6 @@ import { type Locator, type Page, expect } from '@playwright/test'
  * - .chat-stop-btn        → stop/cancel button (visible during loading)
  * - .quick-send-title     → quick-send popup title
  * - .settings-chip        → session settings chip (model/thinking/mode)
- * - .mode-chip            → ACP mode selector chip
  * - .chat-messages        → messages scroll container
  * - .chat-message.user    → user message
  * - .chat-message.assistant → AI assistant message
@@ -28,7 +27,6 @@ export class ChatPage {
   readonly stopButton: Locator
   readonly messagesContainer: Locator
   readonly settingsChip: Locator
-  readonly modeChip: Locator
 
   constructor(page: Page) {
     this.page = page
@@ -37,7 +35,6 @@ export class ChatPage {
     this.stopButton = page.locator('.chat-stop-btn')
     this.messagesContainer = page.locator('.chat-messages')
     this.settingsChip = page.locator('.settings-chip')
-    this.modeChip = page.locator('.mode-chip')
   }
 
   /** Fill the textarea with text */
@@ -246,10 +243,17 @@ export class ChatPage {
   // ACP Mode helpers
   // ───────────────────────────────────────────────────────
 
-  /** Open the ACP mode tab in ModelModal by clicking the mode chip */
+  /** Open the ACP mode tab in ModelModal by clicking the settings chip then switching to mode tab */
   async openModeMenu(): Promise<void> {
-    await this.modeChip.click()
-    // Wait for modal to appear and mode tab to be active
+    // Open settings modal
+    await this.settingsChip.click()
+    // Wait for modal to appear
+    await expect(this.page.locator('.model-tab').first()).toBeVisible({ timeout: 5000 })
+    // Switch to mode tab
+    const modeTab = this.page.locator('.model-tab').filter({ hasText: /mode|模式/i })
+    await expect(modeTab).toBeVisible({ timeout: 5000 })
+    await modeTab.click()
+    // Wait for mode tab to be active
     await expect(this.page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })).toBeVisible({ timeout: 5000 })
   }
 

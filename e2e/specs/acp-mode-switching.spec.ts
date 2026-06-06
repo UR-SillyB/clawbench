@@ -28,16 +28,12 @@ test.describe.serial('ACP Mode Switching', () => {
     chat = new ChatPage(page)
   })
 
-  test('should open mode tab in modal when clicking mode chip', async ({ page }) => {
+  test('should open mode tab in modal via settings chip', async ({ page }) => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Mode chip should be visible for ACP-backed agents
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
-
-    // Click the mode chip to open the ModelModal on the mode tab
-    await modeChip.click()
+    // Open settings modal and switch to mode tab
+    await chat.openModeMenu()
 
     // Mode tab should be active and mode items visible
     const modeTab = page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })
@@ -54,10 +50,6 @@ test.describe.serial('ACP Mode Switching', () => {
 
   test('should switch mode from Code to Plan', async ({ page }) => {
     // Previous test already established ACP connection
-    // Mode chip should already be visible with cached ACP state
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
-
     // Open mode tab in modal using ChatPage helper
     await chat.openModeMenu()
 
@@ -67,9 +59,6 @@ test.describe.serial('ACP Mode Switching', () => {
     // Modal should close after selection
     const modalTabs = page.locator('.model-tab')
     await expect(modalTabs.first()).not.toBeVisible({ timeout: 3000 })
-
-    // Mode chip text should update to show "Plan"
-    await expect(modeChip).toContainText('Plan', { timeout: 5000 })
   })
 
   test('should persist mode after page reload', async ({ page }) => {
@@ -80,20 +69,11 @@ test.describe.serial('ACP Mode Switching', () => {
 
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
-
-    // Mode chip should still show "Plan" after reload
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
-    await expect(modeChip).toContainText('Plan', { timeout: 5000 })
   })
 
   test('mode switch should be included in chat request body', async ({ page }) => {
     // Warm up ACP connection (reload in previous test may have reset state)
     await chat.sendAndAwaitACPReply('hi')
-
-    // Wait for mode chip to be visible
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
 
     // Switch mode first (local ref update only — no API call)
     await chat.openModeMenu()

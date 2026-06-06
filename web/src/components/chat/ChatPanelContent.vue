@@ -87,9 +87,6 @@
       :currentModelName="identity.currentModelName.value"
       :currentThinkingEffort="identity.currentThinkingEffort.value"
       :currentAgentId="identity.currentAgentId.value"
-      :currentModeId="identity.currentModeId.value"
-      :currentModeName="identity.currentModeName.value"
-      :availableModes="identity.availableModes.value"
       :active="props.active"
       @send="sendMessage"
       @cancel="stream.cancelStream"
@@ -106,7 +103,6 @@
       @delete-session="() => manager.deleteCurrentSession((draftId) => inputBarRef.value?.deleteDraft(draftId))"
       @switch-model="handleSwitchModel"
       @switch-thinking-effort="handleSwitchThinkingEffort"
-      @switch-mode="handleSwitchMode"
     />
 
   </div>

@@ -35,13 +35,6 @@
         <Settings :size="14" />
         <span class="chat-action-label">{{ currentModelName }}</span>
       </button>
-      <!-- Mode chip — only visible when ACP agent supports session modes — opens modal on mode tab -->
-      <button v-if="availableModes.length > 0" class="chat-action-btn mode-chip clickable"
-        @click.stop="openSettingsModal('mode')"
-        :title="t('chat.modeSwitcher.title')">
-        <Layers :size="14" />
-        <span class="chat-action-label">{{ currentModeName }}</span>
-      </button>
     </div>
     <!-- Input container -->
     <div class="chat-input-container" :class="{ 'drag-over': isDragOver }"
@@ -172,7 +165,6 @@
         @update:show="showSettingsModal = $event"
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
-        @switch-mode="handleModeSelect"
       />
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
       <!-- @ command autocomplete menu (ClawBench built-in) -->
@@ -198,7 +190,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Layers } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -279,8 +271,6 @@ const props = defineProps({
   currentModelName: String,
   currentThinkingEffort: String,
   currentAgentId: String,
-  currentModeName: String,
-  availableModes: { type: Array, default: () => [] },
   active: Boolean,
 })
 
@@ -300,7 +290,6 @@ const emit = defineEmits([
   'delete-session',
   'switch-model',
   'switch-thinking-effort',
-  'switch-mode',
 ])
 
 const inputText = ref('')
@@ -671,10 +660,6 @@ function handleSwitchModel(model) {
 
 function handleSwitchThinkingEffort(level) {
   emit('switch-thinking-effort', level)
-}
-
-function handleModeSelect(mode) {
-  emit('switch-mode', mode)
 }
 
 // Menu mutual exclusion: opening one closes the others
@@ -1258,20 +1243,6 @@ defineExpose({
   white-space: nowrap;
 }
 
-/* Mode switcher chip (same pattern as settings-chip) */
-.mode-chip {
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.mode-chip .chat-action-label {
-  overflow-x: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 
 </style>
 
@@ -1453,5 +1424,4 @@ defineExpose({
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* @ command autocomplete menu styles */
+</style>
