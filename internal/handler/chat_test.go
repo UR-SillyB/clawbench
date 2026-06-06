@@ -759,6 +759,31 @@ func TestCancelChat_WrongMethod(t *testing.T) {
 	assertStatus(t, w, http.StatusMethodNotAllowed)
 }
 
+func TestCancelChat_StuckSessionForceClears(t *testing.T) {
+	// Simulates the bug scenario: session is marked running but has no cancel
+	// function (race window between TrySetSessionRunning and RegisterSessionCancel).
+	// CancelChat should force-clear the stuck session and return success.
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sid := createTestSession(t, env.ProjectDir)
+
+	// Simulate stuck state: running=true but no cancel func registered
+	service.SetSessionRunning(sid, true)
+
+	req := newRequest(t, http.MethodPost, "/api/ai/chat/cancel?session_id="+sid, nil)
+	req = withProjectCookie(req, env.ProjectDir)
+
+	w := callHandler(CancelChat, req)
+	assertStatus(t, w, http.StatusOK)
+
+	// Session should no longer be running
+	assert.False(t, service.IsSessionRunning(sid))
+
+	// After force-clear, a new TrySetSessionRunning should succeed
+	assert.True(t, service.TrySetSessionRunning(sid))
+}
+
 // --- ServeAISession ---
 
 func TestServeAISession_DeleteNonExistentDir(t *testing.T) {
