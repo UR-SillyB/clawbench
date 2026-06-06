@@ -118,7 +118,7 @@ export default {
       selectAgentOrLongPress: '选择智能体（长按直接新建）',
     },
     modelSwitcher: {
-      title: '选择模型',
+      title: '模型',
     },
     modeSwitcher: {
       title: '会话模式',
@@ -143,7 +143,7 @@ export default {
       noSearchResults: '未找到匹配的模型',
     },
     thinkingEffortSwitcher: {
-      title: '选择思考档位',
+      title: '思考档位',
       auto: '自动',
     },
     attach: {

@@ -30,14 +30,14 @@
       </button>
       <!-- Model & thinking chip — opens modal -->
       <button class="chat-action-btn model-chip clickable"
-        @click.stop="showModelModal = true"
+        @click.stop="openModelModal('model')"
         :title="t('chat.actions.switchModel') + ' · ' + currentModelName">
         <Cpu :size="14" />
         <span class="chat-action-label">{{ currentModelName }}</span>
       </button>
-      <!-- Mode chip — only visible when ACP agent supports session modes -->
-      <button v-if="availableModes.length > 0" ref="modeChipRef" class="chat-action-btn mode-chip clickable"
-        @click.stop="showModeMenu = !showModeMenu"
+      <!-- Mode chip — only visible when ACP agent supports session modes — opens modal on mode tab -->
+      <button v-if="availableModes.length > 0" class="chat-action-btn mode-chip clickable"
+        @click.stop="openModelModal('mode')"
         :title="t('chat.modeSwitcher.title')">
         <Layers :size="14" />
         <span class="chat-action-label">{{ currentModeName }}</span>
@@ -168,19 +168,12 @@
       <ModelModal
         :show="showModelModal"
         :agent-id="currentAgentId"
+        :initial-tab="modelModalInitialTab"
         @update:show="showModelModal = $event"
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
+        @switch-mode="handleModeSelect"
       />
-      <!-- Mode selection menu (ACP only) -->
-      <PopupMenu v-if="availableModes.length > 0" v-model:show="showModeMenu" :target-element="modeChipRef" :max-width="200" :max-height="280" :menu-items-count="availableModes.length">
-        <div class="mode-menu-title">{{ t('chat.modeSwitcher.title') }}</div>
-        <button v-for="mode in availableModes" :key="mode.id" class="mode-menu-item" :class="{ active: mode.id === currentModeId }" @click="handleModeSelect(mode)">
-          <Check v-if="mode.id === currentModeId" :size="14" />
-          <span v-else class="model-menu-check-spacer"></span>
-          <span class="mode-menu-item-name">{{ mode.name || mode.id }}</span>
-        </button>
-      </PopupMenu>
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
       <!-- @ command autocomplete menu (ClawBench built-in) -->
       <PopupMenu v-model:show="showAtMenu" :target-element="textareaRef" anchor="left" :max-width="260" :max-height="200" :menu-items-count="atMenuItems.length">
@@ -205,7 +198,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Cpu, Check, Zap, Layers } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Cpu, Zap, Layers } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -286,7 +279,6 @@ const props = defineProps({
   currentModelName: String,
   currentThinkingEffort: String,
   currentAgentId: String,
-  currentModeId: String,
   currentModeName: String,
   availableModes: { type: Array, default: () => [] },
   active: Boolean,
@@ -321,8 +313,12 @@ const attachMenuRef = ref(null)
 const showQuickMenu = ref(false)
 const sendBtnRef = ref(null)
 const showModelModal = ref(false)
-const showModeMenu = ref(false)
-const modeChipRef = ref(null)
+const modelModalInitialTab = ref('model')
+
+function openModelModal(tab) {
+  modelModalInitialTab.value = tab
+  showModelModal.value = true
+}
 
 // ── @ command autocomplete ──
 const showAtMenu = ref(false)
@@ -678,16 +674,14 @@ function handleSwitchThinkingEffort(level) {
 }
 
 function handleModeSelect(mode) {
-  showModeMenu.value = false
   emit('switch-mode', mode)
 }
 
 // Menu mutual exclusion: opening one closes the others
-watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showModelModal.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
-watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showModelModal.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
-watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModeMenu.value = false; showSlashMenu.value = false } })
-watch(showModeMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
-watch(showSlashMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false; showModeMenu.value = false } })
+watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
+watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
+watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showSlashMenu.value = false } })
+watch(showSlashMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false } })
 
 onMounted(() => {
   fetchItems()
@@ -1406,57 +1400,6 @@ defineExpose({
   margin: 3px 6px;
 }
 
-/* Model switcher menu content styles */
-.model-menu-title {
-  padding: 4px 10px 1px;
-  font-size: 10px;
-  color: var(--text-muted, #999);
-  font-weight: 500;
-  letter-spacing: 0.3px;
-}
-
-.model-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  width: 100%;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  text-align: left;
-}
-
-.model-menu-item:hover {
-  background: var(--accent-color, #0066cc);
-  color: #fff;
-}
-
-.model-menu-item.active {
-  color: var(--accent-color, #0066cc);
-  font-weight: 500;
-}
-
-.model-menu-item.active:hover {
-  color: #fff;
-}
-
-.model-menu-item svg {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-}
-
-.model-menu-check-spacer {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
 /* @ command autocomplete menu styles */
 .at-menu-title {
   padding: 6px 12px;
@@ -1511,51 +1454,4 @@ defineExpose({
   white-space: nowrap;
 }
 
-/* Mode switcher menu content styles */
-.mode-menu-title {
-  padding: 4px 10px 1px;
-  font-size: 10px;
-  color: var(--text-muted, #999);
-  font-weight: 500;
-  letter-spacing: 0.3px;
-}
-
-.mode-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  width: 100%;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  text-align: left;
-}
-
-.mode-menu-item:hover {
-  background: var(--accent-color, #0066cc);
-  color: #fff;
-}
-
-.mode-menu-item.active {
-  color: var(--accent-color, #0066cc);
-  font-weight: 500;
-}
-
-.mode-menu-item.active:hover {
-  color: #fff;
-}
-
-.mode-menu-item svg {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-}
-
-.mode-menu-item-name {
-  font-size: 12px;
-}
-</style>
+/* @ command autocomplete menu styles */

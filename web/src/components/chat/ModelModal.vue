@@ -14,6 +14,10 @@
         <Brain :size="14" />
         {{ t('chat.thinkingEffortSwitcher.title') }}
       </button>
+      <button v-if="availableModes.length > 0" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
+        <Layers :size="14" />
+        {{ t('chat.modeSwitcher.title') }}
+      </button>
     </div>
 
     <!-- Model tab -->
@@ -109,6 +113,27 @@
       </div>
     </div>
 
+    <!-- Mode tab -->
+    <div v-if="activeTab === 'mode'" class="model-tab-content">
+      <div class="model-list">
+        <div
+          v-for="(mode, idx) in availableModes"
+          :key="mode.id"
+          class="model-item-wrapper"
+        >
+          <button
+            class="thinking-item"
+            :class="{ current: mode.id === currentModeId }"
+            @click="selectMode(mode)"
+          >
+            <span class="model-item-indicator" :class="{ active: mode.id === currentModeId }"></span>
+            <span class="model-item-name">{{ mode.name || mode.id }}</span>
+          </button>
+          <div v-if="idx < availableModes.length - 1" class="model-divider"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Long-press PopupMenu for "Set as Default" (kept for backward compat) -->
     <PopupMenu v-model:show="showDefaultPopupMenu" :target-element="longPressTarget" :max-width="180" :max-height="100" :menu-items-count="1">
       <button class="popup-set-default" @click="setAsDefault">
@@ -121,7 +146,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Cpu, Brain, RefreshCw, Star } from 'lucide-vue-next'
+import { Cpu, Brain, Layers, RefreshCw, Star } from 'lucide-vue-next'
 import ModalDialog from '@/components/common/ModalDialog.vue'
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import { useAgents } from '@/composables/useAgents'
@@ -133,14 +158,15 @@ import { useToast } from '@/composables/useToast'
 const props = defineProps({
   show: Boolean,
   agentId: String,
+  initialTab: { type: String, default: 'model' },
 })
 
-const emit = defineEmits(['update:show', 'switch-model', 'switch-thinking-effort'])
+const emit = defineEmits(['update:show', 'switch-model', 'switch-thinking-effort', 'switch-mode'])
 
 const { t } = useI18n()
 const toast = useToast()
 const { getAgentModels, getAgentThinkingEffortLevels, getAgent, updateAgentField, getDefaultModelId, canRefreshModels } = useAgents()
-const { currentModelId, currentThinkingEffort, availableThinkingEfforts } = useSessionIdentity()
+const { currentModelId, currentThinkingEffort, currentModeId, availableThinkingEfforts, availableModes } = useSessionIdentity()
 
 const activeTab = ref('model')
 const searchQuery = ref('')
@@ -190,7 +216,7 @@ const filteredModels = computed(() => {
 watch(() => props.show, (val) => {
   if (val) {
     searchQuery.value = ''
-    activeTab.value = 'model'
+    activeTab.value = props.initialTab || 'model'
   }
 })
 
@@ -213,6 +239,13 @@ function selectThinkingEffort(level) {
     return
   }
   emit('switch-thinking-effort', level)
+  emit('update:show', false)
+}
+
+// --- Mode selection ---
+
+function selectMode(mode) {
+  emit('switch-mode', mode)
   emit('update:show', false)
 }
 

@@ -118,7 +118,7 @@ export default {
       selectAgentOrLongPress: 'Select agent (long press to create new)',
     },
     modelSwitcher: {
-      title: 'Select model',
+      title: 'Model',
     },
     modeSwitcher: {
       title: 'Session mode',

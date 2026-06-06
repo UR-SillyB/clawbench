@@ -246,16 +246,16 @@ export class ChatPage {
   // ACP Mode helpers
   // ───────────────────────────────────────────────────────
 
-  /** Open the ACP mode selection menu by clicking the mode chip */
+  /** Open the ACP mode tab in ModelModal by clicking the mode chip */
   async openModeMenu(): Promise<void> {
     await this.modeChip.click()
-    // Wait for mode menu to appear
-    await expect(this.page.locator('.mode-menu-item').first()).toBeVisible({ timeout: 5000 })
+    // Wait for modal to appear and mode tab to be active
+    await expect(this.page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })).toBeVisible({ timeout: 5000 })
   }
 
   /** Select an ACP mode by name */
   async selectMode(modeName: string): Promise<void> {
-    const item = this.page.locator('.mode-menu-item').filter({ hasText: new RegExp(modeName, 'i') })
+    const item = this.page.locator('.thinking-item').filter({ hasText: new RegExp(modeName, 'i') })
     await expect(item).toBeVisible({ timeout: 5000 })
     await item.click()
   }

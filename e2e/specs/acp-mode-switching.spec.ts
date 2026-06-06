@@ -28,7 +28,7 @@ test.describe.serial('ACP Mode Switching', () => {
     chat = new ChatPage(page)
   })
 
-  test('should open mode menu when clicking mode chip', async ({ page }) => {
+  test('should open mode tab in modal when clicking mode chip', async ({ page }) => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
@@ -36,14 +36,18 @@ test.describe.serial('ACP Mode Switching', () => {
     const modeChip = page.locator('.mode-chip')
     await expect(modeChip).toBeVisible({ timeout: 15000 })
 
-    // Click the mode chip to open the mode menu
+    // Click the mode chip to open the ModelModal on the mode tab
     await modeChip.click()
 
-    // Mode menu should appear with mode-menu-item elements
-    const modeItems = page.locator('.mode-menu-item')
+    // Mode tab should be active and mode items visible
+    const modeTab = page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })
+    await expect(modeTab).toBeVisible({ timeout: 5000 })
+
+    // Mode items use .thinking-item class in the modal
+    const modeItems = page.locator('.model-tab-content .thinking-item')
     await expect(modeItems.first()).toBeVisible({ timeout: 5000 })
 
-    // acp-mock provides 3 modes: Code, Plan, Bypass Permissions
+    // acp-mock provides at least 2 modes
     const count = await modeItems.count()
     expect(count).toBeGreaterThanOrEqual(2)
   })
@@ -54,15 +58,15 @@ test.describe.serial('ACP Mode Switching', () => {
     const modeChip = page.locator('.mode-chip')
     await expect(modeChip).toBeVisible({ timeout: 15000 })
 
-    // Open mode menu using ChatPage helper
+    // Open mode tab in modal using ChatPage helper
     await chat.openModeMenu()
 
     // Select "Plan" mode
     await chat.selectMode('Plan')
 
-    // Mode menu should close after selection
-    const modeItems = page.locator('.mode-menu-item')
-    await expect(modeItems.first()).not.toBeVisible({ timeout: 3000 })
+    // Modal should close after selection
+    const modalTabs = page.locator('.model-tab')
+    await expect(modalTabs.first()).not.toBeVisible({ timeout: 3000 })
 
     // Mode chip text should update to show "Plan"
     await expect(modeChip).toContainText('Plan', { timeout: 5000 })
