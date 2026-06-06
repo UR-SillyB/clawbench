@@ -90,7 +90,7 @@ describe('useTaskTab', () => {
 
       await loadTasks()
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/tasks')
+      expect(mockFetch).toHaveBeenCalledWith('/api/tasks', expect.any(Object))
       expect(store.state.tasks.length).toBe(2)
       expect(store.state.taskRunning).toBe(false)
       expect(store.state.taskUnread).toBe(false)
