@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -383,6 +384,13 @@ type ACPConn struct {
 	// liveness
 	lastUsed time.Time
 	alive    bool
+	startedAt time.Time // when the agent process was spawned
+
+	// cmdWaitOnce ensures cmd.Wait() is called exactly once; the result is
+	// cached in cmdWaitState for subsequent readers (e.g. collectCrashDiagnostics
+	// and spawnLocked both need the exit state).
+	cmdWaitOnce  sync.Once
+	cmdWaitState *os.ProcessState
 
 	// cached state — populated from NewSession/ResumeSession responses and
 	// re-emitted for every ExecuteStream call so the frontend always has
@@ -599,6 +607,9 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	c.acpSID = "" // cleared on respawn — will be set by ensureAliveWithSession
 	c.alive = true
 	c.lastUsed = time.Now()
+	c.startedAt = time.Now()
+	c.cmdWaitOnce = sync.Once{}
+	c.cmdWaitState = nil
 
 	go c.watchProcessDeath()
 	return nil
@@ -606,6 +617,8 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 
 // watchProcessDeath monitors the ACP connection and marks it as dead
 // when the agent process exits or the connection drops.
+// Collects crash diagnostics (exit code, signal, stderr, uptime) to help
+// diagnose why the agent process died.
 func (c *ACPConn) watchProcessDeath() {
 	if c.conn == nil {
 		return
@@ -614,10 +627,25 @@ func (c *ACPConn) watchProcessDeath() {
 
 	c.mu.Lock()
 	if c.alive {
-		slog.Info("acp conn: connection died", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID)
 		c.alive = false
 	}
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
 	c.mu.Unlock()
+
+	// Collect crash diagnostics outside the lock
+	diag := c.collectCrashDiagnostics()
+	slog.Error("acp conn: agent process died",
+		"agent_id", agentID,
+		"clawbench_sid", c.clawbenchSID,
+		"exit_code", diag.ExitCode,
+		"signal", diag.Signal,
+		"uptime", diag.Uptime.Round(time.Second),
+		"stderr_tail", diag.StderrTail,
+	)
+
 	c.resetLastSetConfig()
 }
 
@@ -764,20 +792,64 @@ type crashDiagnostics struct {
 	ExitCode    int
 	StderrTail  string // last ~2KB of stderr
 	WasAlive    bool   // was conn.Done() already closed?
+	Uptime      time.Duration
+	Signal      string // decoded signal name (e.g., "SIGKILL", "SIGSEGV") if killed by signal
 }
 
 func (d crashDiagnostics) String() string {
-	if d.ExitCode == 0 && d.StderrTail == "" {
-		return ""
-	}
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 4)
 	if d.ExitCode != 0 {
-		parts = append(parts, fmt.Sprintf("exit_code=%d", d.ExitCode))
+		exitStr := fmt.Sprintf("exit_code=%d", d.ExitCode)
+		if sig := d.Signal; sig != "" {
+			exitStr += " (" + sig + ")"
+		} else if decoded := decodeExitCode(d.ExitCode); decoded != "" {
+			exitStr += " (" + decoded + ")"
+		}
+		parts = append(parts, exitStr)
+	}
+	if d.Uptime > 0 {
+		parts = append(parts, fmt.Sprintf("uptime=%s", d.Uptime.Round(time.Second)))
 	}
 	if d.StderrTail != "" {
 		parts = append(parts, fmt.Sprintf("stderr: %s", d.StderrTail))
 	}
+	if len(parts) == 0 {
+		return ""
+	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// decodeExitCode maps common exit codes to human-readable descriptions.
+// On Unix, exit codes > 128 indicate the process was killed by signal (128 + signal number).
+func decodeExitCode(code int) string {
+	switch code {
+	case 1:
+		return "general error"
+	case 126:
+		return "permission denied / not executable"
+	case 127:
+		return "command not found"
+	case 128:
+		return "invalid exit argument"
+	case 129:
+		return "SIGHUP"
+	case 130:
+		return "SIGINT (Ctrl+C)"
+	case 137:
+		return "SIGKILL (possible OOM killer)"
+	case 139:
+		return "SIGSEGV (segmentation fault)"
+	case 141:
+		return "SIGPIPE (broken pipe)"
+	case 143:
+		return "SIGTERM"
+	default:
+		if code > 128 {
+			sigNum := code - 128
+			return fmt.Sprintf("signal %d", sigNum)
+		}
+		return ""
+	}
 }
 
 // collectCrashDiagnostics gathers exit code and stderr from the crashed agent process.
@@ -788,7 +860,13 @@ func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
 	c.mu.Lock()
 	cmd := c.cmd
 	conn := c.conn
+	startedAt := c.startedAt
 	c.mu.Unlock()
+
+	// Uptime
+	if !startedAt.IsZero() {
+		diag.Uptime = time.Since(startedAt)
+	}
 
 	// Check if the connection's Done channel is closed (confirming peer disconnect)
 	if conn != nil {
@@ -804,9 +882,23 @@ func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
 		return diag
 	}
 
-	// Try to get the exit code (non-blocking: process should already be dead)
-	if state, err := cmd.Process.Wait(); err == nil {
-		diag.ExitCode = state.ExitCode()
+	// Use cmdWaitOnce to safely call Wait() exactly once, caching the result.
+	// This avoids a race between collectCrashDiagnostics and spawnLocked both
+	// calling Wait() on the same process.
+	c.cmdWaitOnce.Do(func() {
+		if state, err := cmd.Process.Wait(); err == nil {
+			c.cmdWaitState = state
+		}
+	})
+
+	if c.cmdWaitState != nil {
+		diag.ExitCode = c.cmdWaitState.ExitCode()
+		// Check if the process was killed by a signal (Unix-specific)
+		if ws, ok := c.cmdWaitState.Sys().(syscall.WaitStatus); ok {
+			if ws.Signaled() {
+				diag.Signal = ws.Signal().String()
+			}
+		}
 	}
 
 	// Extract stderr from the strings.Builder

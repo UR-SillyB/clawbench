@@ -296,7 +296,7 @@ func TestCrashDiagnostics_String_Empty(t *testing.T) {
 
 func TestCrashDiagnostics_String_ExitCodeOnly(t *testing.T) {
 	d := crashDiagnostics{ExitCode: 137}
-	assert.Equal(t, " (exit_code=137)", d.String())
+	assert.Equal(t, " (exit_code=137 (SIGKILL (possible OOM killer)))", d.String())
 }
 
 func TestCrashDiagnostics_String_StderrOnly(t *testing.T) {
@@ -306,7 +306,7 @@ func TestCrashDiagnostics_String_StderrOnly(t *testing.T) {
 
 func TestCrashDiagnostics_String_Both(t *testing.T) {
 	d := crashDiagnostics{ExitCode: 1, StderrTail: "out of memory"}
-	assert.Equal(t, " (exit_code=1, stderr: out of memory)", d.String())
+	assert.Equal(t, " (exit_code=1 (general error), stderr: out of memory)", d.String())
 }
 
 // --- ACPConn.SetCachedConfigState derives modeState ---
