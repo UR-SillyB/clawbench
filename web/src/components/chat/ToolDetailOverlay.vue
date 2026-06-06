@@ -1617,6 +1617,35 @@ function handleBodyClick(event) {
 .tool-detail-header[data-category="permission"] { --tool-accent: #ef4444; }
 :root[data-theme="dark"] .tool-detail-header[data-category="permission"] { --tool-accent: #f87171; }
 
+.tool-detail-body .permission-result {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.tool-detail-body .permission-result-approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.tool-detail-body .permission-result-denied {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+:root[data-theme="dark"] .tool-detail-body .permission-result-approved {
+  background: #166534;
+  color: #dcfce7;
+}
+
+:root[data-theme="dark"] .tool-detail-body .permission-result-denied {
+  background: #991b1b;
+  color: #fee2e2;
+}
+
 /* Tool output status badge (for Write/Edit etc. that return short status) */
 .tool-detail-body .tool-output-status-msg {
   padding: 6px 0;

@@ -1279,6 +1279,50 @@ describe('PermissionApproval renderer', () => {
     expect(html).toContain('permission-approval-view')
   })
 
+  it('shows approved result badge when blockCtx.done=true and status=success', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      toolInput: JSON.stringify({ command: 'ls' }),
+      options: [{ name: 'Allow Once', kind: 'allow_once', optionId: 'a1' }],
+    }, 'PermissionApproval', { done: true, status: 'success', output: 'Approved' })
+    expect(html).toContain('permission-responded')
+    expect(html).toContain('permission-result')
+    expect(html).toContain('permission-result-approved')
+    expect(html).not.toContain('permission-options')
+    expect(html).not.toContain('permission-btn')
+  })
+
+  it('shows denied result badge when blockCtx.done=true and status=error', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      toolInput: JSON.stringify({ command: 'rm -rf /' }),
+      options: [{ name: 'Deny', kind: 'reject_once', optionId: 'r1' }],
+    }, 'PermissionApproval', { done: true, status: 'error', output: 'Cancelled' })
+    expect(html).toContain('permission-responded')
+    expect(html).toContain('permission-result')
+    expect(html).toContain('permission-result-denied')
+    expect(html).not.toContain('permission-options')
+  })
+
+  it('shows buttons when blockCtx is absent (streaming/fresh)', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      options: [{ name: 'Allow Once', kind: 'allow_once', optionId: 'a1' }],
+    }, 'PermissionApproval')
+    expect(html).not.toContain('permission-responded')
+    expect(html).toContain('permission-options')
+    expect(html).toContain('permission-btn-allow')
+  })
+
+  it('shows buttons when blockCtx.done is false', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      options: [{ name: 'Allow Once', kind: 'allow_once', optionId: 'a1' }],
+    }, 'PermissionApproval', { done: false })
+    expect(html).not.toContain('permission-responded')
+    expect(html).toContain('permission-options')
+  })
+
   it('shouldAutoExpandTool returns true', () => {
     expect(shouldAutoExpandTool('PermissionApproval')).toBe(true)
   })

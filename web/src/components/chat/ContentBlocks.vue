@@ -2100,4 +2100,33 @@ onUnmounted(() => {
   background: #ef4444;
   opacity: 1;
 }
+
+.content-blocks .tool-detail .permission-result {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.content-blocks .tool-detail .permission-result-approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.content-blocks .tool-detail .permission-result-denied {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+:root[data-theme="dark"] .content-blocks .tool-detail .permission-result-approved {
+  background: #166534;
+  color: #dcfce7;
+}
+
+:root[data-theme="dark"] .content-blocks .tool-detail .permission-result-denied {
+  background: #991b1b;
+  color: #fee2e2;
+}
 </style>
