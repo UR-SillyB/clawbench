@@ -829,7 +829,10 @@ func finalizeStreamRun(
 	if ms, _, es, _, _, _ := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
 		if ms != nil && ms.CurrentModeID != "" {
 			responseMetadata.Mode = ms.CurrentModeID
-			_ = service.UpdateSessionMode(sessionID, ms.CurrentModeID)
+			// Do NOT overwrite the user's mode selection in DB with the agent's
+			// runtime mode switch. The agent may auto-switch modes (e.g. code→ask)
+			// during execution, but that should not persist over the user's choice.
+			// User-selected mode is already persisted at POST time (line ~422-423).
 		}
 		if es != nil && es.CurrentID != "" {
 			responseMetadata.ThinkingEffort = es.CurrentID
