@@ -1,6 +1,7 @@
 package summarize
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -139,22 +140,28 @@ var (
 )
 
 // preserveAskQuestion converts a <ask-question>...</ask-question> block
-// (whose content is XML with <item> child elements) into a plain-text
-// summary suitable for TTS. If the XML cannot be parsed, the raw content
-// is returned as-is so that the summarizer can still see it.
+// (whose content is XML with <item> child elements, or JSON with "questions" array)
+// into a plain-text summary suitable for TTS. If the content cannot be parsed,
+// the raw content is returned as-is so that the summarizer can still see it.
 func preserveAskQuestion(match string) string {
 	sub := reAskQuestion.FindStringSubmatch(match)
 	if len(sub) < 2 {
 		return match
 	}
-	xmlContent := sub[1]
+	content := strings.TrimSpace(sub[1])
 
-	items := reItem.FindAllStringSubmatch(xmlContent, -1)
-	if len(items) == 0 {
-		// No <item> elements found — return stripped text
-		return stripXMLTags(xmlContent)
+	// Try XML format first
+	items := reItem.FindAllStringSubmatch(content, -1)
+	if len(items) > 0 {
+		return preserveAskQuestionXML(items)
 	}
 
+	// Try JSON format
+	return preserveAskQuestionJSON(content)
+}
+
+// preserveAskQuestionXML converts XML-format ask-question items into plain text for TTS.
+func preserveAskQuestionXML(items [][]string) string {
 	var b strings.Builder
 	for i, item := range items {
 		if i > 0 {
@@ -162,19 +169,16 @@ func preserveAskQuestion(match string) string {
 		}
 		itemContent := item[1]
 
-		// Extract <question>
 		qMatch := reQuestion.FindStringSubmatch(itemContent)
 		if len(qMatch) >= 2 {
 			b.WriteString(strings.TrimSpace(qMatch[1]))
 		}
 
-		// Extract <header>
 		hMatch := reHeader.FindStringSubmatch(itemContent)
 		if len(hMatch) >= 2 && strings.TrimSpace(hMatch[1]) != "" {
 			fmt.Fprintf(&b, " (%s)", strings.TrimSpace(hMatch[1]))
 		}
 
-		// Extract <option> elements
 		opts := reOption.FindAllStringSubmatch(itemContent, -1)
 		if len(opts) > 0 {
 			b.WriteString(": ")
@@ -192,6 +196,48 @@ func preserveAskQuestion(match string) string {
 					if desc != "" && (len(labelMatch) < 2 || desc != strings.TrimSpace(labelMatch[1])) {
 						fmt.Fprintf(&b, " — %s", desc)
 					}
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+// preserveAskQuestionJSON converts JSON-format ask-question content into plain text for TTS.
+func preserveAskQuestionJSON(jsonContent string) string {
+	var data struct {
+		Questions []struct {
+			Header      string `json:"header"`
+			Question    string `json:"question"`
+			MultiSelect bool   `json:"multiSelect"`
+			Options     []struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(jsonContent), &data); err != nil || len(data.Questions) == 0 {
+		return stripXMLTags(jsonContent)
+	}
+
+	var b strings.Builder
+	for i, q := range data.Questions {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(q.Question)
+		if q.Header != "" {
+			fmt.Fprintf(&b, " (%s)", q.Header)
+		}
+		if len(q.Options) > 0 {
+			b.WriteString(": ")
+			for j, opt := range q.Options {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(opt.Label)
+				if opt.Description != "" && opt.Description != opt.Label {
+					fmt.Fprintf(&b, " — %s", opt.Description)
 				}
 			}
 		}

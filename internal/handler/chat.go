@@ -1139,22 +1139,46 @@ func stringsContainsAnyBlock(blocks []model.ContentBlock, substr string) bool {
 }
 
 // extractXMLCandidate checks if the content between <ask-question> tags contains
-// XML with <item> child elements. Returns the raw XML content string if valid,
-// or empty string otherwise.
+// valid XML with <item> child elements or valid JSON with "questions" array.
+// Returns the raw content string if valid, or empty string otherwise.
 func extractXMLCandidate(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return ""
 	}
-	// Must contain <item> element (XML format)
-	if !strings.Contains(trimmed, "<item>") && !strings.Contains(trimmed, "<item ") {
+	// XML format: check for <item> element
+	if strings.Contains(trimmed, "<item>") || strings.Contains(trimmed, "<item ") {
+		// Basic validation: must have <question> and <option>
+		if !strings.Contains(trimmed, "<question>") || !strings.Contains(trimmed, "<option>") {
+			return ""
+		}
+		return trimmed
+	}
+	// JSON format: check for "questions" key
+	if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"questions"`) {
+		var data map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &data); err != nil {
+			return ""
+		}
+		questions, ok := data["questions"].([]any)
+		if !ok || len(questions) == 0 {
+			return ""
+		}
+		// Validate at least one question has question text and options
+		for _, q := range questions {
+			qm, ok := q.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, hasQ := qm["question"]; hasQ {
+				if opts, ok := qm["options"].([]any); ok && len(opts) > 0 {
+					return trimmed
+				}
+			}
+		}
 		return ""
 	}
-	// Basic validation: must have <question> and <option>
-	if !strings.Contains(trimmed, "<question>") || !strings.Contains(trimmed, "<option>") {
-		return ""
-	}
-	return trimmed
+	return ""
 }
 
 // parseAskQuestionXML parses XML-format <ask-question> content into the
@@ -1210,6 +1234,76 @@ func parseAskQuestionXML(xmlContent string) map[string]any {
 				opt["description"] = strings.TrimSpace(descMatch[1])
 			}
 			options = append(options, opt)
+		}
+
+		if len(options) == 0 {
+			continue
+		}
+
+		questions = append(questions, map[string]any{
+			"header":      header,
+			"multiSelect": multiSelect,
+			"question":    question,
+			"options":     options,
+		})
+	}
+
+	if len(questions) == 0 {
+		return nil
+	}
+
+	return map[string]any{"questions": questions}
+}
+
+// parseAskQuestionJSON parses JSON-format <ask-question> content into the
+// map[string]any format expected by ContentBlock.Input for "AskUserQuestion" tool.
+// JSON format: { "questions": [{ "question", "header", "multiSelect", "options": [{ "label", "description" }] }] }
+func parseAskQuestionJSON(jsonContent string) map[string]any {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(jsonContent), &data); err != nil {
+		return nil
+	}
+
+	rawQuestions, ok := data["questions"].([]any)
+	if !ok || len(rawQuestions) == 0 {
+		return nil
+	}
+
+	var questions []map[string]any
+	for _, rq := range rawQuestions {
+		item, ok := rq.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		question, _ := item["question"].(string)
+		if question == "" {
+			continue
+		}
+
+		header, _ := item["header"].(string)
+		_, multiSelect := item["multiSelect"].(bool)
+
+		rawOptions, ok := item["options"].([]any)
+		if !ok || len(rawOptions) == 0 {
+			continue
+		}
+
+		var options []map[string]any
+		for _, ro := range rawOptions {
+			opt, ok := ro.(map[string]any)
+			if !ok {
+				continue
+			}
+			label, _ := opt["label"].(string)
+			if label == "" {
+				continue
+			}
+			entry := map[string]any{"label": label}
+			if desc, ok := opt["description"].(string); ok && desc != "" {
+				entry["description"] = desc
+			}
+			options = append(options, entry)
 		}
 
 		if len(options) == 0 {
@@ -1287,7 +1381,11 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 
 		input := parseAskQuestionXML(xmlContent)
 		if input == nil {
-			slog.Error("failed to parse ask-question XML")
+			// Try JSON format as fallback
+			input = parseAskQuestionJSON(xmlContent)
+		}
+		if input == nil {
+			slog.Error("failed to parse ask-question content (tried XML and JSON)")
 			continue
 		}
 
