@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { apiGet } from '@/utils/api'
 import { gt } from '@/composables/useLocale'
-import { updateModeState, updateThinkingEffortState, updateCommandState, currentAgentId } from '@/composables/useSessionIdentity.ts'
+import { updateModeState, updateAvailableModes, updateThinkingEffortState, updateAvailableThinkingEfforts, updateCommandState, currentAgentId } from '@/composables/useSessionIdentity.ts'
 import { updatePlanEntries } from '@/composables/usePlanProgress'
 
 // Singleton state — shared across the whole app

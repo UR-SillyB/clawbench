@@ -140,6 +140,10 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 						forwardACPEvent(ch, StreamEvent{Type: "done"})
 						return
 					}
+					slog.Error("acp: retry also failed after respawn",
+						"session_id", req.SessionID,
+						"original_error", err.Error(),
+						"retry_error", retryPromptErr.Error())
 					forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v (retry also failed: %v)", err, retryPromptErr), Reason: ReasonBackendExit})
 					return
 				}

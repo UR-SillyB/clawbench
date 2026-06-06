@@ -497,6 +497,16 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		defer service.UnregisterSessionStream(sessionID)
 		defer cancel()
 		defer service.UnregisterSessionCancel(sessionID)
+		// Close ACP connection when the session goroutine exits to prevent
+		// stale agent processes from lingering indefinitely. For ACP agents,
+		// the connection and its subprocess are no longer needed after the
+		// session's AI goroutine finishes. Non-ACP agents are unaffected.
+		defer func() {
+			if agent, ok := model.Agents[effectiveAgentID]; ok && agent.Transport == "acp-stdio" {
+				slog.Info("acp: closing connection for completed session", "session_id", sessionID, "agent_id", effectiveAgentID)
+				ai.GetACPConnManager().CloseConn(sessionID)
+			}
+		}()
 
 		// Build the first chat request
 		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, fileDir)

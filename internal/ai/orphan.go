@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -22,17 +23,29 @@ import (
 // as a marker for orphan detection.
 const OrphanChildEnvVar = "CLAWBENCH_CHILD=1"
 
+// OrphanSupervisorVar is an older marker used by previous ClawBench versions.
+// Some long-running processes from before the env var rename may still carry it.
+const OrphanSupervisorVar = "CLAWBENCH_NO_SUPERVISOR=1"
+
+// orphanCmdlinePatterns are patterns that identify an orphan ACP agent process
+// by its command line. Each pattern is a pair of (binarySubstring, argSubstring).
+// Both must be present in the cmdline for a match. Used as a fallback when
+// env markers are missing.
+var orphanCmdlinePatterns = [][2]string{
+	{"codebuddy", "--acp"},
+	{"claude", "--acp"},
+	{"codex", "app-server"},
+}
+
 // CleanupOrphans kills any AI subprocess left running after a previous
 // server crash. Called once at startup, before any new subprocesses spawn.
 //
-// On Linux: scans /proc/<pid>/environ for CLAWBENCH_CHILD=1
-// On macOS/Windows: falls back to checking /proc (macOS has no /proc,
-// so the function is a no-op there — orphaned processes will exit when
-// their stdin pipe closes after the parent dies).
+// On Linux: scans /proc/<pid>/environ for CLAWBENCH_CHILD=1 or
+// CLAWBENCH_NO_SUPERVISOR=1, and also checks /proc/<pid>/cmdline for
+// known ACP agent patterns (e.g., "--acp") as a fallback.
+// On macOS/Windows: no-op (orphaned processes exit when stdin pipe closes).
 func CleanupOrphans() {
 	if runtime.GOOS != "linux" {
-		// On non-Linux, rely on stdin-pipe-break to kill orphans.
-		// macOS doesn't have /proc; Windows uses a different process model.
 		return
 	}
 
@@ -56,14 +69,26 @@ func CleanupOrphans() {
 			continue // skip kernel/init
 		}
 
-		// Read the process environment to check for our marker
+		// Check environment markers
 		environPath := "/proc/" + entry.Name() + "/environ"
 		data, err := os.ReadFile(environPath)
 		if err != nil {
 			continue // permission denied or process exited
 		}
 
-		if !hasClawBenchChildMarker(data) {
+		isOrphan := hasClawBenchChildMarker(data) || hasClawBenchSupervisorMarker(data)
+
+		// Fallback: check cmdline for known ACP agent patterns
+		if !isOrphan {
+			cmdlinePath := "/proc/" + entry.Name() + "/cmdline"
+			cmdData, err := os.ReadFile(cmdlinePath)
+			if err != nil {
+				continue
+			}
+			isOrphan = hasOrphanCmdlinePattern(cmdData)
+		}
+
+		if !isOrphan {
 			continue
 		}
 
@@ -98,6 +123,25 @@ func CleanupOrphans() {
 // null bytes (\0) as delimiters between entries.
 func hasClawBenchChildMarker(environData []byte) bool {
 	return bytesContainsSep(environData, []byte(OrphanChildEnvVar), 0)
+}
+
+// hasClawBenchSupervisorMarker checks for the older CLAWBENCH_NO_SUPERVISOR=1
+// marker used by previous ClawBench versions.
+func hasClawBenchSupervisorMarker(environData []byte) bool {
+	return bytesContainsSep(environData, []byte(OrphanSupervisorVar), 0)
+}
+
+// hasOrphanCmdlinePattern checks if the /proc/<pid>/cmdline data contains
+// known ACP agent patterns. The cmdline file uses null bytes as delimiters
+// between arguments. Both the binary substring and arg substring must match.
+func hasOrphanCmdlinePattern(cmdData []byte) bool {
+	cmdStr := strings.ReplaceAll(string(cmdData), "\x00", " ")
+	for _, pattern := range orphanCmdlinePatterns {
+		if strings.Contains(cmdStr, pattern[0]) && strings.Contains(cmdStr, pattern[1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // bytesContainsSep checks if data contains target as a segment

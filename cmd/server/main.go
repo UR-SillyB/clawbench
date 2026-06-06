@@ -463,6 +463,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// Inject external session ID getter for ResumeSession recovery
 	ai.SetExternalSessionIDGetter(service.GetExternalSessionID)
 
+	// Inject session running checker for ACP idle sweep (avoids import cycle)
+	ai.GetACPConnManager().SetSessionRunningChecker(service.IsSessionRunning)
+
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
 	// Language is now per-request (sent from frontend), not configured at startup.
 	summarizeBackend := cfg.Summarize.Backend

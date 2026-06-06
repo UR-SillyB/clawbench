@@ -66,12 +66,26 @@ func isConfigKilledConnection(err error) bool {
 // ---------------------------------------------------------------------------
 
 // ACPConnManager manages one ACP stdio connection per ClawBench session.
-// Each session gets its own dedicated agent process that is never idle-reaped.
-// If the process dies, it is respawned and the session is recovered via ResumeSession.
+// Idle connections are reaped by a background sweep goroutine to prevent
+// stale agent processes from consuming resources indefinitely.
 type ACPConnManager struct {
-	mu    sync.Mutex
-	conns map[string]*ACPConn // keyed by clawbenchSID
+	mu       sync.Mutex
+	conns    map[string]*ACPConn // keyed by clawbenchSID
+	stopSweep chan struct{}       // closed to stop the idle sweep goroutine
+
+	// isSessionRunning is a callback that checks whether a session is
+	// actively running. Set by the service layer to avoid circular imports.
+	// If nil, idle sweep skips the running-check and closes all idle connections.
+	isSessionRunning func(sessionID string) bool
 }
+
+const (
+	// idleSweepInterval controls how often the background sweep runs.
+	idleSweepInterval = 1 * time.Minute
+	// idleConnTimeout is the maximum duration a connection can be idle
+	// before it is closed and removed from the pool.
+	idleConnTimeout = 5 * time.Minute
+)
 
 var (
 	globalManager     *ACPConnManager
@@ -82,20 +96,95 @@ var (
 func GetACPConnManager() *ACPConnManager {
 	globalManagerOnce.Do(func() {
 		globalManager = &ACPConnManager{
-			conns: make(map[string]*ACPConn),
+			conns:     make(map[string]*ACPConn),
+			stopSweep: make(chan struct{}),
 		}
+		go globalManager.idleSweep()
 	})
 	return globalManager
 }
 
-// StopAll closes all connections. Called on server shutdown.
+// StopAll closes all connections and stops the idle sweep goroutine.
+// Called on server shutdown.
 func (m *ACPConnManager) StopAll() {
+	// Stop the idle sweep goroutine
+	close(m.stopSweep)
+
 	m.mu.Lock()
 	for sid, conn := range m.conns {
 		conn.close()
 		delete(m.conns, sid)
 	}
 	m.mu.Unlock()
+}
+
+// idleSweep periodically closes connections that have been idle for longer
+// than idleConnTimeout. This prevents stale agent processes from consuming
+// resources indefinitely after sessions complete without explicit deletion.
+// Connections with actively running sessions are skipped.
+func (m *ACPConnManager) idleSweep() {
+	ticker := time.NewTicker(idleSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopSweep:
+			return
+		case <-ticker.C:
+			m.sweepOnce()
+		}
+	}
+}
+
+// sweepOnce performs a single idle sweep pass.
+func (m *ACPConnManager) sweepOnce() {
+	var toClose []string
+
+	m.mu.Lock()
+	now := time.Now()
+	for sid, conn := range m.conns {
+		conn.mu.Lock()
+		idle := now.Sub(conn.lastUsed)
+		alive := conn.alive
+		conn.mu.Unlock()
+
+		if !alive {
+			continue // already dead, will be respawned on next use
+		}
+		if idle < idleConnTimeout {
+			continue // not idle enough yet
+		}
+		// Skip connections with actively running sessions
+		if m.isSessionRunning != nil && m.isSessionRunning(sid) {
+			continue
+		}
+		toClose = append(toClose, sid)
+	}
+	m.mu.Unlock()
+
+	for _, sid := range toClose {
+		m.mu.Lock()
+		conn, ok := m.conns[sid]
+		if ok {
+			delete(m.conns, sid)
+		}
+		m.mu.Unlock()
+
+		if ok {
+			conn.mu.Lock()
+			idle := time.Since(conn.lastUsed)
+			conn.mu.Unlock()
+			slog.Info("acp: idle sweep closing connection", "clawbench_sid", sid, "idle_duration", idle)
+			conn.close()
+		}
+	}
+}
+
+// SetSessionRunningChecker sets the callback used by idle sweep to check
+// whether a session is actively running. Must be called once during startup
+// by the service layer (avoids circular import between ai and service packages).
+func (m *ACPConnManager) SetSessionRunningChecker(fn func(sessionID string) bool) {
+	m.isSessionRunning = fn
 }
 
 // GetOrCreateConn returns the ACPConn for a ClawBench session, creating one if needed.
