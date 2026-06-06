@@ -150,6 +150,10 @@ phase1Done:
 		AssistantMessageCount: origReq.AssistantMessageCount,
 	}
 
+	slog.Info("auto-resume: starting phase 2 (resume with 'continue')",
+		slog.String("session", origReq.SessionID),
+		slog.String("agent", origReq.AgentID))
+
 	innerCh2, err := b.inner.ExecuteStream(innerCtx2, resumeReq)
 	if err != nil {
 		slog.Error("failed to start resume stream after ExitPlanMode",

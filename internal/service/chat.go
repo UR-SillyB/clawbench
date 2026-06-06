@@ -577,6 +577,12 @@ func CreateSession(projectPath, backend, title, agentID, modelName, agentSource,
 	if err != nil {
 		return "", err
 	}
+	slog.Info("session created",
+		slog.String("session", sessionID),
+		slog.String("backend", backend),
+		slog.String("agent", agentID),
+		slog.String("type", sessionType),
+		slog.String("source", agentSource))
 	return sessionID, nil
 }
 
@@ -813,7 +819,13 @@ func SaveRawResponse(sessionID, backend string, messageID int64, rawOutput strin
 // UpdateExternalSessionID sets the external session ID for a ClawBench session.
 func UpdateExternalSessionID(sessionID, externalID string) error {
 	_, err := DB.Exec("UPDATE chat_sessions SET external_session_id = ? WHERE id = ?", externalID, sessionID)
-	return err
+	if err != nil {
+		return err
+	}
+	slog.Info("external_session_id updated",
+		slog.String("session", sessionID),
+		slog.String("external_session_id", externalID))
+	return nil
 }
 
 // GetExternalSessionID returns the external session ID for a ClawBench session.

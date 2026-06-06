@@ -744,7 +744,16 @@ func executeStreamRun(
 								slog.String("external_id", event.Meta.SessionID),
 								slog.String("err", err.Error()),
 							)
+						} else {
+							slog.Info("captured external session ID from metadata",
+								slog.String("session", sessionID),
+								slog.String("external_id", event.Meta.SessionID))
 						}
+					} else {
+						slog.Info("metadata session ID skipped (already captured)",
+							slog.String("session", sessionID),
+							slog.String("existing_external_id", existingExtID),
+							slog.String("new_external_id", event.Meta.SessionID))
 					}
 				}
 			}
@@ -906,6 +915,22 @@ func finalizeStreamRun(
 			slog.String("err", err.Error()),
 		)
 	}
+
+	// Diagnostic: check if external_session_id was updated during this stream.
+	// For codebuddy/claude/qoder, extID always equals sessionID (ClawBench UUID) — that's normal.
+	// For opencode/codex/deepseek/pi, extID should differ (CLI-assigned ID).
+	// If it still equals sessionID for those backends, the CLI ID was never captured,
+	// which will cause context amnesia on the next resume attempt.
+	if !chatReq.Resume {
+		extID := service.GetExternalSessionID(sessionID)
+		if extID == "" {
+			slog.Warn("session: external_session_id is empty after stream",
+				slog.String("session", sessionID),
+				slog.String("backend", backendName),
+				slog.String("agent", agentID),
+				slog.Bool("cancelled", cancelReason != "" || ctx.Err() != nil))
+		}
+	}
 	// Save metadata to dedicated table for analytical queries
 	if msgID > 0 && responseMetadata != nil {
 		if saveErr := service.SaveMetadata(msgID, responseMetadata); saveErr != nil {
@@ -1026,11 +1051,28 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 		extID := service.GetExternalSessionID(sessionID)
 		if extID != "" {
 			effectiveSessionID = extID
+			slog.Info("session resume: resolved external_session_id",
+				slog.String("session", sessionID),
+				slog.String("external_session_id", extID),
+				slog.String("backend", backendName),
+				slog.String("agent", agentID),
+				slog.Bool("ext_id_is_clawbench_uuid", extID == sessionID))
 		} else {
 			// No external session ID available — the CLI cannot resume a session
-			// it has never seen. Start a fresh session instead.
+			// it has never seen. Clear effectiveSessionID so the backend does not
+			// pass an invalid ID to --resume. This results in a fresh CLI session
+			// (context amnesia). Log a warning for diagnosis.
 			effectiveSessionID = ""
+			slog.Warn("session resume: external_session_id is empty, CLI will start a new session (context amnesia)",
+				slog.String("session", sessionID),
+				slog.String("backend", backendName),
+				slog.String("agent", agentID))
 		}
+	} else if !resume {
+		slog.Info("session: new conversation (no resume)",
+			slog.String("session", sessionID),
+			slog.String("backend", backendName),
+			slog.String("agent", agentID))
 	}
 
 	return ai.ChatRequest{

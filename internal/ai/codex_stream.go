@@ -461,8 +461,13 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 	if req.Resume && req.SessionID != "" {
 		// For resume, SessionID contains the Codex thread_id (stored as external_session_id)
 		codexArgs = buildCodexResumeArgs(req, req.SessionID)
+		slog.Info("cli: resume (codex)",
+			slog.String("session_id", req.SessionID))
 	} else {
 		codexArgs = buildCodexStreamArgs(req)
+		if req.Resume {
+			slog.Warn("cli: resume requested but no session_id, starting fresh (codex, context amnesia)")
+		}
 	}
 
 	// Combine: "exec" + baseArgs (e.g. --profile m27) + codexArgs

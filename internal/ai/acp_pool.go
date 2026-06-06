@@ -477,17 +477,20 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 			McpServers: []acp.McpServer{},
 		})
 		if err != nil {
-			slog.Warn("acp conn: ResumeSession failed, creating new session", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
-		} else {
-			c.acpSID = acpSID
-			c.lastResumeSessionResp = &resumeResp
-			c.lastUsed = time.Now()
-			slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
-			return false, nil // not new — recovered
+			slog.Error("acp conn: ResumeSession failed",
+				"clawbench_sid", c.clawbenchSID,
+				"acp_sid", acpSID,
+				"error", err)
+			return false, fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
 		}
+		c.acpSID = acpSID
+		c.lastResumeSessionResp = &resumeResp
+		c.lastUsed = time.Now()
+		slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
+		return false, nil // not new — recovered
 	}
 
-	// ResumeSession failed or no prior session — create new
+	// No prior session — first message ever, create new session
 	sessResp, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},

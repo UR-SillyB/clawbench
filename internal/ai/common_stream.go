@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // buildBaseStreamArgs builds the shared base arguments for Claude-family CLI backends.
@@ -19,8 +20,18 @@ func buildBaseStreamArgs(req ChatRequest, extraFlags func(ChatRequest) []string)
 
 	if req.Resume {
 		args = append(args, "--resume", req.SessionID)
+		slog.Info("cli: --resume",
+			slog.String("backend", req.AgentID),
+			slog.String("session_id", req.SessionID),
+			slog.Int("assistant_msg_count", req.AssistantMessageCount))
 	} else if req.SessionID != "" {
 		args = append(args, "--session-id", req.SessionID)
+		slog.Info("cli: --session-id (new conversation)",
+			slog.String("backend", req.AgentID),
+			slog.String("session_id", req.SessionID))
+	} else {
+		slog.Warn("cli: no session ID, starting fresh CLI session",
+			slog.String("backend", req.AgentID))
 	}
 
 	if req.WorkDir != "" {

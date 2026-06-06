@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"clawbench/internal/model"
@@ -174,6 +175,13 @@ func ContinueFromExecution(execID int64, projectPath string) (sessionID string, 
 	if err != nil {
 		return "", false, fmt.Errorf("failed to create continued session: %w", err)
 	}
+	slog.Info("continued session created",
+		slog.String("session", newSessionID),
+		slog.String("source_session", sourceSessionID),
+		slog.String("external_session_id", externalSessionID),
+		slog.String("backend", backend),
+		slog.String("agent", agentID),
+		slog.Int64("execution", execID))
 
 	// 9. Copy chat_history (only streaming=0)
 	// NOTE: We intentionally do NOT copy created_at. The Go SQLite driver (modernc.org/sqlite)
