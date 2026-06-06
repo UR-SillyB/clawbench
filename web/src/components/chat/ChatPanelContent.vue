@@ -487,27 +487,16 @@ function handleSwitchModel(model) {
 
 function handleSwitchThinkingEffort(level) {
   identity.currentThinkingEffort.value = level
-  identity.saveThinkingPref(identity.currentAgentId.value, level)
+  // Thinking effort switch is session-scoped — takes effect on next chat message.
+  // Agent default is configured exclusively via the settings panel.
 }
 
-async function handleSwitchMode(mode) {
+function handleSwitchMode(mode) {
   if (!mode?.id || mode.id === identity.currentModeId.value) return
-  // Optimistic update — UI updates immediately
   identity.currentModeId.value = mode.id
   identity.currentModeName.value = mode.name || mode.id
-  // Send mode switch to backend
-  try {
-    await fetch('/api/ai/session/mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: identity.currentSessionId.value,
-        modeId: mode.id,
-      }),
-    })
-  } catch (err) {
-    console.error('Failed to switch mode:', err)
-  }
+  // Mode switch is session-scoped — takes effect on next chat message.
+  // No immediate API call. modeId is sent in POST /api/ai/chat body.
 }
 
 async function sendMessage(text, extraFilePaths) {

@@ -1090,39 +1090,6 @@ func (m *ACPConnManager) CloseConnection(key string) {
 	m.CloseConn(key)
 }
 
-// GetOrCreate returns an ACPConn for the given agent. Used by session_mode handler.
-// Deprecated: use GetOrCreateConn with clawbenchSID.
-func (m *ACPConnManager) GetOrCreate(ctx context.Context, agent *model.Agent) (*ACPConn, error) {
-	// session_mode.go calls this with agent.ID as key.
-	// We need a connection even without a real clawbenchSID.
-	// Use agent.ID as a pseudo-key so session mode can work before the first chat message.
-	m.mu.Lock()
-	conn, ok := m.conns[agent.ID]
-	if !ok {
-		conn = newACPConn(agent, agent.ID)
-		m.conns[agent.ID] = conn
-	}
-	m.mu.Unlock()
-
-	if err := conn.ensureAliveNoSession(ctx); err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
-
-// ensureAliveNoSession ensures the process is alive but doesn't create/load a session.
-// Used by GetOrCreate (deprecated path) for session_mode before first chat.
-func (c *ACPConn) ensureAliveNoSession(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.alive && c.isAliveLocked() {
-		return nil
-	}
-
-	return c.spawnLocked(ctx)
-}
-
 // GetACPSessionID resolves a ClawBench session ID to an ACP session ID.
 // Deprecated: use conn.AcpSID() directly.
 func (m *ACPConnManager) GetACPSessionID(_ string, clawbenchSID string) string {

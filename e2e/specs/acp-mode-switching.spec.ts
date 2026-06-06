@@ -11,7 +11,7 @@ import { ChatPage } from '../pages/chat.page'
  * 1. Mode menu opens when clicking mode chip
  * 2. Mode can be switched (e.g., Code → Plan) and chip text updates
  * 3. Selected mode persists after page reload
- * 4. Mode switch sends POST /api/ai/session/mode with correct body
+ * 4. Mode switch is included in POST /api/ai/chat body with correct modeId
  *
  * IMPORTANT: ACP connections are lazy — established on first message.
  * The first test must send a message to warm up the ACP connection pool.
@@ -83,7 +83,7 @@ test.describe.serial('ACP Mode Switching', () => {
     await expect(modeChip).toContainText('Plan', { timeout: 5000 })
   })
 
-  test('mode switch should send API request with modeId and sessionId', async ({ page }) => {
+  test('mode switch should be included in chat request body', async ({ page }) => {
     // Warm up ACP connection (reload in previous test may have reset state)
     await chat.sendAndAwaitACPReply('hi')
 
@@ -91,21 +91,23 @@ test.describe.serial('ACP Mode Switching', () => {
     const modeChip = page.locator('.mode-chip')
     await expect(modeChip).toBeVisible({ timeout: 15000 })
 
-    // Intercept the mode switch API call before clicking
-    const modeRequestPromise = page.waitForRequest(
-      req => req.url().includes('/api/ai/session/mode') && req.method() === 'POST'
-    )
-
-    // Open mode menu and select "Code" mode (switching back from Plan)
+    // Switch mode first (local ref update only — no API call)
     await chat.openModeMenu()
     await chat.selectMode('Code')
 
-    // Wait for the intercepted request
-    const modeRequest = await modeRequestPromise
+    // Intercept the next chat API call
+    const chatRequestPromise = page.waitForRequest(
+      req => req.url().includes('/api/ai/chat') && req.method() === 'POST'
+    )
 
-    // Verify request body contains modeId and sessionId
-    const body = modeRequest.postDataJSON()
+    // Send a message — modeId should be included in the request body
+    await chat.sendMessage('test mode in body')
+
+    // Wait for the intercepted request
+    const chatRequest = await chatRequestPromise
+
+    // Verify request body contains modeId
+    const body = chatRequest.postDataJSON()
     expect(body.modeId).toBeTruthy()
-    expect(body.sessionId).toBeTruthy()
   })
 })

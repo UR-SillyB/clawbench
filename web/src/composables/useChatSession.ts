@@ -133,6 +133,14 @@ export function useChatSession(options: UseChatSessionOptions) {
     }
   }
 
+  function syncModeFromData(modeIdFromServer?: string, availableModes?: Array<{id: string; name: string}>) {
+    if (modeIdFromServer) {
+      identity.currentModeId.value = modeIdFromServer
+      const mode = availableModes?.find(m => m.id === modeIdFromServer)
+      identity.currentModeName.value = mode?.name || modeIdFromServer
+    }
+  }
+
   // Switching state — true while a session switch is in progress (distinct from
   // "loading" which means "AI is generating"). Used to show a fade/placeholder
   // transition so the user sees immediate feedback instead of a frozen UI.
@@ -215,8 +223,8 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
+      syncModeFromData(data.modeId, data.modeState?.availableModes)
       // Populate ACP mode available modes from REST response.
-      // currentModeId comes from data.modeId (DB-persisted), not from modeState.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
       }
@@ -332,8 +340,8 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
+      syncModeFromData(data.modeId, data.modeState?.availableModes)
       // Populate ACP mode available modes from REST response.
-      // currentModeId comes from data.modeId (DB-persisted), not from modeState.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
       }

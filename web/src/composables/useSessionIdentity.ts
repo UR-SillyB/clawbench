@@ -97,9 +97,9 @@ function loadModelPref(agentId: string): string | null {
 
 async function saveThinkingPref(agentId: string, level: string) {
   if (!agentId) return
-  // Save to server (agent YAML) via PATCH /api/agents
-  const { patchAgentPref } = await import('@/composables/useSettingsConfig')
-  patchAgentPref(agentId, 'preferred_thinking_effort', level).catch(() => {})
+  // No-op: thinking effort selection in chat is session-scoped and does NOT update
+  // the agent's default. The agent's preferredThinkingEffort is configured exclusively
+  // via the settings panel or ModelModal star button (which calls patchAgentPref directly).
 }
 
 function loadThinkingPref(agentId: string): string | null {
@@ -111,9 +111,9 @@ function loadThinkingPref(agentId: string): string | null {
 
 // ───────────────────────────────────────────────────────────
 // Mode state — ACP session mode (ask/architect/code)
-// currentModeId is set by user action (POST /api/ai/session/mode)
-// or DB restore (initSessionFromAPI). SSE events only update
-// the available modes list (diff-check for new modes).
+// currentModeId is set by user action (local ref update) or DB restore
+// (initSessionFromAPI / loadHistory / switchSession). SSE events only
+// update the available modes list. Takes effect on next chat message.
 // ───────────────────────────────────────────────────────────
 
 /** Update mode state from REST API or user action (full state). */
