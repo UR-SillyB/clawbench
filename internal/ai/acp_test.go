@@ -872,20 +872,20 @@ func TestIsACPPeerDisconnected_WrappedBrokenPipe(t *testing.T) {
 // --- isConfigKilledConnection tests ---
 
 func TestIsConfigKilledConnection_Direct(t *testing.T) {
-	err := errConfigKilledConnection("model")
+	err := errConfigKilledConnection("model", "glm-5.1")
 	assert.True(t, isConfigKilledConnection(err))
 }
 
 func TestIsConfigKilledConnection_AllConfigIDs(t *testing.T) {
 	for _, id := range []string{"model", "thinkingEffort", "mode"} {
-		err := errConfigKilledConnection(id)
+		err := errConfigKilledConnection(id, "test-value")
 		assert.True(t, isConfigKilledConnection(err), id+" should be detected")
 		assert.Contains(t, err.Error(), id)
 	}
 }
 
 func TestIsConfigKilledConnection_Wrapped(t *testing.T) {
-	err := fmt.Errorf("outer: %w", errConfigKilledConnection("model"))
+	err := fmt.Errorf("outer: %w", errConfigKilledConnection("model", "glm-5.1"))
 	assert.True(t, isConfigKilledConnection(err), "wrapped config killed connection should be detected")
 }
 

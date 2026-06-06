@@ -28,15 +28,30 @@ import (
 // be respawned on the next prompt attempt.
 type configKilledConnectionError struct {
 	configID string // "model", "thinkingEffort", or "mode"
+	value    string // the value that caused the crash
+	diag     crashDiagnostics
 }
 
 func (e *configKilledConnectionError) Error() string {
-	return "acp: set_config_option(" + e.configID + ") killed connection"
+	s := "acp: set_config_option(" + e.configID + ") killed connection"
+	if e.value != "" {
+		s += " (value=" + e.value + ")"
+	}
+	if diagStr := e.diag.String(); diagStr != "" {
+		s += diagStr
+	}
+	return s
 }
 
+// ConfigID returns the config ID that caused the crash (e.g., "model").
+func (e *configKilledConnectionError) ConfigID() string { return e.configID }
+
+// Value returns the config value that caused the crash.
+func (e *configKilledConnectionError) Value() string { return e.value }
+
 // errConfigKilledConnection creates a configKilledConnectionError for the given config ID.
-func errConfigKilledConnection(configID string) error {
-	return &configKilledConnectionError{configID: configID}
+func errConfigKilledConnection(configID, value string) error {
+	return &configKilledConnectionError{configID: configID, value: value}
 }
 
 // isConfigKilledConnection reports whether the error indicates a set_config_option
@@ -549,7 +564,13 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.Model != "" && c.shouldSetConfig("model", req.Model) {
 		c.setSessionConfigOption(ctx, acpSID, "model", req.Model)
 		if !c.IsAlive() {
-			return errConfigKilledConnection("model")
+			diag := c.collectCrashDiagnostics()
+			slog.Error("acp conn: set_config_option(model) killed connection",
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model,
+				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+			err := errConfigKilledConnection("model", req.Model)
+			err.(*configKilledConnectionError).diag = diag
+			return err
 		}
 		c.markConfigSet("model", req.Model)
 	}
@@ -558,7 +579,13 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.ThinkingEffort != "" && c.shouldSetConfig("thinkingEffort", req.ThinkingEffort) {
 		c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", req.ThinkingEffort)
 		if !c.IsAlive() {
-			return errConfigKilledConnection("thinkingEffort")
+			diag := c.collectCrashDiagnostics()
+			slog.Error("acp conn: set_config_option(thinkingEffort) killed connection",
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort,
+				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+			err := errConfigKilledConnection("thinkingEffort", req.ThinkingEffort)
+			err.(*configKilledConnectionError).diag = diag
+			return err
 		}
 		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
 	}
@@ -567,7 +594,13 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.Mode != "" && c.shouldSetConfig("mode", req.Mode) {
 		c.setSessionConfigOption(ctx, acpSID, "mode", req.Mode)
 		if !c.IsAlive() {
-			return errConfigKilledConnection("mode")
+			diag := c.collectCrashDiagnostics()
+			slog.Error("acp conn: set_config_option(mode) killed connection",
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode,
+				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+			err := errConfigKilledConnection("mode", req.Mode)
+			err.(*configKilledConnectionError).diag = diag
+			return err
 		}
 		c.markConfigSet("mode", req.Mode)
 	}
@@ -718,6 +751,8 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 		return
 	}
 
+	slog.Info("acp conn: sending set_config_option", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID, "acp_sid", acpSessionID)
+
 	_, err := conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
 		ValueId: &acp.SetSessionConfigOptionValueId{
 			SessionId: acp.SessionId(acpSessionID),
@@ -726,15 +761,17 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 		},
 	})
 	if err != nil {
-		slog.Debug("acp conn: failed to set config option (non-fatal)", "config_id", configID, "value", value, "error", err)
+		slog.Warn("acp conn: set_config_option failed", "config_id", configID, "value", value, "error", err)
 		// If the error indicates the peer died, mark the connection as dead
 		// so the next Prompt() triggers respawn + ResumeSession.
 		if isACPPeerDisconnected(err) {
 			c.mu.Lock()
 			c.alive = false
 			c.mu.Unlock()
-			slog.Info("acp conn: set_config_option detected peer disconnect, marking dead", "config_id", configID)
+			slog.Info("acp conn: set_config_option detected peer disconnect, marking dead", "config_id", configID, "value", value)
 		}
+	} else {
+		slog.Info("acp conn: set_config_option completed", "config_id", configID, "value", value)
 	}
 }
 

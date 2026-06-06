@@ -104,6 +104,27 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			if isACPPeerDisconnected(err) || isConfigKilledConnection(err) {
 				slog.Warn("acp: connection lost during prompt, retrying after respawn",
 					"session_id", req.SessionID, "acp_sid", acpSessionID, "error", err)
+
+				// If a config option killed the connection, skip that config on retry
+				// to avoid crashing the respawned process with the same value.
+				var configKilled *configKilledConnectionError
+				if errors.As(err, &configKilled) {
+					switch configKilled.ConfigID() {
+					case "model":
+						slog.Warn("acp: skipping model config on retry (caused previous crash)",
+							"model", configKilled.Value(), "session_id", req.SessionID)
+						req.Model = ""
+					case "thinkingEffort":
+						slog.Warn("acp: skipping thinking_effort config on retry (caused previous crash)",
+							"thinking_effort", configKilled.Value(), "session_id", req.SessionID)
+						req.ThinkingEffort = ""
+					case "mode":
+						slog.Warn("acp: skipping mode config on retry (caused previous crash)",
+							"mode", configKilled.Value(), "session_id", req.SessionID)
+						req.Mode = ""
+					}
+				}
+
 				conn2, isNew2, retryErr := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
 				if retryErr != nil {
 					forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v (retry respawn failed: %v)", err, retryErr), Reason: ReasonBackendExit})
