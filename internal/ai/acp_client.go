@@ -45,6 +45,7 @@ type ClawBenchACPClient struct {
 	pendingPermission map[string]*pendingPermission // PermissionKey → pending request
 	poolEntry         *ACPConnEntry                 // reference to pool entry for cache updates (deprecated alias)
 	connRef           *ACPConn                      // reference to ACPConn for cache updates
+	debouncers        map[string]*toolCallDebouncer // acpSessionID → debouncer
 
 	// Terminal sessions for ACP terminal/* methods
 	termMu    sync.Mutex
@@ -57,6 +58,7 @@ func NewClawBenchACPClient() *ClawBenchACPClient {
 	return &ClawBenchACPClient{
 		sessionRoutes:     make(map[string]chan<- StreamEvent),
 		pendingPermission: make(map[string]*pendingPermission),
+		debouncers:        make(map[string]*toolCallDebouncer),
 		terminals:         make(map[string]*terminalSession),
 	}
 }
@@ -68,6 +70,7 @@ func (c *ClawBenchACPClient) RegisterSession(acpSessionID string, ch chan<- Stre
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sessionRoutes[acpSessionID] = ch
+	c.debouncers[acpSessionID] = newToolCallDebouncer(ch, c.connRef)
 }
 
 // UnregisterSession removes the StreamEvent channel for an ACP session.
@@ -77,6 +80,12 @@ func (c *ClawBenchACPClient) UnregisterSession(acpSessionID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.sessionRoutes, acpSessionID)
+
+	// Flush and remove debouncer
+	if deb, ok := c.debouncers[acpSessionID]; ok {
+		deb.flushAll()
+		delete(c.debouncers, acpSessionID)
+	}
 
 	// Cancel any pending permission requests for this session
 	for key, pp := range c.pendingPermission {
@@ -141,6 +150,7 @@ func (c *ClawBenchACPClient) SessionUpdate(ctx context.Context, n acp.SessionNot
 
 	c.mu.Lock()
 	ch, ok := c.sessionRoutes[string(n.SessionId)]
+	deb := c.debouncers[string(n.SessionId)]
 	c.mu.Unlock()
 
 	if !ok {
@@ -149,7 +159,7 @@ func (c *ClawBenchACPClient) SessionUpdate(ctx context.Context, n acp.SessionNot
 		return nil
 	}
 
-	mapACPSessionUpdate(n.Update, ch, ctx, c.connRef)
+	mapACPSessionUpdate(n.Update, ch, ctx, c.connRef, deb)
 	return nil
 }
 

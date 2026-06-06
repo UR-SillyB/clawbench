@@ -124,7 +124,7 @@ type StreamMessageStart struct {
 const (
 	scannerInitial = 64 * 1024   // 64KB initial scanner buffer
 	scannerMax     = 1024 * 1024 // 1MB max scanner buffer
-	streamChanSize = 64          // channel buffer size
+	streamChanSize = 512          // channel buffer size
 )
 
 // extractContentText extracts text from a Content field that may be a plain

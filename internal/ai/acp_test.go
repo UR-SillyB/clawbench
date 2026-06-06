@@ -784,7 +784,7 @@ func TestMapACPSessionUpdate_PlanUpdate(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Drain events, skipping raw_output, expect exactly 1 plan_update
 	events := drainACPEvents(ch, 1)
@@ -931,7 +931,7 @@ func TestMapACPSessionUpdate_AgentMessageChunk(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Should emit thinking_done + content (2 events)
 	events := drainACPEvents(ch, 2)
@@ -956,7 +956,7 @@ func TestMapACPSessionUpdate_RawOutputEmitted(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Drain all events including raw_output
 	var rawEvents []StreamEvent
@@ -995,7 +995,7 @@ func TestMapACPSessionUpdate_AgentMessageChunk_NilText(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Should emit thinking_done only (no content event when Text is nil)
 	events := drainACPEvents(ch, 1)
@@ -1018,7 +1018,7 @@ func TestMapACPSessionUpdate_AgentThoughtChunk(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "thinking", events[0].Type)
@@ -1037,7 +1037,7 @@ func TestMapACPSessionUpdate_AgentThoughtChunk_NilText(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	assertNoMoreACPEvents(ch, t) // no events when Text is nil
 }
@@ -1056,7 +1056,7 @@ func TestMapACPSessionUpdate_ToolCall(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// thinking_done + tool_use (2 events)
 	events := drainACPEvents(ch, 2)
@@ -1085,7 +1085,7 @@ func TestMapACPSessionUpdate_ToolCallUpdate_Completed(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "tool_result", events[0].Type)
@@ -1111,7 +1111,7 @@ func TestMapACPSessionUpdate_ToolCallUpdate_ThinkCompleted(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// tool_result + thinking_done (think tool completion emits thinking_done)
 	events := drainACPEvents(ch, 2)
@@ -1135,7 +1135,7 @@ func TestMapACPSessionUpdate_ToolCallUpdate_ThinkFailed(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// tool_result + thinking_done (think tool failure also emits thinking_done)
 	events := drainACPEvents(ch, 2)
@@ -1159,7 +1159,7 @@ func TestMapACPSessionUpdate_ToolCallUpdate_ThinkInProgress(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Only tool_use — thinking_done NOT emitted for in-progress think tool
 	events := drainACPEvents(ch, 1)
@@ -1182,7 +1182,7 @@ func TestMapACPSessionUpdate_ToolCallUpdate_NonThinkCompleted(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Only tool_result — non-think tool does NOT emit thinking_done
 	events := drainACPEvents(ch, 1)
@@ -1217,7 +1217,7 @@ func TestMapACPSessionUpdate_AvailableCommandsUpdate(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "commands_update", events[0].Type)
@@ -1246,7 +1246,7 @@ func TestMapACPSessionUpdate_CurrentModeUpdate(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// CurrentModeUpdate no longer forwards mode_update SSE —
 	// currentModeId is managed by frontend user action + DB, not by agent notifications.
@@ -1267,7 +1267,7 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, entry)
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
 	// CurrentModeUpdate no longer forwards mode_update SSE —
 	// but cache should still be updated for DB persistence and REST responses.
@@ -1306,7 +1306,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "config_update", events[0].Type)
@@ -1360,7 +1360,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testi
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, entry)
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
 	// Same available modes → no config_update SSE forwarded
 	assertNoMoreACPEvents(ch, t)
@@ -1407,7 +1407,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_NewModeForward(t *testing.T
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, entry)
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
 	// New mode "architect" → config_update SSE forwarded
 	events := drainACPEvents(ch, 1)
@@ -1449,7 +1449,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_ThoughtLevel(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "thinking_effort_update", events[0].Type)
@@ -1491,7 +1491,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Model(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	events := drainACPEvents(ch, 1)
 	assert.Equal(t, "model_list_update", events[0].Type)
@@ -1546,7 +1546,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_MultipleCategories(t *testing.T)
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	// Should emit both config_update and thinking_effort_update
 	events := drainACPEvents(ch, 2)
@@ -1568,7 +1568,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_SkipNoSelect(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	assertNoMoreACPEvents(ch, t) // no events when Select is nil
 }
@@ -1592,7 +1592,7 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_SkipNoCategory(t *testing.T) {
 		},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	assertNoMoreACPEvents(ch, t)
 }
@@ -1605,7 +1605,7 @@ func TestMapACPSessionUpdate_Empty(t *testing.T) {
 
 	update := acp.SessionUpdate{} // all nil fields
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	assertNoMoreACPEvents(ch, t) // no events for empty update
 }
@@ -1618,7 +1618,7 @@ func TestMapACPSessionUpdate_SessionInfoUpdate(t *testing.T) {
 		SessionInfoUpdate: &acp.SessionSessionInfoUpdate{},
 	}
 
-	mapACPSessionUpdate(update, ch, ctx, nil)
+	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
 	assertNoMoreACPEvents(ch, t) // SessionInfoUpdate emits no stream events
 }

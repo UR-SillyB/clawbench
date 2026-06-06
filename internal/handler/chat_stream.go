@@ -323,7 +323,28 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 				"sse client disconnected, ai session continues",
 				slog.String("session_id", sessionID),
 			)
+			// Drain the channel without writing to SSE. If we return immediately,
+			// the channel fills up because no one is consuming it, which causes
+			// the ACP agent process to block on its SessionUpdate callback and
+			// eventually crash with "peer disconnected before response".
+			drainStreamChannel(streamCh, sessionID)
 			return
 		}
 	}
+}
+
+// drainStreamChannel consumes events from the stream channel without writing
+// them to SSE. This is called after the SSE client disconnects to prevent the
+// channel from filling up and blocking the ACP agent process, which would
+// cause "peer disconnected before response" crashes.
+func drainStreamChannel(ch <-chan ai.StreamEvent, sessionID string) {
+	for event := range ch {
+		switch event.Type {
+		case "done", "cancelled", "error":
+			// Terminal event — the AI goroutine is finished, channel will be closed.
+			slog.Debug("sse drain: terminal event", "type", event.Type, "session_id", sessionID)
+			return
+		}
+	}
+	slog.Debug("sse drain: channel closed", "session_id", sessionID)
 }
