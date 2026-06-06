@@ -28,16 +28,16 @@
         :title="t('chat.actions.autoSpeech')">
         <Volume2 :size="14" />
       </button>
-      <!-- Model & thinking chip — opens modal -->
-      <button class="chat-action-btn model-chip clickable"
-        @click.stop="openModelModal('model')"
-        :title="t('chat.actions.switchModel') + ' · ' + currentModelName">
-        <Cpu :size="14" />
+      <!-- Settings chip — opens session settings modal (model/thinking/mode) -->
+      <button class="chat-action-btn settings-chip clickable"
+        @click.stop="openSettingsModal('model')"
+        :title="t('chat.actions.sessionSettings')">
+        <Settings :size="14" />
         <span class="chat-action-label">{{ currentModelName }}</span>
       </button>
       <!-- Mode chip — only visible when ACP agent supports session modes — opens modal on mode tab -->
       <button v-if="availableModes.length > 0" class="chat-action-btn mode-chip clickable"
-        @click.stop="openModelModal('mode')"
+        @click.stop="openSettingsModal('mode')"
         :title="t('chat.modeSwitcher.title')">
         <Layers :size="14" />
         <span class="chat-action-label">{{ currentModeName }}</span>
@@ -164,12 +164,12 @@
           ⚙️ {{ t('chat.quickSend.edit') }}
         </button>
       </PopupMenu>
-      <!-- Model selection modal -->
+      <!-- Session settings modal -->
       <ModelModal
-        :show="showModelModal"
+        :show="showSettingsModal"
         :agent-id="currentAgentId"
-        :initial-tab="modelModalInitialTab"
-        @update:show="showModelModal = $event"
+        :initial-tab="settingsModalInitialTab"
+        @update:show="showSettingsModal = $event"
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
         @switch-mode="handleModeSelect"
@@ -198,7 +198,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Cpu, Zap, Layers } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Layers } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -312,12 +312,12 @@ const showAttachMenu = ref(false)
 const attachMenuRef = ref(null)
 const showQuickMenu = ref(false)
 const sendBtnRef = ref(null)
-const showModelModal = ref(false)
-const modelModalInitialTab = ref('model')
+const showSettingsModal = ref(false)
+const settingsModalInitialTab = ref('model')
 
-function openModelModal(tab) {
-  modelModalInitialTab.value = tab
-  showModelModal.value = true
+function openSettingsModal(tab) {
+  settingsModalInitialTab.value = tab
+  showSettingsModal.value = true
 }
 
 // ── @ command autocomplete ──
@@ -678,10 +678,10 @@ function handleModeSelect(mode) {
 }
 
 // Menu mutual exclusion: opening one closes the others
-watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
-watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showModelModal.value = false; showSlashMenu.value = false } })
-watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showSlashMenu.value = false } })
-watch(showSlashMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showModelModal.value = false } })
+watch(showAttachMenu, (v) => { if (v) { showQuickMenu.value = false; showSettingsModal.value = false; showSlashMenu.value = false } })
+watch(showQuickMenu, (v) => { if (v) { showAttachMenu.value = false; showSettingsModal.value = false; showSlashMenu.value = false } })
+watch(showSettingsModal, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showSlashMenu.value = false } })
+watch(showSlashMenu, (v) => { if (v) { showAttachMenu.value = false; showQuickMenu.value = false; showSettingsModal.value = false } })
 
 onMounted(() => {
   fetchItems()
@@ -1244,21 +1244,21 @@ defineExpose({
   50%      { box-shadow: 0 0 0 8px rgba(220, 53, 69, 0); }
 }
 
-/* Model switcher chip */
-.model-chip {
+/* Session settings chip */
+.settings-chip {
   font-variant-numeric: tabular-nums;
   flex-shrink: 1;
   min-width: 0;
   overflow: hidden;
 }
 
-.model-chip .chat-action-label {
+.settings-chip .chat-action-label {
   overflow-x: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Mode switcher chip (same pattern as model-chip) */
+/* Mode switcher chip (same pattern as settings-chip) */
 .mode-chip {
   font-variant-numeric: tabular-nums;
   flex-shrink: 1;

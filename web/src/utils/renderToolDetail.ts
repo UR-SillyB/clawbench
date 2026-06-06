@@ -968,7 +968,14 @@ function renderJsonFallback(input: any): string {
 // All lookups are case-insensitive. New tools register once;
 // no changes needed in generic components (ContentBlocks, ChatPanel).
 
-export type ToolRenderer = (input: Record<string, any>) => string
+/** Extra block-level context passed to tool renderers that need it (e.g. PermissionApproval). */
+export interface ToolBlockCtx {
+  done?: boolean
+  status?: string
+  output?: string
+}
+
+export type ToolRenderer = (input: Record<string, any>, blockCtx?: ToolBlockCtx) => string
 
 export type ToolActionHandler = (
   event: Event,
@@ -1017,11 +1024,11 @@ export function shouldAutoExpandTool(toolName: string): boolean {
  * Format tool_use input for display in the expanded tool detail area.
  * Looks up the tool name in the renderer registry; falls back to JSON.
  */
-export function formatToolInput(input: any, toolName?: string): string {
+export function formatToolInput(input: any, toolName?: string, blockCtx?: ToolBlockCtx): string {
   if (toolName) {
     const renderer = TOOL_RENDERERS[toolName.toLowerCase()]
     if (renderer && input && typeof input === 'object') {
-      return renderer(input)
+      return renderer(input, blockCtx)
     }
   }
   return renderJsonFallback(input)

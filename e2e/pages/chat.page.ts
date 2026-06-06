@@ -8,7 +8,7 @@ import { type Locator, type Page, expect } from '@playwright/test'
  * - .chat-send-btn        → send button (hidden during loading)
  * - .chat-stop-btn        → stop/cancel button (visible during loading)
  * - .quick-send-title     → quick-send popup title
- * - .model-chip           → model selector chip
+ * - .settings-chip        → session settings chip (model/thinking/mode)
  * - .mode-chip            → ACP mode selector chip
  * - .chat-messages        → messages scroll container
  * - .chat-message.user    → user message
@@ -27,7 +27,7 @@ export class ChatPage {
   readonly sendButton: Locator
   readonly stopButton: Locator
   readonly messagesContainer: Locator
-  readonly modelChip: Locator
+  readonly settingsChip: Locator
   readonly modeChip: Locator
 
   constructor(page: Page) {
@@ -36,7 +36,7 @@ export class ChatPage {
     this.sendButton = page.locator('.chat-send-btn')
     this.stopButton = page.locator('.chat-stop-btn')
     this.messagesContainer = page.locator('.chat-messages')
-    this.modelChip = page.locator('.model-chip')
+    this.settingsChip = page.locator('.settings-chip')
     this.modeChip = page.locator('.mode-chip')
   }
 
@@ -195,7 +195,7 @@ export class ChatPage {
 
   /** Open ModelModal by clicking the model chip */
   async openModelModal(): Promise<void> {
-    await this.modelChip.click()
+    await this.settingsChip.click()
     // Wait for modal to appear
     await expect(this.page.locator('.model-tab').first()).toBeVisible({ timeout: 5000 })
   }

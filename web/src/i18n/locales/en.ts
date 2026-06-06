@@ -110,7 +110,7 @@ export default {
       scheduled: 'Schedule',
       autoSpeech: 'Auto speech',
       readAloud: 'Read',
-      switchModel: 'Switch model',
+      sessionSettings: 'Session settings',
       switchThinkingEffort: 'Switch thinking effort',
       attachment: 'Attach',
     },

@@ -55,9 +55,9 @@ test.describe('Chat', () => {
   test('should show model selector chip', async ({ page }) => {
     // acp-mock agent has models configured (mock-pro, mock-fast)
     // so the model chip should be visible
-    await expect(chat.modelChip).toBeVisible()
+    await expect(chat.settingsChip).toBeVisible()
     // Should show the default model name
-    await expect(chat.modelChip).toContainText('Mock Pro')
+    await expect(chat.settingsChip).toContainText('Mock Pro')
   })
 
   test('should show stop button during AI response', async ({ page }) => {

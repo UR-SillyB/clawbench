@@ -110,7 +110,7 @@ export default {
       scheduled: '定时',
       autoSpeech: '自动朗读',
       readAloud: '朗读',
-      switchModel: '切换模型',
+      sessionSettings: '会话设置',
       switchThinkingEffort: '切换思考档位',
       attachment: '附件',
     },

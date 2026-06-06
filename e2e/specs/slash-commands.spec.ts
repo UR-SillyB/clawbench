@@ -216,9 +216,9 @@ test.describe.serial('ACP Slash Commands', () => {
     await page.waitForTimeout(2000)
 
     // Open the model modal by clicking the model chip
-    const modelChip = page.locator('.model-chip')
-    await expect(modelChip).toBeVisible({ timeout: 10000 })
-    await modelChip.click()
+    const settingsChip = page.locator('.settings-chip')
+    await expect(settingsChip).toBeVisible({ timeout: 10000 })
+    await settingsChip.click()
 
     // ModelModal should appear
     const modal = page.locator('.modal-dialog, [class*="modal"]')
@@ -246,9 +246,9 @@ test.describe.serial('ACP Slash Commands', () => {
     await page.waitForTimeout(2000)
 
     // Open model modal → thinking tab
-    const modelChip = page.locator('.model-chip')
-    await expect(modelChip).toBeVisible({ timeout: 10000 })
-    await modelChip.click()
+    const settingsChip = page.locator('.settings-chip')
+    await expect(settingsChip).toBeVisible({ timeout: 10000 })
+    await settingsChip.click()
 
     const thinkingTab = page.locator('.model-tab').filter({ hasText: /thinking|思考/i })
     await expect(thinkingTab).toBeVisible({ timeout: 5000 })
