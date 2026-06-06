@@ -119,3 +119,247 @@ func TestACPConn_CancelTurn_DoesNotBlockOnDeadConn(t *testing.T) {
 		t.Fatal("CancelTurn blocked — spawnLocked may be holding mutex during cmd.Wait()")
 	}
 }
+
+// --- ACPConnManager.GetCachedStateByClawbenchSID ---
+
+func TestGetCachedStateByClawbenchSID_NilConn(t *testing.T) {
+	mgr := GetACPConnManager()
+	mode, config, effort, cmds, modelList, plan := mgr.GetCachedStateByClawbenchSID("nonexistent-session")
+	assert.Nil(t, mode)
+	assert.Nil(t, config)
+	assert.Nil(t, effort)
+	assert.Nil(t, cmds)
+	assert.Nil(t, modelList)
+	assert.Nil(t, plan)
+}
+
+func TestGetCachedStateByClawbenchSID_NilClient(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-nil-client", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-nil-client")
+	// client is nil by default — should not panic
+	mgr.SetConnForTest("session-nil-client", conn)
+	defer mgr.CloseConn("session-nil-client")
+
+	assert.NotPanics(t, func() {
+		mgr.GetCachedStateByClawbenchSID("session-nil-client")
+	})
+	mode, config, effort, cmds, modelList, plan := mgr.GetCachedStateByClawbenchSID("session-nil-client")
+	assert.Nil(t, mode)
+	assert.Nil(t, config)
+	assert.Nil(t, effort)
+	assert.Nil(t, cmds)
+	assert.Nil(t, modelList)
+	assert.Nil(t, plan)
+}
+
+func TestGetCachedStateByClawbenchSID_WithCachedState(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-cached-state", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-cached-state")
+	conn.SetCachedModeState(&ModeState{CurrentModeID: "code", AvailableModes: []ModeDef{{ID: "code", Name: "Code"}}})
+	conn.SetCachedPlanState(&PlanState{Entries: []PlanEntry{{Content: "Plan A content", Status: "pending"}}})
+	mgr.SetConnForTest("session-cached-state", conn)
+	defer mgr.CloseConn("session-cached-state")
+
+	mode, _, _, _, _, plan := mgr.GetCachedStateByClawbenchSID("session-cached-state")
+	assert.NotNil(t, mode)
+	assert.Equal(t, "code", mode.CurrentModeID)
+	assert.NotNil(t, plan)
+	assert.Len(t, plan.Entries, 1)
+}
+
+// --- ACPConn.shouldSetConfig / markConfigSet ---
+
+func TestACPConn_ShouldSetConfig_ModeInitial(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-mode", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-mode")
+
+	// Initially, mode should need to be set (empty → non-empty)
+	assert.True(t, conn.shouldSetConfig("mode", "code"))
+}
+
+func TestACPConn_ShouldSetConfig_ModeSameValue(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-mode", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-mode")
+
+	conn.markConfigSet("mode", "code")
+	assert.False(t, conn.shouldSetConfig("mode", "code"))
+}
+
+func TestACPConn_ShouldSetConfig_ModeDifferentValue(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-mode", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-mode")
+
+	conn.markConfigSet("mode", "code")
+	assert.True(t, conn.shouldSetConfig("mode", "ask"))
+}
+
+func TestACPConn_ShouldSetConfig_ModeReset(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-mode", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-mode")
+
+	conn.markConfigSet("mode", "code")
+	conn.resetLastSetConfig()
+	assert.True(t, conn.shouldSetConfig("mode", "code"))
+}
+
+func TestACPConn_ShouldSetConfig_ModelInitial(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-model", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-model")
+
+	assert.True(t, conn.shouldSetConfig("model", "gpt-4"))
+	conn.markConfigSet("model", "gpt-4")
+	assert.False(t, conn.shouldSetConfig("model", "gpt-4"))
+	assert.True(t, conn.shouldSetConfig("model", "claude-3"))
+}
+
+func TestACPConn_ShouldSetConfig_ThinkingEffortInitial(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-effort", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-effort")
+
+	assert.True(t, conn.shouldSetConfig("thinkingEffort", "high"))
+	conn.markConfigSet("thinkingEffort", "high")
+	assert.False(t, conn.shouldSetConfig("thinkingEffort", "high"))
+}
+
+func TestACPConn_ShouldSetConfig_UnknownConfigID(t *testing.T) {
+	agent := &model.Agent{ID: "test-config-unknown", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-config-unknown")
+
+	// Unknown config IDs always return true (no caching)
+	assert.True(t, conn.shouldSetConfig("unknown", "value"))
+}
+
+// --- ACPConn plan state caching ---
+
+func TestACPConn_GetSetCachedPlanState(t *testing.T) {
+	agent := &model.Agent{ID: "test-plan-state", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-plan-state")
+
+	// Initially nil
+	assert.Nil(t, conn.GetCachedPlanState())
+
+	// Set and get
+	planState := &PlanState{Entries: []PlanEntry{{Content: "Step 1 content", Status: "in_progress"}}}
+	conn.SetCachedPlanState(planState)
+	got := conn.GetCachedPlanState()
+	assert.NotNil(t, got)
+	assert.Len(t, got.Entries, 1)
+	assert.Equal(t, "Step 1 content", got.Entries[0].Content)
+
+	// Clear
+	conn.SetCachedPlanState(nil)
+	assert.Nil(t, conn.GetCachedPlanState())
+}
+
+// --- configKilledConnectionError ---
+
+func TestConfigKilledConnectionError_Value(t *testing.T) {
+	err := errConfigKilledConnection("model", "gpt-4")
+	var cerr *configKilledConnectionError
+	assert.ErrorAs(t, err, &cerr)
+	assert.Equal(t, "model", cerr.ConfigID())
+	assert.Equal(t, "gpt-4", cerr.Value())
+	assert.Contains(t, cerr.Error(), "model")
+	assert.Contains(t, cerr.Error(), "gpt-4")
+}
+
+func TestConfigKilledConnectionError_EmptyValue(t *testing.T) {
+	err := errConfigKilledConnection("mode", "")
+	var cerr *configKilledConnectionError
+	assert.ErrorAs(t, err, &cerr)
+	assert.Equal(t, "mode", cerr.ConfigID())
+	assert.Equal(t, "", cerr.Value())
+	assert.NotContains(t, cerr.Error(), "value=")
+}
+
+func TestConfigKilledConnectionError_Diagnostics(t *testing.T) {
+	err := &configKilledConnectionError{
+		configID: "thinkingEffort",
+		value:    "high",
+		diag:     crashDiagnostics{ExitCode: 1, StderrTail: "panic"},
+	}
+	errMsg := err.Error()
+	assert.Contains(t, errMsg, "thinkingEffort")
+	assert.Contains(t, errMsg, "high")
+	assert.Contains(t, errMsg, "exit_code=1")
+	assert.Contains(t, errMsg, "panic")
+}
+
+// --- crashDiagnostics.String ---
+
+func TestCrashDiagnostics_String_Empty(t *testing.T) {
+	d := crashDiagnostics{}
+	assert.Equal(t, "", d.String())
+}
+
+func TestCrashDiagnostics_String_ExitCodeOnly(t *testing.T) {
+	d := crashDiagnostics{ExitCode: 137}
+	assert.Equal(t, " (exit_code=137)", d.String())
+}
+
+func TestCrashDiagnostics_String_StderrOnly(t *testing.T) {
+	d := crashDiagnostics{StderrTail: "segfault"}
+	assert.Equal(t, " (stderr: segfault)", d.String())
+}
+
+func TestCrashDiagnostics_String_Both(t *testing.T) {
+	d := crashDiagnostics{ExitCode: 1, StderrTail: "out of memory"}
+	assert.Equal(t, " (exit_code=1, stderr: out of memory)", d.String())
+}
+
+// --- ACPConn.SetCachedConfigState derives modeState ---
+
+func TestACPConn_SetCachedConfigState_DerivesModeState(t *testing.T) {
+	agent := &model.Agent{ID: "test-derive-mode", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-derive-mode")
+
+	// cachedModeState starts nil
+	assert.Nil(t, conn.GetCachedModeState())
+
+	// Set config state with mode category — should derive modeState
+	conn.SetCachedConfigState(&ConfigOptionState{
+		ConfigID: "mode",
+		CurrentID: "code",
+		Options: []ConfigOptionDef{
+			{
+				ID:       "mode",
+				Name:     "Mode",
+				Category: "mode",
+				Values: []ConfigOptionValue{
+					{ID: "code", Name: "Code"},
+					{ID: "ask", Name: "Ask"},
+				},
+			},
+		},
+	})
+
+	modeState := conn.GetCachedModeState()
+	assert.NotNil(t, modeState)
+	assert.Equal(t, "code", modeState.CurrentModeID)
+	assert.Len(t, modeState.AvailableModes, 2)
+	assert.Equal(t, "code", modeState.AvailableModes[0].ID)
+	assert.Equal(t, "ask", modeState.AvailableModes[1].ID)
+}
+
+func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testing.T) {
+	agent := &model.Agent{ID: "test-no-override", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-no-override")
+
+	// Set mode state first
+	conn.SetCachedModeState(&ModeState{CurrentModeID: "architect", AvailableModes: []ModeDef{{ID: "architect", Name: "Architect"}}})
+
+	// Now set config state — should NOT override existing modeState
+	conn.SetCachedConfigState(&ConfigOptionState{
+		ConfigID: "mode",
+		CurrentID: "code",
+		Options: []ConfigOptionDef{
+			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{{ID: "code", Name: "Code"}}},
+		},
+	})
+
+	modeState := conn.GetCachedModeState()
+	assert.NotNil(t, modeState)
+	assert.Equal(t, "architect", modeState.CurrentModeID) // Original preserved
+}

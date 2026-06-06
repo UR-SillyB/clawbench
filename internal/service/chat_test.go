@@ -2656,6 +2656,52 @@ func TestUpdateSessionMode_ResetToEmpty(t *testing.T) {
 	assert.Equal(t, "", mode)
 }
 
+// --- GetSessionMode ---
+
+func TestGetSessionMode(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Get")
+
+	err := service.UpdateSessionMode(sid, "architect")
+	assert.NoError(t, err)
+
+	mode := service.GetSessionMode(sid)
+	assert.Equal(t, "architect", mode)
+}
+
+func TestGetSessionMode_Empty(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Empty")
+
+	mode := service.GetSessionMode(sid)
+	assert.Equal(t, "", mode)
+}
+
+func TestGetSessionMode_NonExistent(t *testing.T) {
+	setupDB(t)
+
+	mode := service.GetSessionMode("non-existent-session-id")
+	assert.Equal(t, "", mode)
+}
+
+func TestGetSessionMode_DeletedSession(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Mode Deleted")
+	err := service.UpdateSessionMode(sid, "code")
+	assert.NoError(t, err)
+
+	// Soft-delete the session
+	_, err = service.DB.Exec("UPDATE chat_sessions SET deleted = 1 WHERE id = ?", sid)
+	assert.NoError(t, err)
+
+	// GetSessionMode excludes deleted sessions
+	mode := service.GetSessionMode(sid)
+	assert.Equal(t, "", mode)
+}
+
 // ---------- GetStreamingMessageID ----------
 
 func TestGetStreamingMessageID_Found(t *testing.T) {

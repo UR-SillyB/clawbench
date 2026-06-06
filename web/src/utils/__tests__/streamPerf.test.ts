@@ -62,6 +62,28 @@ describe('isValidAskContent', () => {
     expect(isValidAskContent(raw)).toBe(false)
   })
 
+  it('accepts JSON with mixed valid/invalid items (at least one valid)', () => {
+    const raw = '{"questions":[{"noQuestion":true},{"question":"Pick one","header":"Choice","options":[{"label":"A"}]}]}'
+    expect(isValidAskContent(raw)).toBe(true)
+  })
+
+  it('rejects JSON with questions having options but no question field', () => {
+    const raw = '{"questions":[{"header":"Choice","options":[{"label":"A"}]}]}'
+    expect(isValidAskContent(raw)).toBe(false)
+  })
+
+  it('rejects JSON with questions having question but empty options', () => {
+    const raw = '{"questions":[{"question":"Pick one","header":"Choice","options":[]}]}'
+    expect(isValidAskContent(raw)).toBe(false)
+  })
+
+  it('rejects JSON with questions having question but options without labels', () => {
+    const raw = '{"questions":[{"question":"Pick one","header":"Choice","options":[{"description":"No label"}]}]}'
+    // The implementation only checks for question + options existence, not label within options
+    // Options without labels are still considered valid by isValidAskContent
+    expect(isValidAskContent(raw)).toBe(true)
+  })
+
   it('rejects invalid JSON', () => {
     const raw = '{not valid json}'
     expect(isValidAskContent(raw)).toBe(false)

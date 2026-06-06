@@ -1770,6 +1770,291 @@ func TestTruncateToolOutput_Empty(t *testing.T) {
 	assert.Equal(t, "", truncateToolOutput(""))
 }
 
+// --- mapACPToolCall execute-kind fallback to title ---
+
+func TestMapACPToolCall_ExecuteKindFallbackToTitle(t *testing.T) {
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("exec-1"),
+		Title:      "echo hello",
+		Kind:       acp.ToolKindExecute,
+		// No RawInput, no Content
+	}
+	event := mapACPToolCall(tc)
+	require.NotNil(t, event.Tool)
+	assert.Contains(t, event.Tool.Input, "command")
+	assert.Contains(t, event.Tool.Input, "echo hello")
+}
+
+func TestMapACPToolCall_ExecuteKindNoTitle(t *testing.T) {
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("exec-2"),
+		Title:      "",
+		Kind:       acp.ToolKindExecute,
+	}
+	event := mapACPToolCall(tc)
+	require.NotNil(t, event.Tool)
+	assert.Empty(t, event.Tool.Input)
+}
+
+func TestMapACPToolCall_NonExecuteKindNoFallback(t *testing.T) {
+	tc := acp.SessionUpdateToolCall{
+		ToolCallId: acp.ToolCallId("read-1"),
+		Title:      "main.go",
+		Kind:       acp.ToolKindRead,
+		// No RawInput, no Content
+	}
+	event := mapACPToolCall(tc)
+	require.NotNil(t, event.Tool)
+	// Read kind should NOT fallback to title as command
+	assert.NotContains(t, event.Tool.Input, "command")
+}
+
+// --- mapACPToolCallUpdate execute-kind fallback ---
+
+func TestMapACPToolCallUpdate_ExecuteKindFallbackToTitle(t *testing.T) {
+	title := "ls /tmp"
+	kind := acp.ToolKindExecute
+	status := acp.ToolCallStatusCompleted
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("exec-upd-1"),
+		Title:      &title,
+		Kind:       &kind,
+		Status:     &status,
+	}
+	event := mapACPToolCallUpdate(tcu)
+	require.NotNil(t, event.Tool)
+	assert.Contains(t, event.Tool.Input, "command")
+	assert.Contains(t, event.Tool.Input, "ls /tmp")
+}
+
+// --- extractInputFromContentUpdate ---
+
+func TestExtractInputFromContentUpdate_Terminal(t *testing.T) {
+	title := "npm test"
+	tcu := acp.SessionToolCallUpdate{
+		Title: &title,
+		Content: []acp.ToolCallContent{
+			{Terminal: &acp.ToolCallContentTerminal{TerminalId: "term-1"}},
+		},
+	}
+	input := extractInputFromContentUpdate(tcu)
+	assert.NotNil(t, input)
+	assert.Equal(t, "npm test", input["command"])
+}
+
+func TestExtractInputFromContentUpdate_Text(t *testing.T) {
+	textStr := "Running tests..."
+	tcu := acp.SessionToolCallUpdate{
+		Content: []acp.ToolCallContent{
+			{
+				Content: &acp.ToolCallContentContent{
+					Content: acp.TextBlock(textStr),
+				},
+			},
+		},
+	}
+	input := extractInputFromContentUpdate(tcu)
+	assert.NotNil(t, input)
+	assert.Equal(t, "Running tests...", input["description"])
+}
+
+func TestExtractInputFromContentUpdate_Empty(t *testing.T) {
+	tcu := acp.SessionToolCallUpdate{
+		Content: []acp.ToolCallContent{},
+	}
+	input := extractInputFromContentUpdate(tcu)
+	assert.Nil(t, input)
+}
+
+func TestExtractInputFromContentUpdate_NilTitle(t *testing.T) {
+	tcu := acp.SessionToolCallUpdate{
+		Title: nil,
+		Content: []acp.ToolCallContent{
+			{Terminal: &acp.ToolCallContentTerminal{TerminalId: "term-2"}},
+		},
+	}
+	input := extractInputFromContentUpdate(tcu)
+	// Terminal without title → no command key
+	assert.NotNil(t, input)
+	_, hasCommand := input["command"]
+	assert.False(t, hasCommand)
+}
+
+// --- modeStateFromConfigState ---
+
+func TestModeStateFromConfigState_Nil(t *testing.T) {
+	assert.Nil(t, modeStateFromConfigState(nil))
+}
+
+func TestModeStateFromConfigState_NoModeCategory(t *testing.T) {
+	cs := &ConfigOptionState{
+		ConfigID: "thinking_effort",
+		CurrentID: "high",
+		Options: []ConfigOptionDef{
+			{ID: "thinking_effort", Category: "thought_level", Values: []ConfigOptionValue{{ID: "high", Name: "High"}}},
+		},
+	}
+	assert.Nil(t, modeStateFromConfigState(cs))
+}
+
+func TestModeStateFromConfigState_ValidModeOptions(t *testing.T) {
+	cs := &ConfigOptionState{
+		ConfigID: "mode",
+		CurrentID: "code",
+		Options: []ConfigOptionDef{
+			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{
+				{ID: "code", Name: "Code"},
+				{ID: "ask", Name: "Ask"},
+				{ID: "architect", Name: "Architect"},
+			}},
+		},
+	}
+	ms := modeStateFromConfigState(cs)
+	require.NotNil(t, ms)
+	assert.Equal(t, "code", ms.CurrentModeID)
+	assert.Len(t, ms.AvailableModes, 3)
+	assert.Equal(t, "code", ms.AvailableModes[0].ID)
+	assert.Equal(t, "Ask", ms.AvailableModes[1].Name)
+}
+
+func TestModeStateFromConfigState_EmptyValuesNoCurrentID(t *testing.T) {
+	cs := &ConfigOptionState{
+		ConfigID: "mode",
+		CurrentID: "",
+		Options: []ConfigOptionDef{
+			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{}},
+		},
+	}
+	assert.Nil(t, modeStateFromConfigState(cs))
+}
+
+// --- extractACP*FromResume ---
+
+func TestExtractACPModeStateFromResume_Nil(t *testing.T) {
+	assert.Nil(t, extractACPModeStateFromResume(nil))
+}
+
+func TestExtractACPModeStateFromResume_WithModes(t *testing.T) {
+	modeID := acp.SessionModeId("code")
+	resumeResp := &acp.ResumeSessionResponse{
+		Modes: &acp.SessionModeState{
+			CurrentModeId: modeID,
+			AvailableModes: []acp.SessionMode{
+				{Id: modeID, Name: "Code"},
+				{Id: acp.SessionModeId("ask"), Name: "Ask"},
+			},
+		},
+	}
+	ms := extractACPModeStateFromResume(resumeResp)
+	require.NotNil(t, ms)
+	assert.Equal(t, "code", ms.CurrentModeID)
+	assert.Len(t, ms.AvailableModes, 2)
+}
+
+func TestExtractACPConfigOptionsFromResume_Nil(t *testing.T) {
+	assert.Nil(t, extractACPConfigOptionsFromResume(nil))
+}
+
+func TestExtractACPThinkingEffortFromResume_Nil(t *testing.T) {
+	assert.Nil(t, extractACPThinkingEffortFromResume(nil))
+}
+
+func TestExtractACPModelListFromResume_Nil(t *testing.T) {
+	assert.Nil(t, extractACPModelListFromResume(nil))
+}
+
+// --- isACPPeerDisconnected ---
+
+func TestIsACPPeerDisconnected_RequestErrorWithPeerDisconnect(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32603,
+		Data: map[string]any{"error": "peer disconnected during prompt"},
+	}
+	assert.True(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_RequestErrorBrokenPipe(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32603,
+		Data: map[string]any{"error": "broken pipe on write"},
+	}
+	assert.True(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_RequestErrorOtherCode(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32000,
+		Data: map[string]any{"error": "peer disconnected"},
+	}
+	assert.False(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_RequestErrorNoPeerMsg(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32603,
+		Data: map[string]any{"error": "something else"},
+	}
+	assert.False(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_NonRequestError(t *testing.T) {
+	err := fmt.Errorf("peer disconnected unexpectedly")
+	assert.True(t, isACPPeerDisconnected(err))
+}
+
+func TestIsACPPeerDisconnected_NonPeerError(t *testing.T) {
+	err := fmt.Errorf("timeout exceeded")
+	assert.False(t, isACPPeerDisconnected(err))
+}
+
+// --- extractModeStateFromModes ---
+
+func TestExtractModeStateFromModes_Nil(t *testing.T) {
+	assert.Nil(t, extractModeStateFromModes(nil))
+}
+
+func TestExtractModeStateFromModes_Empty(t *testing.T) {
+	modes := &acp.SessionModeState{}
+	assert.Nil(t, extractModeStateFromModes(modes))
+}
+
+func TestExtractModeStateFromModes_CurrentOnly(t *testing.T) {
+	modes := &acp.SessionModeState{
+		CurrentModeId: acp.SessionModeId("code"),
+	}
+	ms := extractModeStateFromModes(modes)
+	require.NotNil(t, ms)
+	assert.Equal(t, "code", ms.CurrentModeID)
+	assert.Empty(t, ms.AvailableModes)
+}
+
+// --- extractConfigOptionsFromOpts ---
+
+func TestExtractConfigOptionsFromOpts_Empty(t *testing.T) {
+	assert.Nil(t, extractConfigOptionsFromOpts(nil))
+	assert.Nil(t, extractConfigOptionsFromOpts([]acp.SessionConfigOption{}))
+}
+
+// --- extractThinkingEffortFromOpts ---
+
+func TestExtractThinkingEffortFromOpts_NoThoughtLevelCategory(t *testing.T) {
+	cat := acp.SessionConfigOptionCategoryMode
+	opts := []acp.SessionConfigOption{
+		{Select: &acp.SessionConfigOptionSelect{Category: &cat}},
+	}
+	assert.Nil(t, extractThinkingEffortFromOpts(opts))
+}
+
+// --- extractModelListFromOpts ---
+
+func TestExtractModelListFromOpts_NoModelCategory(t *testing.T) {
+	cat := acp.SessionConfigOptionCategoryMode
+	opts := []acp.SessionConfigOption{
+		{Select: &acp.SessionConfigOptionSelect{Category: &cat}},
+	}
+	assert.Nil(t, extractModelListFromOpts(opts))
+}
+
 // --- ACP test helpers ---
 
 // drainACPEvents reads exactly count non-raw_output events from ch, skipping raw_output events.

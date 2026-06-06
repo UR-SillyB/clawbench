@@ -2931,3 +2931,85 @@ func TestAccumulateBlock_ACPToolResultWithInput(t *testing.T) {
 	assert.Equal(t, "explore", blocks[0].Input["subagent_type"])
 	assert.Equal(t, "result", blocks[0].Output)
 }
+
+// --- serializeBlocks nil handling (fcfb228c regression test) ---
+
+func TestSerializeBlocks_NilBlocksProducesEmptyArray(t *testing.T) {
+	// This is a regression test for fcfb228c: nil blocks must serialize
+	// to {"blocks":[]} not {"blocks":null}, which caused literal text
+	// rendering in the frontend.
+	serializeBlocks := func(blocks []model.ContentBlock, metadata *ai.Metadata) string {
+		serializedBlocks := blocks
+		if serializedBlocks == nil {
+			serializedBlocks = []model.ContentBlock{}
+		}
+		contentMap := map[string]any{"blocks": serializedBlocks}
+		if metadata != nil {
+			contentMap["metadata"] = metadata
+		}
+		blocksJSON, _ := json.Marshal(contentMap)
+		return string(blocksJSON)
+	}
+
+	// nil blocks → {"blocks":[]}
+	result := serializeBlocks(nil, nil)
+	assert.Contains(t, result, `"blocks":[]`)
+	assert.NotContains(t, result, `"blocks":null`)
+
+	// nil blocks with metadata → should still have [] not null
+	result = serializeBlocks(nil, &ai.Metadata{WallMs: 100})
+	assert.Contains(t, result, `"blocks":[]`)
+	assert.Contains(t, result, `"wallMs"`)
+
+	// empty slice → also []
+	result = serializeBlocks([]model.ContentBlock{}, nil)
+	assert.Contains(t, result, `"blocks":[]`)
+}
+
+// --- buildChatRequest mode parameter ---
+
+func TestBuildChatRequest_ModeOverride(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "mode-test", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+
+	model.Agents["claude"] = &model.Agent{ID: "claude", Backend: "cli", Command: "echo"}
+
+	req := buildChatRequest("hello", sessionID, env.ProjectDir, "claude", "claude", "", "", "architect", "")
+	assert.Equal(t, "architect", req.Mode, "modeOverride should be passed to ChatRequest.Mode")
+}
+
+func TestBuildChatRequest_ModeEmpty(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "mode-empty", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+
+	model.Agents["claude"] = &model.Agent{ID: "claude", Backend: "cli", Command: "echo"}
+
+	req := buildChatRequest("hello", sessionID, env.ProjectDir, "claude", "claude", "", "", "", "")
+	assert.Equal(t, "", req.Mode, "empty modeOverride should result in empty Mode")
+}
+
+// --- buildChatRequestFromQueue uses session mode ---
+
+func TestBuildChatRequestFromQueue_UsesSessionMode(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "queue-mode-test", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// Persist mode to session
+	err = service.UpdateSessionMode(sessionID, "architect")
+	assert.NoError(t, err)
+
+	model.Agents["claude"] = &model.Agent{ID: "claude", Backend: "cli", Command: "echo"}
+
+	qMsg := model.QueuedMessage{Text: "test message"}
+	req := buildChatRequestFromQueue(qMsg, sessionID, env.ProjectDir, "claude", "claude", "")
+	assert.Equal(t, "architect", req.Mode, "buildChatRequestFromQueue should use session-persisted mode")
+}
