@@ -660,6 +660,10 @@ func TestAIChatStream_ClientDisconnect(t *testing.T) {
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		cancel2()
+		// Send a terminal event so drainStreamChannel can exit;
+		// without this the drain goroutine blocks forever.
+		time.Sleep(50 * time.Millisecond)
+		ch <- ai.StreamEvent{Type: "done"}
 	}()
 
 	req := newRequest(t, http.MethodGet, "/api/ai/chat/stream?session_id="+sessionID, nil)
@@ -676,7 +680,6 @@ func TestAIChatStream_ClientDisconnect(t *testing.T) {
 	assert.Equal(t, "disconnect", reason)
 	// Session should still be running
 	assert.True(t, service.IsSessionRunning(sessionID))
-	_ = ch
 }
 
 func TestAIChatStream_ClientDisconnectDuringStream(t *testing.T) {
@@ -705,6 +708,9 @@ func TestAIChatStream_ClientDisconnectDuringStream(t *testing.T) {
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		cancel2()
+		// Send terminal event so drainStreamChannel can exit
+		time.Sleep(50 * time.Millisecond)
+		ch <- ai.StreamEvent{Type: "done"}
 	}()
 
 	req := newRequest(t, http.MethodGet, "/api/ai/chat/stream?session_id="+sessionID, nil)

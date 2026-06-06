@@ -646,14 +646,26 @@ func (c *ACPConn) watchProcessDeath() {
 
 	// Collect crash diagnostics outside the lock
 	diag := c.collectCrashDiagnostics()
-	slog.Error("acp conn: agent process died",
-		"agent_id", agentID,
-		"clawbench_sid", c.clawbenchSID,
-		"exit_code", diag.ExitCode,
-		"signal", diag.Signal,
-		"uptime", diag.Uptime.Round(time.Second),
-		"stderr_tail", diag.StderrTail,
-	)
+
+	// Normal exit (exit_code=0, no signal) means the session completed and
+	// the connection was closed by CloseConn — not an error.
+	if diag.ExitCode == 0 && diag.Signal == "" {
+		slog.Info("acp conn: agent process exited",
+			"agent_id", agentID,
+			"clawbench_sid", c.clawbenchSID,
+			"exit_code", diag.ExitCode,
+			"uptime", diag.Uptime.Round(time.Second),
+		)
+	} else {
+		slog.Error("acp conn: agent process died",
+			"agent_id", agentID,
+			"clawbench_sid", c.clawbenchSID,
+			"exit_code", diag.ExitCode,
+			"signal", diag.Signal,
+			"uptime", diag.Uptime.Round(time.Second),
+			"stderr_tail", diag.StderrTail,
+		)
+	}
 
 	c.resetLastSetConfig()
 }

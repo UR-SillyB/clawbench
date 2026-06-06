@@ -720,6 +720,53 @@ func TestDeleteSession_WrongMethod(t *testing.T) {
 	assertStatus(t, w, http.StatusMethodNotAllowed)
 }
 
+func TestDeleteSession_ClosesACPConn(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Set up an ACP agent
+	origAgents := model.Agents
+	origAgentList := model.AgentList
+	model.Agents["claude"].Transport = "acp-stdio"
+	defer func() {
+		model.Agents = origAgents
+		model.AgentList = origAgentList
+	}()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "ACP session", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// Inject an ACP connection for this session
+	mgr := ai.GetACPConnManager()
+	conn := &ai.ACPConn{}
+	conn.SetClientForTest(ai.NewClawBenchACPClient())
+	conn.SetSessionMappingForTest(sessionID, "acp-sid-delete-test")
+	mgr.SetConnForTest(sessionID, conn)
+
+	// Delete the session — should close the ACP connection
+	req := newRequest(t, http.MethodDelete, "/api/ai/session/delete?session_id="+sessionID, nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := callHandler(DeleteSession, req)
+	assertOK(t, w)
+
+	// Verify the connection was closed
+	assert.Nil(t, mgr.GetConn(sessionID), "ACP connection should be closed after session delete")
+}
+
+func TestDeleteSession_NonACPAgentNoCrash(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// codebuddy agent is not ACP — DeleteSession should still work
+	sessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "Non-ACP session", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	req := newRequest(t, http.MethodDelete, "/api/ai/session/delete?session_id="+sessionID, nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := callHandler(DeleteSession, req)
+	assertOK(t, w)
+}
+
 // --- CancelChat ---
 
 func TestCancelChat_NoRunningSession(t *testing.T) {
