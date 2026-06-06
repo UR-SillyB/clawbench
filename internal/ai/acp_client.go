@@ -218,12 +218,19 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 	}
 
 	// Emit a tool_use event for the PermissionApproval card in the AI message
+	// Use a unique ID for the PermissionApproval card so the frontend
+	// creates a separate block instead of merging with the original tool call.
+	// ACP agents reuse the same toolCallId in RequestPermission (per protocol),
+	// which would cause the frontend to merge the PermissionApproval into the
+	// original tool_use block (e.g. ExitPlanMode) and never show the approval card.
+	permissionBlockID := "perm_" + toolCallID
 	approvalInput := map[string]any{
-		"session_id": sessionID,
-		"toolCallId": toolCallID,
-		"toolName":   toolName,
-		"toolInput":  toolInput,
-		"options":    p.Options,
+		"session_id":    sessionID,
+		"toolCallId":    toolCallID,
+		"permissionId":  permissionBlockID,
+		"toolName":      toolName,
+		"toolInput":     toolInput,
+		"options":       p.Options,
 	}
 	inputJSON, _ := json.Marshal(approvalInput)
 
@@ -231,7 +238,7 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 		Type: "tool_use",
 		Tool: &ToolCall{
 			Name:  "PermissionApproval",
-			ID:    toolCallID,
+			ID:    permissionBlockID,
 			Input: string(inputJSON),
 			Done:  false,
 		},
@@ -261,7 +268,7 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 		forwardACPEvent(ch, StreamEvent{
 			Type: "tool_result",
 			Tool: &ToolCall{
-				ID:     toolCallID,
+				ID:     permissionBlockID,
 				Done:   true,
 				Status: resultStatus,
 				Output: resultOutput,

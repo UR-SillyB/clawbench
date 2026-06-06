@@ -407,6 +407,7 @@ export function useChatStream(options: UseChatStreamOptions) {
           if (data.input && Object.keys(data.input).length > 0) {
             existing.input = data.input
           }
+          if (data.name) existing.name = data.name
           if (data.output !== undefined) existing.output = data.output
           if (data.status !== undefined) existing.status = data.status
         } else {

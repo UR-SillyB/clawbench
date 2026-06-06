@@ -184,9 +184,10 @@ func TestServePermissionRespond_Success(t *testing.T) {
 	key := ai.PermissionKey("acp-session-456", "toolcall-1")
 	client.RegisterPendingPermissionForTest(key, &ai.PendingPermissionForTest{})
 
+	// Frontend sends the permissionBlockID (with "perm_" prefix) as toolCallId
 	body := map[string]any{
 		"sessionId":  sessionID,
-		"toolCallId": "toolcall-1",
+		"toolCallId": "perm_toolcall-1",
 		"optionId":   "allow",
 	}
 	req := newRequest(t, http.MethodPost, "/api/ai/permission/respond", body)
@@ -217,9 +218,10 @@ func TestServePermissionRespond_Cancelled(t *testing.T) {
 	key := ai.PermissionKey("acp-session-789", "toolcall-2")
 	client.RegisterPendingPermissionForTest(key, &ai.PendingPermissionForTest{})
 
+	// Frontend sends the permissionBlockID (with "perm_" prefix) as toolCallId
 	body := map[string]any{
 		"sessionId":  sessionID,
-		"toolCallId": "toolcall-2",
+		"toolCallId": "perm_toolcall-2",
 		"cancelled":  true,
 	}
 	req := newRequest(t, http.MethodPost, "/api/ai/permission/respond", body)

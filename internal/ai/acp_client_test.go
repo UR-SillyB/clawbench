@@ -331,7 +331,7 @@ func TestClawBenchACPClient_RequestPermission_RespondApprove(t *testing.T) {
 	assert.Equal(t, "tool_use", toolUseEvent.Type)
 	require.NotNil(t, toolUseEvent.Tool)
 	assert.Equal(t, "PermissionApproval", toolUseEvent.Tool.Name)
-	assert.Equal(t, "tc-1", toolUseEvent.Tool.ID)
+	assert.Equal(t, "perm_tc-1", toolUseEvent.Tool.ID)
 
 	// Respond with approval
 	key := PermissionKey("sess-1", "tc-1")
@@ -350,7 +350,7 @@ func TestClawBenchACPClient_RequestPermission_RespondApprove(t *testing.T) {
 	case resultEvent := <-ch:
 		assert.Equal(t, "tool_result", resultEvent.Type)
 		require.NotNil(t, resultEvent.Tool)
-		assert.Equal(t, "tc-1", resultEvent.Tool.ID)
+		assert.Equal(t, "perm_tc-1", resultEvent.Tool.ID)
 		assert.True(t, resultEvent.Tool.Done)
 		assert.Equal(t, "success", resultEvent.Tool.Status)
 	case <-time.After(2 * time.Second):

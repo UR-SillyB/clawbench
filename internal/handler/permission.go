@@ -70,7 +70,14 @@ func ServePermissionRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := ai.PermissionKey(acpSessionID, req.ToolCallID)
+	// The frontend sends the permissionBlockID (prefixed with "perm_") as toolCallId.
+	// Strip the prefix to recover the original ACP tool call ID used in PermissionKey.
+	toolCallID := req.ToolCallID
+	if len(toolCallID) > 5 && toolCallID[:5] == "perm_" {
+		toolCallID = toolCallID[5:]
+	}
+
+	key := ai.PermissionKey(acpSessionID, toolCallID)
 
 	ok = client.RespondPermission(key, req.OptionID, req.Cancelled)
 	if !ok {
