@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,34 @@ import (
 
 	"clawbench/internal/model"
 )
+
+// ---------------------------------------------------------------------------
+// configKilledConnectionError — typed error for set_config_option killing the connection
+// ---------------------------------------------------------------------------
+
+// configKilledConnectionError indicates that a SetSessionConfigOption call
+// caused the agent process to crash or exit, killing the ACP connection.
+// This is a retryable error — the connection is already marked dead and will
+// be respawned on the next prompt attempt.
+type configKilledConnectionError struct {
+	configID string // "model", "thinkingEffort", or "mode"
+}
+
+func (e *configKilledConnectionError) Error() string {
+	return "acp: set_config_option(" + e.configID + ") killed connection"
+}
+
+// errConfigKilledConnection creates a configKilledConnectionError for the given config ID.
+func errConfigKilledConnection(configID string) error {
+	return &configKilledConnectionError{configID: configID}
+}
+
+// isConfigKilledConnection reports whether the error indicates a set_config_option
+// call killed the agent connection. These errors are retryable.
+func isConfigKilledConnection(err error) bool {
+	var e *configKilledConnectionError
+	return errors.As(err, &e)
+}
 
 // ---------------------------------------------------------------------------
 // ACPConnManager — singleton managing one ACP connection per ClawBench session
@@ -520,7 +549,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.Model != "" && c.shouldSetConfig("model", req.Model) {
 		c.setSessionConfigOption(ctx, acpSID, "model", req.Model)
 		if !c.IsAlive() {
-			return fmt.Errorf("acp: set_config_option(model) killed connection")
+			return errConfigKilledConnection("model")
 		}
 		c.markConfigSet("model", req.Model)
 	}
@@ -529,7 +558,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.ThinkingEffort != "" && c.shouldSetConfig("thinkingEffort", req.ThinkingEffort) {
 		c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", req.ThinkingEffort)
 		if !c.IsAlive() {
-			return fmt.Errorf("acp: set_config_option(thinkingEffort) killed connection")
+			return errConfigKilledConnection("thinkingEffort")
 		}
 		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
 	}
@@ -538,7 +567,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	if req.Mode != "" && c.shouldSetConfig("mode", req.Mode) {
 		c.setSessionConfigOption(ctx, acpSID, "mode", req.Mode)
 		if !c.IsAlive() {
-			return fmt.Errorf("acp: set_config_option(mode) killed connection")
+			return errConfigKilledConnection("mode")
 		}
 		c.markConfigSet("mode", req.Mode)
 	}

@@ -99,9 +99,11 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				return
 			}
 
-			// If the error is a peer disconnect, retry once after respawn + ResumeSession.
-			if isACPPeerDisconnected(err) {
-				slog.Warn("acp: peer disconnected during prompt, retrying after respawn", "session_id", req.SessionID, "acp_sid", acpSessionID, "error", err)
+			// If the error is a retryable disconnect (peer disconnect or config-killed
+			// connection), retry once after respawn + ResumeSession.
+			if isACPPeerDisconnected(err) || isConfigKilledConnection(err) {
+				slog.Warn("acp: connection lost during prompt, retrying after respawn",
+					"session_id", req.SessionID, "acp_sid", acpSessionID, "error", err)
 				conn2, isNew2, retryErr := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
 				if retryErr != nil {
 					forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v (retry respawn failed: %v)", err, retryErr), Reason: ReasonBackendExit})
