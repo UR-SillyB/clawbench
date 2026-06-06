@@ -2565,3 +2565,338 @@ describe('continueFromExecution', () => {
     expect(result).toEqual({ exists: false, sessionId: '' })
   })
 })
+
+// ───────────────────────────────────────────────────────────
+// loadHistory race protection (loadHistorySeq)
+// ───────────────────────────────────────────────────────────
+
+describe('loadHistory race protection', () => {
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    resetMockState()
+    resetAdditionalMocks()
+    originalFetch = globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('discards stale loadHistory response when a newer one starts', async () => {
+    let resolveFirst: (v: any) => void
+    const firstPromise = new Promise(resolve => { resolveFirst = resolve })
+
+    const callOrder: string[] = []
+
+    globalThis.fetch = vi.fn()
+      // First call: slow (will be stale)
+      .mockImplementationOnce(() => {
+        callOrder.push('first-start')
+        return firstPromise
+      })
+      // Second call: fast (will win)
+      .mockImplementationOnce(() => {
+        callOrder.push('second-start')
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            sessionId: 's2',
+            sessionTitle: 'Second Session',
+            messages: [],
+            total: 0,
+            running: false,
+          }),
+        })
+      })
+
+    const currentSessionId = ref('current-s1')
+    const messages = ref([])
+    const loading = ref(false)
+    const options = {
+      currentSessionId,
+      messages,
+      loading,
+      inputDisabled: ref(false),
+      blockTasks: {},
+      blockAskQuestions: {},
+      blockRagResults: {},
+      expandedTools: ref({}),
+      onParseAssistantContent: vi.fn(),
+      onExtractScheduledTasks: vi.fn(),
+      onRenderUpdate: vi.fn(),
+      onScrollBottom: vi.fn(),
+      onConnectStream: vi.fn(),
+      onStopPolling: vi.fn(),
+      onDisconnectStream: vi.fn(),
+      onOpen: vi.fn(),
+    }
+    const session = useChatSession(options)
+
+    // Start first loadHistory (slow, won't resolve yet)
+    const firstLoad = session.loadHistory(true, false, false)
+    await vi.waitFor(() => callOrder.includes('first-start'))
+
+    // Start second loadHistory (fast, resolves immediately)
+    const secondLoad = session.loadHistory(true, false, false)
+    await secondLoad
+
+    // Now resolve the first one with stale data
+    resolveFirst!({
+      ok: true,
+      json: () => Promise.resolve({
+        sessionId: 'stale-s1',
+        sessionTitle: 'Stale Session',
+        messages: [],
+        total: 0,
+        running: false,
+      }),
+    })
+    await firstLoad
+
+    // The second (newer) result should win — currentSessionId should be 's2'
+    expect(currentSessionId.value).toBe('s2')
+    expect(mockIdentity.currentSessionTitle).toBe('Second Session')
+  })
+
+  it('switchSession bumps loadHistorySeq, discarding in-flight loadHistory', async () => {
+    let resolveLoadHistory: (v: any) => void
+    const loadHistoryPromise = new Promise(resolve => { resolveLoadHistory = resolve })
+
+    globalThis.fetch = vi.fn()
+      // loadHistory call: slow
+      .mockImplementationOnce(() => loadHistoryPromise)
+      // switchSession call: fast
+      .mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          sessionId: 'switched-s1',
+          messages: [],
+          total: 0,
+          running: false,
+        }),
+      }))
+      // loadSessionsOnce (called by switchSession)
+      .mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ sessions: [] }),
+      }))
+
+    const currentSessionId = ref('current-s1')
+    const options = {
+      currentSessionId,
+      messages: ref([]),
+      loading: ref(false),
+      inputDisabled: ref(false),
+      blockTasks: {},
+      blockAskQuestions: {},
+      blockRagResults: {},
+      expandedTools: ref({}),
+      onParseAssistantContent: vi.fn(),
+      onExtractScheduledTasks: vi.fn(),
+      onRenderUpdate: vi.fn(),
+      onScrollBottom: vi.fn(),
+      onConnectStream: vi.fn(),
+      onStopPolling: vi.fn(),
+      onDisconnectStream: vi.fn(),
+      onOpen: vi.fn(),
+    }
+    const session = useChatSession(options)
+
+    // Start a slow loadHistory
+    const loadHistoryTask = session.loadHistory(true, false, false)
+
+    // Before it resolves, call switchSession
+    const switchTask = session.switchSession('switched-s1')
+    await switchTask
+
+    // Now resolve the slow loadHistory with stale data
+    resolveLoadHistory!({
+      ok: true,
+      json: () => Promise.resolve({
+        sessionId: 'stale-s1',
+        messages: [],
+        total: 0,
+        running: false,
+      }),
+    })
+    await loadHistoryTask
+
+    // switchSession result should win
+    expect(currentSessionId.value).toBe('switched-s1')
+  })
+})
+
+// ───────────────────────────────────────────────────────────
+// loadHistory session_id recovery
+// ───────────────────────────────────────────────────────────
+
+describe('loadHistory session_id recovery', () => {
+  let originalFetch: typeof globalThis.fetch
+  let warnSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    resetMockState()
+    resetAdditionalMocks()
+    originalFetch = globalThis.fetch
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    warnSpy.mockRestore()
+  })
+
+  it('recovers session from backend when currentSessionId is empty', async () => {
+    globalThis.fetch = vi.fn()
+      // Recovery call: /api/ai/chat?limit=1
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          sessionId: 'recovered-s1',
+          sessionTitle: 'Recovered Session',
+          backend: 'claude',
+          agentId: 'agent1',
+          modelId: 'model-x',
+          thinkingEffort: 'high',
+          messages: [],
+          total: 5,
+          running: false,
+        }),
+      })
+      // Full load call: /api/ai/chat?session_id=recovered-s1&limit=...
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          sessionId: 'recovered-s1',
+          sessionTitle: 'Recovered Session',
+          backend: 'claude',
+          agentId: 'agent1',
+          modelId: 'model-x',
+          thinkingEffort: 'high',
+          messages: [{ id: 'm1' }, { id: 'm2' }],
+          total: 5,
+          running: false,
+        }),
+      })
+
+    const currentSessionId = ref('') // empty — triggers recovery
+    const messages = ref([])
+    const options = {
+      currentSessionId,
+      messages,
+      loading: ref(false),
+      inputDisabled: ref(false),
+      blockTasks: {},
+      blockAskQuestions: {},
+      blockRagResults: {},
+      expandedTools: ref({}),
+      onParseAssistantContent: vi.fn(),
+      onExtractScheduledTasks: vi.fn(),
+      onRenderUpdate: vi.fn(),
+      onScrollBottom: vi.fn(),
+      onConnectStream: vi.fn(),
+      onStopPolling: vi.fn(),
+      onDisconnectStream: vi.fn(),
+      onOpen: vi.fn(),
+    }
+    const session = useChatSession(options)
+    await session.loadHistory(true, false, false)
+
+    // Should have made two fetch calls: recovery + full load
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    // First call: recovery with limit=1
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, expect.stringContaining('limit=1'))
+    // Second call: full load with explicit session_id
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('session_id=recovered-s1'))
+    // currentSessionId should be set from recovery
+    expect(currentSessionId.value).toBe('recovered-s1')
+    expect(mockIdentity.currentSessionTitle).toBe('Recovered Session')
+    expect(mockIdentity.currentBackend).toBe('claude')
+    expect(mockIdentity.currentAgentId).toBe('agent1')
+  })
+
+  it('returns early when recovery yields no session', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        sessionId: '',
+        messages: [],
+        total: 0,
+        running: false,
+      }),
+    })
+
+    const currentSessionId = ref('')
+    const messages = ref([])
+    const options = {
+      currentSessionId,
+      messages,
+      loading: ref(false),
+      inputDisabled: ref(false),
+      blockTasks: {},
+      blockAskQuestions: {},
+      blockRagResults: {},
+      expandedTools: ref({}),
+      onParseAssistantContent: vi.fn(),
+      onExtractScheduledTasks: vi.fn(),
+      onRenderUpdate: vi.fn(),
+      onScrollBottom: vi.fn(),
+      onConnectStream: vi.fn(),
+      onStopPolling: vi.fn(),
+      onDisconnectStream: vi.fn(),
+      onOpen: vi.fn(),
+    }
+    const session = useChatSession(options)
+    await session.loadHistory(true, false, false)
+
+    // Only recovery call should be made (no full load)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    // Messages should remain empty
+    expect(messages.value).toEqual([])
+    // currentSessionId should still be empty
+    expect(currentSessionId.value).toBe('')
+  })
+
+  it('logs warning when backend returns different sessionId than requested', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        sessionId: 'wrong-s1',
+        sessionTitle: 'Wrong Session',
+        backend: 'claude',
+        agentId: 'agent1',
+        messages: [],
+        total: 0,
+        running: false,
+      }),
+    })
+
+    const currentSessionId = ref('current-s1')
+    const options = {
+      currentSessionId,
+      messages: ref([]),
+      loading: ref(false),
+      inputDisabled: ref(false),
+      blockTasks: {},
+      blockAskQuestions: {},
+      blockRagResults: {},
+      expandedTools: ref({}),
+      onParseAssistantContent: vi.fn(),
+      onExtractScheduledTasks: vi.fn(),
+      onRenderUpdate: vi.fn(),
+      onScrollBottom: vi.fn(),
+      onConnectStream: vi.fn(),
+      onStopPolling: vi.fn(),
+      onDisconnectStream: vi.fn(),
+      onOpen: vi.fn(),
+    }
+    const session = useChatSession(options)
+    await session.loadHistory(true, false, false)
+
+    // Should have logged a warning about mismatch
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('session ID mismatch')
+    )
+  })
+})

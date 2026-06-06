@@ -1029,4 +1029,71 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
     })
+
+    // ── sendMessage fallback: no session_id → no POST ──
+
+    describe('sendMessage fallback', () => {
+        it('does not send POST to /api/ai/chat when session creation also fails', async () => {
+            const identity = useSessionIdentity()
+            resetIdentity()
+
+            // Mock fetch: session creation returns failure (no sessionId)
+            const mockFetch = vi.fn().mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({ ok: false, error: 'Too many sessions' }),
+            })
+            vi.stubGlobal('fetch', mockFetch)
+
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+            await identity.sendMessage('hello')
+            errorSpy.mockRestore()
+
+            // Should have called fetch for session creation
+            expect(mockFetch).toHaveBeenCalledWith(
+                '/api/ai/sessions',
+                expect.objectContaining({ method: 'POST' })
+            )
+
+            // Should NOT have sent POST to /api/ai/chat (no session_id available)
+            const chatPostCalls = mockFetch.mock.calls.filter(
+                (call: any[]) => call[0]?.includes?.('/api/ai/chat') && call[1]?.method === 'POST'
+            )
+            expect(chatPostCalls.length).toBe(0)
+
+            vi.unstubAllGlobals()
+        })
+
+        it('sends POST with session_id when session creation succeeds', async () => {
+            const identity = useSessionIdentity()
+            resetIdentity()
+
+            // Mock fetch: session creation succeeds
+            const mockFetch = vi.fn()
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ ok: true, sessionId: 'new-s1' }),
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ started: true, sessionId: 'new-s1' }),
+                })
+            vi.stubGlobal('fetch', mockFetch)
+
+            await identity.sendMessage('hello')
+
+            // First call: create session
+            expect(mockFetch).toHaveBeenNthCalledWith(1,
+                '/api/ai/sessions',
+                expect.objectContaining({ method: 'POST' })
+            )
+
+            // Second call: POST message with explicit session_id
+            expect(mockFetch).toHaveBeenNthCalledWith(2,
+                expect.stringContaining('session_id=new-s1'),
+                expect.objectContaining({ method: 'POST' })
+            )
+
+            vi.unstubAllGlobals()
+        })
+    })
 })

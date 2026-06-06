@@ -547,10 +547,17 @@ async function sendMessageNow(text, filePaths, files) {
     try {
         const effectiveAgentId = identity.currentAgentId.value
 
-        const url = identity.currentSessionId.value
-            ? `/api/ai/chat?session_id=${encodeURIComponent(identity.currentSessionId.value)}`
-            : '/api/ai/chat'
-        const resp = await fetch(url, {
+        if (!identity.currentSessionId.value) {
+            // No session yet — the user hasn't loaded a session. This shouldn't
+            // happen during normal operation (loadHistory always sets currentSessionId).
+            // Instead of letting the backend auto-create a ghost session, recover first.
+            try { await session.loadHistory(true, false) } catch { /* best effort */ }
+            if (!identity.currentSessionId.value) {
+                throw new Error(gt('chat.session.requestFailed', { status: 'No session' }))
+            }
+        }
+        const safeUrl = `/api/ai/chat?session_id=${encodeURIComponent(identity.currentSessionId.value)}`
+        const resp = await fetch(safeUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: text, filePaths, files: files || [], agentId: effectiveAgentId, modelId: identity.currentModelId.value || undefined, thinkingEffort: identity.currentThinkingEffort.value || undefined, modeId: identity.currentModeId.value || undefined }),

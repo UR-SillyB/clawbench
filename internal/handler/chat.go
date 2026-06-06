@@ -258,29 +258,14 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 	// Get backend from session, not from global state
 	sessionID := getSessionID(r)
 	if sessionID == "" {
-		// No session yet — auto-create one (same logic as GET)
-		// Check session count limit before auto-creating (0 = unlimited)
-		if model.SessionMaxCount > 0 {
-			if count, cerr := service.GetSessionCount(projectPath); cerr == nil && count >= model.SessionMaxCount {
-				writeLocalizedErrorf(w, r, http.StatusConflict, "SessionLimitReached", map[string]any{"MaxCount": model.SessionMaxCount})
-				return
-			}
-		}
-		agentID2 := model.GetDefaultAgentID()
-		sessionBackend2, _, _, _, ok := resolveAgentConfig(agentID2)
-		if !ok {
-			writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
-			return
-		}
-		var err error
-		// Don't pre-fill agent default model — leave empty so frontend
-		// falls back to global localStorage preference (cross-project).
-		sessionID, err = service.CreateSession(projectPath, sessionBackend2, T(r, "NewSession"), agentID2, "", "default", "chat")
-		if err != nil {
-			model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
-			return
-		}
-		setSessionID(w, sessionID)
+		// No session ID in query param or cookie — this should not happen
+		// during normal operation. The frontend always tracks currentSessionId
+		// and sends it explicitly. Auto-creating a new session here is dangerous
+		// because it creates a "ghost" session that the frontend doesn't know about,
+		// causing the user to appear to lose their conversation.
+		// Return an error so the frontend can recover explicitly.
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "SessionIdRequired")
+		return
 	}
 	backendName := service.GetSessionBackend(sessionID)
 	if backendName == "" {

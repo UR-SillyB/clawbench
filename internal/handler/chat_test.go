@@ -3013,3 +3013,57 @@ func TestBuildChatRequestFromQueue_UsesSessionMode(t *testing.T) {
 	req := buildChatRequestFromQueue(qMsg, sessionID, env.ProjectDir, "claude", "claude", "")
 	assert.Equal(t, "architect", req.Mode, "buildChatRequestFromQueue should use session-persisted mode")
 }
+
+// --- POST /api/ai/chat without session_id should return 400 (not auto-create) ---
+
+func TestAIChat_POST_NoSessionID_Returns400(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Count sessions before the request
+	countBefore := 0
+	_ = service.DBRead.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE deleted = 0 AND session_type = 'chat'").Scan(&countBefore)
+
+	// POST without session_id (no cookie, no query param)
+	body := map[string]string{"message": "hello"}
+	req := newRequest(t, http.MethodPost, "/api/ai/chat", body)
+	withProjectCookie(req, env.ProjectDir)
+
+	w := callHandler(AIChat, req)
+
+	// Should return 400, not auto-create a session
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	var resp map[string]interface{}
+	decodeRespJSON(t, w.Body, &resp)
+	assert.Contains(t, resp["error"], "session_id")
+
+	// Verify no new session was created
+	countAfter := 0
+	_ = service.DBRead.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE deleted = 0 AND session_type = 'chat'").Scan(&countAfter)
+	assert.Equal(t, countBefore, countAfter, "POST without session_id should NOT auto-create a session")
+}
+
+func TestAIChat_POST_WithSessionID_Succeeds(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Create a session first
+	sessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "test session", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	model.Agents["codebuddy"] = &model.Agent{ID: "codebuddy", Backend: "cli", Command: "echo"}
+
+	// POST with explicit session_id in query param
+	body := map[string]string{"message": "hello", "agentId": "codebuddy"}
+	req := newRequest(t, http.MethodPost, "/api/ai/chat?session_id="+sessionID, body)
+	withProjectCookie(req, env.ProjectDir)
+
+	w := callHandler(AIChat, req)
+
+	// Should succeed (200 or another non-400 code)
+	assert.NotEqual(t, http.StatusBadRequest, w.Code, "POST with valid session_id should not return 400")
+
+	// Give the async AI goroutine time to finish before teardown closes the DB
+	time.Sleep(100 * time.Millisecond)
+}

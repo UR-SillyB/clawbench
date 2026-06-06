@@ -159,6 +159,11 @@ export function useChatSession(options: UseChatSessionOptions) {
   // Guard against concurrent switchSession calls — only the last one wins
   let switchSessionSeq = 0
 
+  // Guard against concurrent loadHistory calls — only the last one wins.
+  // Without this, stale responses (e.g. from a loadHistory triggered before
+  // visibility change) can overwrite currentSessionId with a wrong value.
+  let loadHistorySeq = 0
+
   // ── Change detection for polling ──
   // Tracks a lightweight fingerprint of the last loaded messages.
   // When polling-triggered reloads find no change, the UI is not refreshed,
@@ -172,6 +177,7 @@ export function useChatSession(options: UseChatSessionOptions) {
   // skipIfUnchanged: true = when data matches last snapshot, skip UI refresh entirely
   //                (used by polling to avoid collapsing expandedTools / resetting scroll)
   async function loadHistory(forceScrollBottom = true, showOverlay = false, skipIfUnchanged = false) {
+    const mySeq = ++loadHistorySeq
     if (showOverlay) switching.value = true
     try {
       // Load agents first so we can resolve agent names
@@ -180,15 +186,46 @@ export function useChatSession(options: UseChatSessionOptions) {
       warmWorktreeCache(store.state.projectRoot)
       // Use max of initialMessages and current loaded count to avoid truncating lazy-loaded messages
       const limit = Math.max(store.state.chatInitialMessages, messages.value.length)
-      const url = currentSessionId.value
-        ? `/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=${limit}`
-        : `/api/ai/chat?limit=${limit}`
+      // CRITICAL: When currentSessionId is empty, do NOT call the backend without
+      // session_id. The backend falls back to GetLatestSessionID (ORDER BY updated_at
+      // DESC) which can return a DIFFERENT session than what the user was viewing.
+      // Instead, use initSessionFromAPI to recover the session identity first, then
+      // load history with an explicit session_id.
+      if (!currentSessionId.value) {
+        // Recover session from backend — this sets currentSessionId from the
+        // cookie-aware /api/ai/chat endpoint, but using limit=1 to avoid loading
+        // all messages twice (the full load happens below after recovery).
+        const recoverResp = await fetch(`/api/ai/chat?limit=1`)
+        if (loadHistorySeq !== mySeq) { switching.value = false; return }
+        if (recoverResp.ok) {
+          const recoverData = await recoverResp.json()
+          if (recoverData.sessionId) {
+            currentSessionId.value = recoverData.sessionId
+            currentSessionTitle.value = recoverData.sessionTitle || ''
+            currentBackend.value = recoverData.backend || ''
+            currentAgentId.value = recoverData.agentId || ''
+            syncModelFromData(currentAgentId.value, recoverData.modelId)
+            syncThinkingEffortFromData(recoverData.thinkingEffort)
+            syncModeFromData(recoverData.modeId, recoverData.modeState?.availableModes)
+          }
+        }
+        // If recovery still yields no session, bail — createSession will handle it
+        if (!currentSessionId.value) {
+          switching.value = false
+          return
+        }
+      }
+      const url = `/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=${limit}`
       const resp = await fetch(url)
+      // If another loadHistory or switchSession started while we were fetching, discard our results
+      if (loadHistorySeq !== mySeq) { switching.value = false; return }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}))
         throw new Error(errData.error || gt('chat.session.requestFailed', { status: resp.status }))
       }
       const data = await resp.json()
+      // Re-check after JSON parse (another async boundary)
+      if (loadHistorySeq !== mySeq) { switching.value = false; return }
       const rawMsgs = data.messages || []
 
       // Change detection: if skipIfUnchanged and data matches last snapshot, do nothing.
@@ -217,7 +254,17 @@ export function useChatSession(options: UseChatSessionOptions) {
       Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
       messages.value = parseMessages(rawMsgs, onParseAssistantContent, messages.value)
       totalMessages.value = data.total || messages.value.length
-      currentSessionId.value = data.sessionId || ''
+      // Sanity check: if the backend returned a different sessionId than what we
+      // requested, log a warning — this indicates a potential issue (e.g. session
+      // was deleted, project mismatch). The sequence guard already prevents stale
+      // responses from winning a race, so we still apply the data but log for
+      // debugging.
+      const requestedId = currentSessionId.value
+      const returnedId = data.sessionId || ''
+      if (returnedId && requestedId && returnedId !== requestedId) {
+        console.warn(`loadHistory: session ID mismatch (requested=${requestedId}, returned=${returnedId})`)
+      }
+      currentSessionId.value = returnedId
       currentSessionTitle.value = data.sessionTitle || ''
       currentBackend.value = data.backend || ''
       currentAgentId.value = data.agentId || ''
@@ -291,6 +338,9 @@ export function useChatSession(options: UseChatSessionOptions) {
     // Increment sequence counter — if another switch starts before we finish,
     // our results will be discarded (last writer wins)
     const mySeq = ++switchSessionSeq
+    // Also bump loadHistorySeq so any in-flight loadHistory results are discarded
+    // (switchSession takes priority over stale loadHistory responses)
+    ++loadHistorySeq
 
     // Mark switching state immediately so UI can show a fade/placeholder
     switching.value = true

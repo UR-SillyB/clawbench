@@ -439,7 +439,11 @@ export function useSessionIdentity() {
       }
       const url = sid
         ? `/api/ai/chat?session_id=${encodeURIComponent(sid)}`
-        : '/api/ai/chat'
+        : null
+      if (!url) {
+        console.error('sendMessage: no session ID available, cannot send')
+        return
+      }
       await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
