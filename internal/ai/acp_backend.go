@@ -221,6 +221,12 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 			forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
 		}
 	}
+
+	// Re-emit cached plan state so the frontend populates the plan panel
+	// on reconnect/respawn without waiting for a new plan_update event.
+	if planState := conn.GetCachedPlanState(); planState != nil {
+		forwardACPEvent(ch, StreamEvent{Type: "plan_update", Plan: planState})
+	}
 }
 
 // isACPPeerDisconnected checks whether the error is an ACP peer-disconnect error

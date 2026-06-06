@@ -74,7 +74,11 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 				Status:   string(e.Status),
 			})
 		}
-		forwardACPEvent(ch, StreamEvent{Type: "plan_update", Plan: &PlanState{Entries: entries}})
+		planState := &PlanState{Entries: entries}
+		forwardACPEvent(ch, StreamEvent{Type: "plan_update", Plan: planState})
+		if conn != nil {
+			conn.SetCachedPlanState(planState)
+		}
 
 	case update.AvailableCommandsUpdate != nil:
 		cmds := update.AvailableCommandsUpdate.AvailableCommands

@@ -98,13 +98,13 @@ func (m *ACPConnManager) CloseConn(clawbenchSID string) {
 
 // GetCachedStateByClawbenchSID returns the cached state for the connection
 // owned by the given ClawBench session ID.
-func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, cmds []AvailableCommandInfo, modelList *ModelListState) {
+func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, cmds []AvailableCommandInfo, modelList *ModelListState, plan *PlanState) {
 	m.mu.Lock()
 	conn := m.conns[clawbenchSID]
 	m.mu.Unlock()
 
 	if conn == nil {
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 
 	conn.mu.Lock()
@@ -112,13 +112,13 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) (mode
 	if conn.client != nil {
 		cmds = conn.client.GetCommandsAsInfo()
 	}
-	return conn.cachedModeState, conn.cachedConfigState, conn.cachedThinkingEffortState, cmds, conn.cachedModelListState
+	return conn.cachedModeState, conn.cachedConfigState, conn.cachedThinkingEffortState, cmds, conn.cachedModelListState, conn.cachedPlanState
 }
 
 // GetCachedStateByAgentID returns the cached state for any connection
 // belonging to the given agent. Returns the first match found.
 // Used for pre-fetching state before the first message (no session yet).
-func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, modelList *ModelListState) {
+func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, modelList *ModelListState, plan *PlanState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -131,12 +131,13 @@ func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) (mode *ModeStat
 			config = conn.cachedConfigState
 			effort = conn.cachedThinkingEffortState
 			modelList = conn.cachedModelListState
+			plan = conn.cachedPlanState
 			conn.mu.Unlock()
 			return
 		}
 		conn.mu.Unlock()
 	}
-	return nil, nil, nil, nil
+	return nil, nil, nil, nil, nil
 }
 
 // GetCommandsByAgentID returns the cached slash commands for any connection
@@ -243,6 +244,7 @@ type ACPConn struct {
 	cachedConfigState         *ConfigOptionState
 	cachedThinkingEffortState *ThinkingEffortState
 	cachedModelListState      *ModelListState
+	cachedPlanState           *PlanState
 
 	// lastSetConfig tracks the last values successfully sent to the agent via
 	// setSessionConfigOption. Used to avoid re-sending unchanged values that
@@ -488,6 +490,12 @@ func (c *ACPConn) AcpSID() string {
 
 // Prompt sends a prompt on the ACP session and forwards events to streamCh.
 func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamCh chan<- StreamEvent, req ChatRequest) error {
+	// Clear stale plan state from the previous turn — a new prompt starts
+	// a fresh execution cycle and the old plan entries are no longer relevant.
+	c.mu.Lock()
+	c.cachedPlanState = nil
+	c.mu.Unlock()
+
 	c.mu.Lock()
 	client := c.client
 	conn := c.conn
@@ -763,6 +771,23 @@ func (c *ACPConn) GetCachedModelListState() *ModelListState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cachedModelListState
+}
+
+// SetCachedPlanState caches the plan state from a plan_update event.
+// Plan state is transient — not persisted to DB, not debounced.
+func (c *ACPConn) SetCachedPlanState(state *PlanState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cachedPlanState = state
+	// No debouncePersistACPState — plan is transient, not persisted to DB
+}
+
+// GetCachedPlanState returns the cached plan state.
+// Returns nil if no plan state has been cached yet.
+func (c *ACPConn) GetCachedPlanState() *PlanState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cachedPlanState
 }
 
 // shouldSetConfig returns true if the config value has changed since the last

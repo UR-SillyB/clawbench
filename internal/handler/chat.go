@@ -187,22 +187,24 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// without waiting for SSE events (which may have already been consumed).
 		// Fallback: for brand-new sessions with no pool session mapping yet,
 		// look up by agent ID so mode chips appear on first load.
-		var modeState, thinkingEffortState, modelListState any
+		var modeState, thinkingEffortState, modelListState, planState any
 		var commands []ai.AvailableCommandInfo
 		if sessionID != "" {
-			if ms, _, es, cmds, ml := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil {
+			if ms, _, es, cmds, ml, ps := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil || ps != nil {
 				modeState = ms
 				thinkingEffortState = es
 				commands = cmds
 				modelListState = ml
+				planState = ps
 			} else if sessionAgentID != "" {
 				// No session-level mapping yet (new session, never sent a message).
 				// Fall back to agent-level cache so mode/thinking/command chips
 				// appear immediately without requiring the first message.
-				if ms, _, es, ml := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil {
+				if ms, _, es, ml, ps := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil || ps != nil {
 					modeState = ms
 					thinkingEffortState = es
 					modelListState = ml
+					planState = ps
 				}
 				if cmds := ai.GetACPConnManager().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
 					commands = cmds
@@ -212,7 +214,9 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// DB fallback: when pool cache is empty (e.g. after server restart),
 		// use ACP state persisted in the agents table so mode/thinking/command
 		// chips appear immediately without waiting for a new ACP connection.
-		if modeState == nil && thinkingEffortState == nil && len(commands) == 0 && modelListState == nil && sessionAgentID != "" {
+		// Plan state is NOT persisted to DB — it's transient execution state
+		// that is meaningless after a server restart (the AI process is dead).
+		if modeState == nil && thinkingEffortState == nil && len(commands) == 0 && modelListState == nil && planState == nil && sessionAgentID != "" {
 			if a, ok := model.Agents[sessionAgentID]; ok && a.Transport == "acp-stdio" {
 				if a.AcpModeState != "" {
 					var dbMs ai.ModeState
@@ -239,10 +243,10 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 		return
 	}
 
@@ -820,7 +824,7 @@ func finalizeStreamRun(
 	responseMetadata.WallMs = wallMs
 
 	// Inject ACP mode and thinking effort into metadata (if available)
-	if ms, _, es, _, _ := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
+	if ms, _, es, _, _, _ := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
 		if ms != nil && ms.CurrentModeID != "" {
 			responseMetadata.Mode = ms.CurrentModeID
 			_ = service.UpdateSessionMode(sessionID, ms.CurrentModeID)

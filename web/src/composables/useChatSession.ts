@@ -4,7 +4,7 @@ import { useToast } from '@/composables/useToast.ts'
 import { useNotification } from '@/composables/useNotification.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
 import { clearModeState, updateAvailableModes, clearCommandState, updateCommandState, updateAvailableThinkingEfforts, clearThinkingEffortState, currentAgentId as _currentAgentId } from '@/composables/useSessionIdentity.ts'
-import { clearPlanState } from '@/composables/usePlanProgress'
+import { clearPlanState, updatePlanEntries } from '@/composables/usePlanProgress'
 import { useAgents, restoreOriginalModels, populateACPStateFromCache } from '@/composables/useAgents'
 import { store } from '@/stores/app.ts'
 import { buildMessageSnapshot, parseMessages } from '@/utils/chatSessionUtils.ts'
@@ -228,6 +228,11 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
         updateCommandState(data.commands)
       }
+      // Populate plan state from REST response (cached ACP state)
+      // Only set if entries are non-empty to avoid clearing active SSE streaming plan
+      if (data.planState && data.planState.entries?.length > 0) {
+        updatePlanEntries(data.planState.entries)
+      }
       onExtractScheduledTasks(messages.value)
       onRenderUpdate(true)
       if (data.running) {
@@ -339,6 +344,11 @@ export function useChatSession(options: UseChatSessionOptions) {
       // Populate slash commands from REST response (cached ACP state)
       if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
         updateCommandState(data.commands)
+      }
+      // Populate plan state from REST response (cached ACP state)
+      // Only set if entries are non-empty to avoid clearing active SSE streaming plan
+      if (data.planState && data.planState.entries?.length > 0) {
+        updatePlanEntries(data.planState.entries)
       }
       onExtractScheduledTasks(messages.value)
       onRenderUpdate(true)

@@ -51,6 +51,7 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		Effort    *ai.ThinkingEffortState   `json:"thinkingEffortState,omitempty"`
 		Commands  []ai.AvailableCommandInfo `json:"commands,omitempty"`
 		ModelList *ai.ModelListState        `json:"modelListState,omitempty"`
+		Plan      *ai.PlanState             `json:"planState,omitempty"`
 	}
 	states := make(map[string]*acpState, len(agents))
 	mgr := ai.GetACPConnManager()
@@ -62,12 +63,14 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		var es *ai.ThinkingEffortState
 		var cmds []ai.AvailableCommandInfo
 		var ml *ai.ModelListState
+		var ps *ai.PlanState
 
 		// Try connection manager cache first
-		if pms, _, pes, pml := mgr.GetCachedStateByAgentID(a.ID); pms != nil || pes != nil || pml != nil {
+		if pms, _, pes, pml, pps := mgr.GetCachedStateByAgentID(a.ID); pms != nil || pes != nil || pml != nil || pps != nil {
 			ms = pms
 			es = pes
 			ml = pml
+			ps = pps
 		}
 		if pcmds := mgr.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
 			cmds = pcmds
@@ -106,8 +109,8 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 			a.Models = ml.Models
 		}
 
-		if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
-			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
+		if ms != nil || es != nil || len(cmds) > 0 || ml != nil || ps != nil {
+			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml, Plan: ps}
 		}
 	}
 

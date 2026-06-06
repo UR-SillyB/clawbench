@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { apiGet } from '@/utils/api'
 import { gt } from '@/composables/useLocale'
 import { updateModeState, updateThinkingEffortState, updateCommandState, currentAgentId } from '@/composables/useSessionIdentity.ts'
+import { updatePlanEntries } from '@/composables/usePlanProgress'
 
 // Singleton state — shared across the whole app
 const agents = ref<any[]>([])
@@ -66,6 +67,9 @@ async function loadAgents(force = false): Promise<void> {
                     // so the frontend ModelModal shows ACP models.
                     if (activeState.modelListState?.models?.length > 0) {
                         updateACPModelList(activeAgentId, activeState.modelListState.models, activeState.modelListState.currentModelId)
+                    }
+                    if (activeState.planState?.entries?.length > 0) {
+                        updatePlanEntries(activeState.planState.entries)
                     }
                 }
             }
@@ -236,6 +240,9 @@ export async function populateACPStateFromCache(agentId: string): Promise<void> 
     }
     if (state.modelListState?.models?.length > 0) {
         updateACPModelList(agentId, state.modelListState.models, state.modelListState.currentModelId)
+    }
+    if (state.planState?.entries?.length > 0) {
+        updatePlanEntries(state.planState.entries)
     }
 }
 
