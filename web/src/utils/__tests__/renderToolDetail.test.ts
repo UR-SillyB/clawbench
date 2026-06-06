@@ -1323,6 +1323,27 @@ describe('PermissionApproval renderer', () => {
     expect(html).toContain('permission-options')
   })
 
+  it('shows buttons when done=true but no output (cleanup/timeout marked done without real response)', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      options: [{ name: 'Allow Once', kind: 'allow_once', optionId: 'a1' }],
+    }, 'PermissionApproval', { done: true })
+    // done=true without output = not a real response, should still show buttons
+    expect(html).not.toContain('permission-responded')
+    expect(html).not.toContain('permission-result')
+    expect(html).toContain('permission-options')
+    expect(html).toContain('permission-btn-allow')
+  })
+
+  it('shows buttons when done=true with empty output', () => {
+    const html = formatToolInput({
+      toolName: 'Bash',
+      options: [{ name: 'Allow Once', kind: 'allow_once', optionId: 'a1' }],
+    }, 'PermissionApproval', { done: true, output: '' })
+    expect(html).not.toContain('permission-responded')
+    expect(html).toContain('permission-options')
+  })
+
   it('shouldAutoExpandTool returns true', () => {
     expect(shouldAutoExpandTool('PermissionApproval')).toBe(true)
   })

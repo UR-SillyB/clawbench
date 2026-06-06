@@ -58,6 +58,7 @@ export function useChatStream(options: UseChatStreamOptions) {
   const toolUseTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map()
 
   const STREAM_TIMEOUT_MS = 30000 // 30 seconds without any SSE event = try reconnect
+  const PERMISSION_STREAM_TIMEOUT_MS = 300000 // 5 min when permission approval is pending (user deciding)
   const TOOL_USE_TIMEOUT_MS = 30000 // 30 seconds without 'done' event = mark as done
 
   const reconnect = useReconnect({
@@ -81,8 +82,16 @@ export function useChatStream(options: UseChatStreamOptions) {
     }, 80)
   }
 
+  function hasPendingPermissionApproval(): boolean {
+    const streamingMsg = messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
+    if (!streamingMsg?.blocks) return false
+    return streamingMsg.blocks.some((b: any) => b.type === 'tool_use' && b.name === 'PermissionApproval' && !b.done)
+  }
+
   function resetStreamTimeout() {
     if (streamTimeout) clearTimeout(streamTimeout)
+    // Extend timeout when a permission approval is pending — the user needs time to decide
+    const timeoutMs = hasPendingPermissionApproval() ? PERMISSION_STREAM_TIMEOUT_MS : STREAM_TIMEOUT_MS
     streamTimeout = setTimeout(() => {
       console.warn('SSE stream timeout - no events received, reconnecting')
       // No SSE event received for too long — reconnect instead of killing the session
@@ -414,15 +423,18 @@ export function useChatStream(options: UseChatStreamOptions) {
           // New tool call — start timeout as safety net
           const newBlock = { type: 'tool_use', name: data.name, id: data.id, input: data.input || {}, done: false, output: data.output || '', status: data.status || '' }
           blocks.push(newBlock)
-          const timer = setTimeout(() => {
-            if (!newBlock.done) {
-              console.warn(`tool_use block ${data.id} timed out without 'done', marking as done`)
-              newBlock.done = true
-              onRenderNeeded()
-            }
-            toolUseTimeouts.delete(data.id)
-          }, TOOL_USE_TIMEOUT_MS)
-          toolUseTimeouts.set(data.id, timer)
+          // PermissionApproval blocks wait for user interaction — don't timeout
+          if (data.name !== 'PermissionApproval') {
+            const timer = setTimeout(() => {
+              if (!newBlock.done) {
+                console.warn(`tool_use block ${data.id} timed out without 'done', marking as done`)
+                newBlock.done = true
+                onRenderNeeded()
+              }
+              toolUseTimeouts.delete(data.id)
+            }, TOOL_USE_TIMEOUT_MS)
+            toolUseTimeouts.set(data.id, timer)
+          }
         }
       }
       // Skip scroll when panel not visible

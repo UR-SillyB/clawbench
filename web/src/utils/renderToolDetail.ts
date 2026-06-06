@@ -445,12 +445,16 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
   const toolName = input.toolName || ''
   const toolInput = input.toolInput || ''
   const isDone = blockCtx?.done
-  const isApproved = isDone && blockCtx?.status !== 'error'
+  // Require explicit output to consider this genuinely responded.
+  // done=true without output can happen when cleanup/timeout marks the block done
+  // without a real user response — that's a "pending" state, not "approved".
+  const hasRealResult = isDone && blockCtx?.output
+  const isApproved = hasRealResult && blockCtx?.status !== 'error'
 
   let html = '<div class="permission-approval-view'
 
-  // When loaded from history with done=true, render as already responded
-  if (isDone) {
+  // Only mark as responded when we have a real result from user action
+  if (hasRealResult) {
     html += ' permission-responded'
   }
 
@@ -484,7 +488,7 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
   }
 
   // Option buttons
-  if (isDone) {
+  if (hasRealResult) {
     // Already responded — show result badge instead of buttons
     if (isApproved) {
       html += `<div class="permission-result permission-result-approved">${escapeHtml(gt('tool.permission.approved'))}</div>`

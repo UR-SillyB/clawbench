@@ -38,10 +38,13 @@ export function forceCleanupStreamingState(
   const streamingMsg = messages.find((m: any) => m.role === 'assistant' && m.streaming)
   if (streamingMsg) {
     delete streamingMsg.streaming
-    // Mark all unfinished tool_use blocks as done so spinner stops
+    // Mark all unfinished tool_use blocks as done so spinner stops.
+    // Exception: PermissionApproval blocks require user interaction —
+    // marking them done without a real result makes the card appear
+    // "Approved" when it's actually stuck (no user response received).
     if (streamingMsg.blocks) {
       for (const block of streamingMsg.blocks) {
-        if (block.type === 'tool_use' && !block.done) {
+        if (block.type === 'tool_use' && !block.done && block.name !== 'PermissionApproval') {
           block.done = true
         }
       }
