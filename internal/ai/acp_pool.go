@@ -409,6 +409,12 @@ type ACPConn struct {
 	lastSetEffort   string
 	lastSetMode     string
 
+	// unsupportedConfigs tracks config IDs that the agent reported as unknown
+	// (e.g., CodeBuddy doesn't support "thinkingEffort"). Once detected, we
+	// skip sending that config to avoid flooding the agent with errors on every
+	// prompt. Cleared on respawn — the new process might support it after an update.
+	unsupportedConfigs map[string]bool
+
 	// persistDebounce timer for batching ACP state DB writes
 	persistTimer *time.Timer
 	persistMu    sync.Mutex // separate mutex to avoid deadlock with mu
@@ -979,6 +985,17 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 	})
 	if err != nil {
 		slog.Warn("acp conn: set_config_option failed", "config_id", configID, "value", value, "error", err)
+		// If the error indicates the agent doesn't know this config option,
+		// mark it as unsupported so we don't retry on subsequent prompts.
+		if isUnknownConfigOption(err) {
+			c.lastSetConfigMu.Lock()
+			if c.unsupportedConfigs == nil {
+				c.unsupportedConfigs = make(map[string]bool)
+			}
+			c.unsupportedConfigs[configID] = true
+			c.lastSetConfigMu.Unlock()
+			slog.Info("acp conn: marking config as unsupported by agent", "config_id", configID, "value", value)
+		}
 		// If the error indicates the peer died, mark the connection as dead
 		// so the next Prompt() triggers respawn + ResumeSession.
 		if isACPPeerDisconnected(err) {
@@ -1074,10 +1091,14 @@ func (c *ACPConn) GetCachedPlanState() *PlanState {
 }
 
 // shouldSetConfig returns true if the config value has changed since the last
-// successful set.
+// successful set AND the config is not marked as unsupported by the agent.
 func (c *ACPConn) shouldSetConfig(configID, value string) bool {
 	c.lastSetConfigMu.Lock()
 	defer c.lastSetConfigMu.Unlock()
+	// Skip if the agent previously reported this config as unknown
+	if c.unsupportedConfigs != nil && c.unsupportedConfigs[configID] {
+		return false
+	}
 	switch configID {
 	case "model":
 		return c.lastSetModel != value
@@ -1104,12 +1125,15 @@ func (c *ACPConn) markConfigSet(configID, value string) {
 }
 
 // resetLastSetConfig clears cached config values (called on respawn).
+// Also clears unsupported config tracking — the new process might support
+// previously-unsupported options after an update.
 func (c *ACPConn) resetLastSetConfig() {
 	c.lastSetConfigMu.Lock()
 	defer c.lastSetConfigMu.Unlock()
 	c.lastSetModel = ""
 	c.lastSetEffort = ""
 	c.lastSetMode = ""
+	c.unsupportedConfigs = nil
 }
 
 func (c *ACPConn) SetCachedModeState(state *ModeState) {

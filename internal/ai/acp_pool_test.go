@@ -231,6 +231,41 @@ func TestACPConn_ShouldSetConfig_UnknownConfigID(t *testing.T) {
 	assert.True(t, conn.shouldSetConfig("unknown", "value"))
 }
 
+func TestACPConn_ShouldSetConfig_UnsupportedConfig(t *testing.T) {
+	agent := &model.Agent{ID: "test-unsupported", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-unsupported")
+
+	// Initially, thinkingEffort should be allowed
+	assert.True(t, conn.shouldSetConfig("thinkingEffort", "high"))
+
+	// Mark thinkingEffort as unsupported
+	conn.lastSetConfigMu.Lock()
+	conn.unsupportedConfigs = map[string]bool{"thinkingEffort": true}
+	conn.lastSetConfigMu.Unlock()
+
+	// Now shouldSetConfig should return false for thinkingEffort
+	assert.False(t, conn.shouldSetConfig("thinkingEffort", "high"))
+	assert.False(t, conn.shouldSetConfig("thinkingEffort", "low"))
+	// But other configs should still work
+	assert.True(t, conn.shouldSetConfig("model", "gpt-4"))
+}
+
+func TestACPConn_ResetLastSetConfig_ClearsUnsupported(t *testing.T) {
+	agent := &model.Agent{ID: "test-reset-unsupported", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-reset-unsupported")
+
+	// Mark thinkingEffort as unsupported
+	conn.lastSetConfigMu.Lock()
+	conn.unsupportedConfigs = map[string]bool{"thinkingEffort": true}
+	conn.lastSetConfigMu.Unlock()
+
+	assert.False(t, conn.shouldSetConfig("thinkingEffort", "high"))
+
+	// Reset should clear unsupported tracking
+	conn.resetLastSetConfig()
+	assert.True(t, conn.shouldSetConfig("thinkingEffort", "high"))
+}
+
 // --- ACPConn plan state caching ---
 
 func TestACPConn_GetSetCachedPlanState(t *testing.T) {

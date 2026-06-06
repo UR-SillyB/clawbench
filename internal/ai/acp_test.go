@@ -2007,6 +2007,34 @@ func TestIsACPPeerDisconnected_NonPeerError(t *testing.T) {
 	assert.False(t, isACPPeerDisconnected(err))
 }
 
+// --- isUnknownConfigOption ---
+
+func TestIsUnknownConfigOption_RequestErrorWithDetails(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32603,
+		Data: map[string]any{"details": "Unknown config option: thinkingEffort"},
+	}
+	assert.True(t, isUnknownConfigOption(err))
+}
+
+func TestIsUnknownConfigOption_RequestErrorNoDetails(t *testing.T) {
+	err := &acp.RequestError{
+		Code: -32603,
+		Data: map[string]any{"error": "peer disconnected before response"},
+	}
+	assert.False(t, isUnknownConfigOption(err))
+}
+
+func TestIsUnknownConfigOption_PlainError(t *testing.T) {
+	err := fmt.Errorf("Unknown config option: thinkingEffort")
+	assert.True(t, isUnknownConfigOption(err))
+}
+
+func TestIsUnknownConfigOption_UnrelatedError(t *testing.T) {
+	err := fmt.Errorf("some other error")
+	assert.False(t, isUnknownConfigOption(err))
+}
+
 // --- extractModeStateFromModes ---
 
 func TestExtractModeStateFromModes_Nil(t *testing.T) {

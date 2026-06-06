@@ -283,6 +283,22 @@ func isPeerDisconnectMsg(msg string) bool {
 		strings.Contains(msg, "broken pipe")
 }
 
+// isUnknownConfigOption checks whether the error indicates the agent doesn't
+// recognize a config option (e.g., CodeBuddy doesn't support "thinkingEffort").
+// These errors have code -32603 with "Unknown config option" in the details.
+func isUnknownConfigOption(err error) bool {
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) {
+		return strings.Contains(err.Error(), "Unknown config option")
+	}
+	if dataMap, ok := reqErr.Data.(map[string]any); ok {
+		if details, ok := dataMap["details"].(string); ok && strings.Contains(details, "Unknown config option") {
+			return true
+		}
+	}
+	return strings.Contains(reqErr.Error(), "Unknown config option")
+}
+
 // buildPromptBlocks constructs ACP ContentBlock list from the chat request.
 // If a system prompt should be injected, it's prepended as the first text block.
 func (b *ACPBackend) buildPromptBlocks(req ChatRequest) []acp.ContentBlock {
