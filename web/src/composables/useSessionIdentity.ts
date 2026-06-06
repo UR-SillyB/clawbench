@@ -308,13 +308,19 @@ export async function initSessionFromAPI() {
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
           availableCommands.value = data.commands
         }
-        // Populate mode state from chat response (DB-persisted ACP state)
+        // Populate mode state from chat response — only update available modes.
+        // currentModeId was already set above from data.modeId (DB-persisted
+        // user choice); data.modeState.currentModeId is the agent's runtime
+        // value which should not override the user's selection.
         if (data.modeState && data.modeState.availableModes?.length > 0) {
-          updateModeState(data.modeId || data.modeState.currentModeId || '', data.modeState.availableModes)
+          updateAvailableModes(data.modeState.availableModes)
         }
-        // Populate thinking effort state from chat response (DB-persisted ACP state)
+        // Populate thinking effort state — only update available levels.
+        // currentThinkingEffort was already set above from data.thinkingEffort
+        // (DB-persisted user choice); data.thinkingEffortState.currentLevelId
+        // is the agent's runtime value which should not override the user's selection.
         if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
-          updateThinkingEffortState(data.thinkingEffort || data.thinkingEffortState.currentLevelId || '', data.thinkingEffortState.availableLevels)
+          updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
         }
       }
     }

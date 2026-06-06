@@ -54,11 +54,15 @@ async function loadAgents(force = false): Promise<void> {
                 const activeAgentId = currentAgentId.value
                 const activeState = activeAgentId ? data.acpStates[activeAgentId] : null
                 if (activeState) {
+                    // Only update available modes/levels — currentModeId and
+                    // currentThinkingEffort are managed by user action + DB,
+                    // not by agent cache (which reflects the agent's runtime
+                    // state, not the user's selection).
                     if (activeState.modeState?.availableModes?.length > 0) {
-                        updateModeState(activeState.modeState.currentModeId || '', activeState.modeState.availableModes)
+                        updateAvailableModes(activeState.modeState.availableModes)
                     }
                     if (activeState.thinkingEffortState?.availableLevels?.length > 0) {
-                        updateThinkingEffortState(activeState.thinkingEffortState.currentId || '', activeState.thinkingEffortState.availableLevels)
+                        updateAvailableThinkingEfforts(activeState.thinkingEffortState.availableLevels)
                     }
                     if (Array.isArray(activeState.commands) && activeState.commands.length > 0) {
                         updateCommandState(activeState.commands)
@@ -229,11 +233,14 @@ export async function populateACPStateFromCache(agentId: string): Promise<void> 
     }
     const state = acpStatesCache[agentId]
     if (!state) return
+    // Only update available modes/levels — currentModeId and currentThinkingEffort
+    // are managed by user action + DB, not by agent cache (which reflects the
+    // agent's runtime state, not the user's selection).
     if (state.modeState?.availableModes?.length > 0) {
-        updateModeState(state.modeState.currentModeId || '', state.modeState.availableModes)
+        updateAvailableModes(state.modeState.availableModes)
     }
     if (state.thinkingEffortState?.availableLevels?.length > 0) {
-        updateThinkingEffortState(state.thinkingEffortState.currentId || '', state.thinkingEffortState.availableLevels)
+        updateAvailableThinkingEfforts(state.thinkingEffortState.availableLevels)
     }
     if (Array.isArray(state.commands) && state.commands.length > 0) {
         updateCommandState(state.commands)
