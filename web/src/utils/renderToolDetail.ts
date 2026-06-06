@@ -440,12 +440,21 @@ function renderSkillCall(input: Record<string, any>): string {
  * Shows tool name + description, permission options as buttons.
  * Clicking an option calls POST /api/ai/permission/respond.
  */
-function renderPermissionApproval(input: Record<string, any>): string {
+function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlockCtx): string {
   const options = Array.isArray(input.options) ? input.options : []
   const toolName = input.toolName || ''
   const toolInput = input.toolInput || ''
+  const isDone = blockCtx?.done
+  const isApproved = isDone && blockCtx?.status !== 'error'
 
-  let html = '<div class="permission-approval-view">'
+  let html = '<div class="permission-approval-view'
+
+  // When loaded from history with done=true, render as already responded
+  if (isDone) {
+    html += ' permission-responded'
+  }
+
+  html += '">'
 
   // Header
   html += '<div class="permission-header">'
@@ -475,7 +484,14 @@ function renderPermissionApproval(input: Record<string, any>): string {
   }
 
   // Option buttons
-  if (options.length > 0) {
+  if (isDone) {
+    // Already responded — show result badge instead of buttons
+    if (isApproved) {
+      html += `<div class="permission-result permission-result-approved">${escapeHtml(gt('tool.permission.approved'))}</div>`
+    } else {
+      html += `<div class="permission-result permission-result-denied">${escapeHtml(gt('tool.permission.denied'))}</div>`
+    }
+  } else if (options.length > 0) {
     html += '<div class="permission-options">'
     for (let i = 0; i < options.length; i++) {
       const opt = options[i]

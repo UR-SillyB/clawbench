@@ -51,7 +51,7 @@
         </div>
         <!-- Inline detail for auto-expand tools (AskUserQuestion, PermissionApproval) -->
         <div v-if="shouldAutoExpand(block)" class="tool-detail" :data-tool-name="block.name" :data-session-id="sessionId" :data-tool-call-id="block.id" @click="handleToolDetailClick">
-          <div v-html="formatToolInput(block.input, block.name)"></div>
+          <div v-html="formatToolInput(block.input, block.name, { done: block.done, status: block.status, output: block.output })"></div>
         </div>
       </template>
       <!-- Error block -->

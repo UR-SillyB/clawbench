@@ -633,7 +633,7 @@ function handleShowToolDetail(block) {
     show: true,
     name: block.name || '',
     summary: render.toolCallSummary(block),
-    inputHtml: formatToolInput(block.input, block.name),
+    inputHtml: formatToolInput(block.input, block.name, { done: block.done, status: block.status, output: block.output }),
     outputHtml: block.output ? formatToolOutput(block.output, block.name) : '',
     status: block.status || '',
     done: !!block.done,
