@@ -619,6 +619,16 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, OrphanChildEnvVar)
 
+	// Add Node.js diagnostic flags for crash investigation.
+	// --report-on-fatalerror generates a report on V8 fatal errors;
+	// --report-on-signal generates a report on SIGUSR2 (for on-demand diagnostics);
+	// --report-directory specifies where reports are written.
+	if nodeOpts := os.Getenv("NODE_OPTIONS"); nodeOpts != "" {
+		cmd.Env = append(cmd.Env, "NODE_OPTIONS="+nodeOpts+" --report-on-fatalerror --report-on-signal --report-directory=/tmp/node-reports")
+	} else {
+		cmd.Env = append(cmd.Env, "NODE_OPTIONS=--report-on-fatalerror --report-on-signal --report-directory=/tmp/node-reports")
+	}
+
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("acp: stdin pipe: %w", err)
@@ -714,6 +724,9 @@ func (c *ACPConn) watchProcessDeath() {
 			"exit_code", diag.ExitCode,
 			"signal", diag.Signal,
 			"uptime", diag.Uptime.Round(time.Second),
+			"ppid", diag.ParentPID,
+			"rss_mb", diag.VmRSSKB/1024,
+			"fds", diag.FDCount,
 			"stderr_tail", diag.StderrTail,
 		)
 	}
@@ -789,7 +802,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(model) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model,
-				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+				"exit_code", diag.ExitCode, "signal", diag.Signal,
+				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"stderr_tail", diag.StderrTail)
 			err := errConfigKilledConnection("model", req.Model)
 			err.(*configKilledConnectionError).diag = diag
 			return err
@@ -804,7 +819,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(thinkingEffort) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort,
-				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+				"exit_code", diag.ExitCode, "signal", diag.Signal,
+				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"stderr_tail", diag.StderrTail)
 			err := errConfigKilledConnection("thinkingEffort", req.ThinkingEffort)
 			err.(*configKilledConnectionError).diag = diag
 			return err
@@ -819,7 +836,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(mode) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode,
-				"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+				"exit_code", diag.ExitCode, "signal", diag.Signal,
+				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"stderr_tail", diag.StderrTail)
 			err := errConfigKilledConnection("mode", req.Mode)
 			err.(*configKilledConnectionError).diag = diag
 			return err
@@ -851,7 +870,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 
 		slog.Error("acp conn: prompt failed (peer disconnected)",
 			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID,
-			"exit_code", diag.ExitCode, "stderr_tail", diag.StderrTail)
+			"exit_code", diag.ExitCode, "signal", diag.Signal,
+			"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+			"stderr_tail", diag.StderrTail)
 
 		return fmt.Errorf("acp: prompt: %w%s", err, diag.String())
 	}
@@ -866,10 +887,13 @@ type crashDiagnostics struct {
 	WasAlive    bool   // was conn.Done() already closed?
 	Uptime      time.Duration
 	Signal      string // decoded signal name (e.g., "SIGKILL", "SIGSEGV") if killed by signal
+	ParentPID   int    // PPid of the crashed process (from /proc/<pid>/status)
+	VmRSSKB     int    // Resident memory at crash time (from /proc/<pid>/status)
+	FDCount     int    // Open file descriptors at crash time (from /proc/<pid>/fd)
 }
 
 func (d crashDiagnostics) String() string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 7)
 	if d.ExitCode != 0 {
 		exitStr := fmt.Sprintf("exit_code=%d", d.ExitCode)
 		if sig := d.Signal; sig != "" {
@@ -881,6 +905,15 @@ func (d crashDiagnostics) String() string {
 	}
 	if d.Uptime > 0 {
 		parts = append(parts, fmt.Sprintf("uptime=%s", d.Uptime.Round(time.Second)))
+	}
+	if d.ParentPID > 0 {
+		parts = append(parts, fmt.Sprintf("ppid=%d", d.ParentPID))
+	}
+	if d.VmRSSKB > 0 {
+		parts = append(parts, fmt.Sprintf("rss=%dMB", d.VmRSSKB/1024))
+	}
+	if d.FDCount > 0 {
+		parts = append(parts, fmt.Sprintf("fds=%d", d.FDCount))
 	}
 	if d.StderrTail != "" {
 		parts = append(parts, fmt.Sprintf("stderr: %s", d.StderrTail))
@@ -954,6 +987,15 @@ func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
 		return diag
 	}
 
+	// Snapshot /proc/<pid>/status and FD count while the process still exists.
+	// This data is only available between the signal and Wait() returning,
+	// so we read it before calling Wait() which reaps the process.
+	pid := cmd.Process.Pid
+	diag.ParentPID, diag.VmRSSKB, _ = readProcStatus(pid)
+	if fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid)); err == nil {
+		diag.FDCount = len(fds)
+	}
+
 	// Use cmdWaitOnce to safely call Wait() exactly once, caching the result.
 	// This avoids a race between collectCrashDiagnostics and spawnLocked both
 	// calling Wait() on the same process.
@@ -987,6 +1029,23 @@ func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
 	c.mu.Unlock()
 
 	return diag
+}
+
+// readProcStatus reads PPid and VmRSS from /proc/<pid>/status.
+// Returns (ppid, vmRSSKB, error). Best-effort; returns zeros on failure.
+func readProcStatus(pid int) (ppid int, vmRSSKB int, err error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "PPid:") {
+			fmt.Sscanf(strings.TrimPrefix(line, "PPid:"), "%d", &ppid)
+		} else if strings.HasPrefix(line, "VmRSS:") {
+			fmt.Sscanf(strings.TrimPrefix(line, "VmRSS:"), "%d", &vmRSSKB)
+		}
+	}
+	return ppid, vmRSSKB, nil
 }
 
 // CancelTurn cancels the current in-progress prompt turn.
