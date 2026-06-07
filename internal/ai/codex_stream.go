@@ -377,26 +377,7 @@ func parseCodexResumeOutput(scanner *bufio.Scanner, ch chan<- StreamEvent, sessi
 	ch <- StreamEvent{Type: "done"}
 }
 
-// emitBashToolCall emits a canonical Bash tool_use event.
-// Codex only has "command_execution"; we normalize to "Bash" with {"command":"..."} input.
-func emitBashToolCall(ch chan<- StreamEvent, id, input, output string, done bool, exitCode *int) {
-	status := ""
-	if done {
-		if exitCode != nil && *exitCode != 0 {
-			status = "error"
-		} else if output != "" {
-			status = "success"
-		}
-	}
-	ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
-		Name:   "Bash",
-		ID:     id,
-		Input:  input,
-		Done:   done,
-		Output: output,
-		Status: status,
-	}}
-}
+// emitBashToolCall has been moved to codex_tool.go
 
 // codexBashInputJSON builds canonical {"command":"..."} JSON from Codex's raw command string.
 func codexBashInputJSON(command string) string { return execCommandJSON(command) }
