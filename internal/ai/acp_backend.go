@@ -187,18 +187,45 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 			}
 		}
 	} else {
-		// Recovered session (via ResumeSession) — update cached state
+		// Recovered session (via ResumeSession) — merge state from response.
+		// ResumeSession reports the agent's DEFAULT config, not the user's
+		// previous selections. Since ensureAliveWithSession already re-applied
+		// the cached mode/model/thinking via SetSessionConfigOption, we must
+		// preserve the current* values in cache and only update the "available
+		// options" lists from the response (which may have changed after restart).
 		if resumeResp := conn.GetAndClearResumeSessionResp(); resumeResp != nil {
 			if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
+				// Preserve current mode (re-applied by ensureAliveWithSession),
+				// but update available modes list from the resumed agent.
+				existing := conn.GetCachedModeState()
+				if existing != nil && existing.CurrentModeID != "" {
+					modeState.CurrentModeID = existing.CurrentModeID
+				}
 				conn.SetCachedModeState(modeState)
 			}
 			if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
+				// Preserve current config value (re-applied by ensureAliveWithSession),
+				// but update available options list from the resumed agent.
+				existing := conn.GetCachedConfigState()
+				if existing != nil && existing.CurrentID != "" {
+					configState.CurrentID = existing.CurrentID
+				}
 				conn.SetCachedConfigState(configState)
 			}
 			if effortState := extractACPThinkingEffortFromResume(resumeResp); effortState != nil {
+				existing := conn.GetCachedThinkingEffortState()
+				if existing != nil && existing.CurrentID != "" {
+					effortState.CurrentID = existing.CurrentID
+				}
 				conn.SetCachedThinkingEffortState(effortState)
 			}
 			if modelList := extractACPModelListFromResume(resumeResp); modelList != nil {
+				// Preserve current model (re-applied by ensureAliveWithSession),
+				// but update available models list from the resumed agent.
+				existing := conn.GetCachedModelListState()
+				if existing != nil && existing.CurrentModelID != "" {
+					modelList.CurrentModelID = existing.CurrentModelID
+				}
 				conn.SetCachedModelListState(modelList)
 			}
 		}

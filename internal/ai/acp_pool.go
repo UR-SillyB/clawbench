@@ -469,6 +469,24 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		return false, nil
 	}
 
+	// Snapshot cached config state before spawn, so we can re-apply it after
+	// ResumeSession. When an agent process crashes and is respawned, the
+	// ResumeSession response reports the agent's DEFAULT config values (not
+	// the previously-set ones), which would overwrite our cache and cause
+	// "amnesia" — the user's mode/model/thinking selections would be lost.
+	prevMode := ""
+	if c.cachedModeState != nil {
+		prevMode = c.cachedModeState.CurrentModeID
+	}
+	prevModel := ""
+	if c.cachedModelListState != nil {
+		prevModel = c.cachedModelListState.CurrentModelID
+	}
+	prevEffort := ""
+	if c.cachedThinkingEffortState != nil {
+		prevEffort = c.cachedThinkingEffortState.CurrentID
+	}
+
 	// Need to spawn or respawn
 	if err := c.spawnLocked(ctx); err != nil {
 		return false, err
@@ -493,6 +511,39 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		c.lastResumeSessionResp = &resumeResp
 		c.lastUsed = time.Now()
 		slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
+
+		// Re-apply previously cached config values to the respawned process.
+		// ResumeSession reports the agent's defaults, not the user's selections.
+		// Since spawnLocked already called resetLastSetConfig(), shouldSetConfig
+		// will return true for these values — they won't be dedup-skipped.
+		if prevMode != "" && c.alive && c.isAliveLocked() {
+			c.mu.Unlock()
+			c.setSessionConfigOption(ctx, acpSID, "mode", prevMode)
+			c.mu.Lock()
+			if c.alive {
+				c.markConfigSet("mode", prevMode)
+				slog.Info("acp conn: re-applied mode after resume", "mode", prevMode, "clawbench_sid", c.clawbenchSID)
+			}
+		}
+		if prevModel != "" && c.alive && c.isAliveLocked() {
+			c.mu.Unlock()
+			c.setSessionConfigOption(ctx, acpSID, "model", prevModel)
+			c.mu.Lock()
+			if c.alive {
+				c.markConfigSet("model", prevModel)
+				slog.Info("acp conn: re-applied model after resume", "model", prevModel, "clawbench_sid", c.clawbenchSID)
+			}
+		}
+		if prevEffort != "" && c.alive && c.isAliveLocked() {
+			c.mu.Unlock()
+			c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", prevEffort)
+			c.mu.Lock()
+			if c.alive {
+				c.markConfigSet("thinkingEffort", prevEffort)
+				slog.Info("acp conn: re-applied thinking effort after resume", "effort", prevEffort, "clawbench_sid", c.clawbenchSID)
+			}
+		}
+
 		return false, nil // not new — recovered
 	}
 
@@ -1055,6 +1106,29 @@ func (c *ACPConn) close() {
 // Public alias for close().
 func (c *ACPConn) Close() {
 	c.close()
+}
+
+// ProcessPID returns the PID of the agent subprocess, or 0 if none.
+func (c *ACPConn) ProcessPID() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd != nil && c.cmd.Process != nil {
+		return c.cmd.Process.Pid
+	}
+	return 0
+}
+
+// KillProcessForTest kills the agent subprocess for integration testing.
+// Returns an error if no process is running.
+func (c *ACPConn) KillProcessForTest() error {
+	c.mu.Lock()
+	if c.cmd == nil || c.cmd.Process == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("acp: no process to kill")
+	}
+	p := c.cmd.Process
+	c.mu.Unlock()
+	return p.Kill()
 }
 
 // ---------------------------------------------------------------------------
