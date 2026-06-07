@@ -247,6 +247,21 @@ func TestParsePiToolCallEnd_UnknownTool(t *testing.T) {
 	}
 }
 
+func TestNormalizePiToolInput_InvalidJSONFallback(t *testing.T) {
+	// normalizePiToolInput should return raw input when normalizeToolInput fails
+	result := normalizePiToolInput("bash", json.RawMessage(`not valid json`))
+	if result != "not valid json" {
+		t.Errorf("expected invalid JSON returned as-is, got '%s'", result)
+	}
+}
+
+func TestNormalizePiToolInput_EmptyInput(t *testing.T) {
+	result := normalizePiToolInput("bash", nil)
+	if result != "{}" {
+		t.Errorf("expected '{}', got '%s'", result)
+	}
+}
+
 // --- parsePiToolExecutionEnd ---
 
 func TestParsePiToolExecutionEnd_BashSuccess(t *testing.T) {

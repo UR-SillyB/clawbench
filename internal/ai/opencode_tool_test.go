@@ -254,6 +254,24 @@ func TestOpenCodeTool_ToolNameNormalization(t *testing.T) {
 	}
 }
 
+func TestOpenCodeTool_NullInput(t *testing.T) {
+	// When Input is JSON null, it should fall through to "{}"
+	msg := newOpenCodeMsg("tool_use", OpenCodeToolPart{
+		Type:   "tool",
+		Tool:   "read",
+		CallID: "call_null_input",
+		State: &OpenCodeToolState{
+			Status: "completed",
+			Input:  json.RawMessage(`null`),
+			Output: "ok",
+		},
+	})
+
+	tc := parseOpenCodeToolEvent(msg)
+	assert.NotNil(t, tc)
+	assert.Equal(t, "{}", tc.Input, "null input should produce {}")
+}
+
 func TestOpenCodeTool_AlreadyCanonicalInput(t *testing.T) {
 	// Input already using snake_case should pass through unchanged
 	msg := newOpenCodeMsg("tool_use", OpenCodeToolPart{
