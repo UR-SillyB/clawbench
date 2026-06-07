@@ -255,9 +255,20 @@ export function useChatStream(options: UseChatStreamOptions) {
       } catch (err) {
         console.error('Polling error:', err)
         stopPolling()
-        // Remove empty assistant placeholder if it still exists
-        const emptyIdx = messages.value.findIndex((m: any) => m.role === 'assistant' && !m.content && (!m.blocks || m.blocks.length === 0))
-        if (emptyIdx !== -1) messages.value.splice(emptyIdx, 1)
+        // Clean up streaming state — if a non-empty streaming message exists,
+        // remove the streaming flag so it stops showing the loading indicator.
+        // Without this, a streaming message with content stays stuck in loading
+        // state forever after polling errors out (e.g. server not ready during restart).
+        const streamingIdx = messages.value.findIndex((m: any) => m.role === 'assistant' && m.streaming)
+        if (streamingIdx !== -1) {
+          const streamingMsg = messages.value[streamingIdx]
+          const hasContent = streamingMsg.content || (streamingMsg.blocks && streamingMsg.blocks.length > 0)
+          if (hasContent) {
+            delete streamingMsg.streaming
+          } else {
+            messages.value.splice(streamingIdx, 1)
+          }
+        }
         onToast(gt('chat.stream.connectionFailed'), { icon: '⚠️' })
         loading.value = false
         onRenderNeeded(true)
@@ -715,6 +726,11 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('error', (e) => {
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
       if (!guard()) return
+      // Mark this connection as terminated by a server-sent error event.
+      // Without this flag, onerror (which fires immediately after) would see
+      // loading=true and attempt reconnect or pollUntilDone, creating duplicate
+      // messages or stuck loading states for already-resolved sessions.
+      sseErrorHandled = true
       disconnectStream()
       // Check if this is an sse_busy error — another client is already consuming
       // the SSE stream. In this case, do NOT call onLoadHistory() because:
@@ -729,6 +745,8 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (errorData?.reason === 'sse_busy') {
         // sse_busy is expected for second clients — skip onLoadHistory to avoid
         // the reconnection loop. onerror will fall back to polling.
+        // Reset the flag so onerror can handle the fallback.
+        sseErrorHandled = false
         return
       }
       // Non-sse_busy errors (e.g. session not running) — reload from DB for final state
@@ -743,12 +761,26 @@ export function useChatStream(options: UseChatStreamOptions) {
       onStreamEnd?.('error')
     })
 
+    // Flag to coordinate between the SSE 'error' named event and onerror.
+    // When the server sends `event: error\ndata: ...`, both the addEventListener('error')
+    // handler and onerror fire. The flag lets onerror know the error was already handled.
+    let sseErrorHandled = false
+
     eventSource.onerror = () => {
       // SSE connection error — distinguish recoverable vs non-recoverable.
       // ISS-248/ISS-279: Use EventSource readyState to detect fatal errors.
       // CONNECTING (0) / OPEN (1) = transient, safe to reconnect.
       // CLOSED (2) = permanent failure (e.g. 404, server shutdown), fall back.
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
+      // If the SSE 'error' named event handler already processed this (e.g.
+      // server sent `event: error\ndata: {"error":"SessionNotRunning"}`),
+      // skip all reconnect/polling logic — the session is already finalized.
+      if (sseErrorHandled) {
+        sseErrorHandled = false
+        disconnectStream()
+        reconnect.reset()
+        return
+      }
       // Use esRef (captured at connectStream time) to check readyState,
       // since `eventSource` may have been reassigned by a new session.
       const wasRecoverable = esRef.readyState !== EventSource.CLOSED
