@@ -100,8 +100,12 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (currentSessionId.value && loading.value && reconnect.shouldReconnect()) {
         reconnect.scheduleReconnect()
       } else {
-        // Too many reconnect attempts or session no longer active, fall back to polling
-        forceCleanupStreamingState()
+        // Too many reconnect attempts or session no longer active, fall back to polling.
+        // Do NOT call forceCleanupStreamingState() here — it deletes the streaming
+        // flag, which makes pollUntilDone's incremental update unable to find the
+        // streaming message (messages.value.find(m => m.streaming) returns null),
+        // causing it to push a duplicate message from DB. This is the same fix as
+        // the onerror non-recoverable path (see ISS-xxx comment there).
         pollUntilDone()
       }
     }, STREAM_TIMEOUT_MS)
@@ -214,10 +218,23 @@ export function useChatStream(options: UseChatStreamOptions) {
           if (lastAssistant.metadata) existingStreaming.metadata = lastAssistant.metadata
           if (lastAssistant.cancelled) existingStreaming.cancelled = lastAssistant.cancelled
         } else if (lastAssistant && !existingStreaming) {
-          // No existing streaming message (shouldn't normally happen after
-          // forceCleanupStreamingState, but handle gracefully) — push new one
-          lastAssistant.streaming = true
-          messages.value.push(lastAssistant)
+          // No existing streaming message — find the local assistant message by DB id
+          // to avoid pushing a duplicate. This can happen when forceCleanupStreamingState
+          // was called before pollUntilDone (e.g. from cancelStream's catch block).
+          const existingById = lastAssistant.id
+            ? messages.value.find((m: any) => m.id === lastAssistant.id)
+            : null
+          if (existingById) {
+            // Reuse the existing message — restore streaming flag and update content
+            existingById.streaming = true
+            existingById.blocks = lastAssistant.blocks
+            if (lastAssistant.metadata) existingById.metadata = lastAssistant.metadata
+            if (lastAssistant.cancelled) existingById.cancelled = lastAssistant.cancelled
+          } else {
+            // Truly no existing message — push new one
+            lastAssistant.streaming = true
+            messages.value.push(lastAssistant)
+          }
         }
 
         // Add any new non-streaming messages that appeared (e.g., queued user messages)
