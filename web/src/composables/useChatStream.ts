@@ -699,12 +699,12 @@ export function useChatStream(options: UseChatStreamOptions) {
     })
 
     eventSource.addEventListener('queue_update', (e) => {
-      if (!guard()) return // Check guard first to prevent stale events corrupting new session (ISS-304)
       resetStreamTimeout()
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE queue_update: invalid JSON, skipping'); return }
       // Always update pending queue — it's independent of the streaming message
       onQueueUpdate?.(data.queue || [])
+      if (!guard()) return // Check guard after queue update to prevent stale events corrupting new session (ISS-304)
     })
 
     eventSource.addEventListener('queue_done', () => {
