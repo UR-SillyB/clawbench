@@ -80,6 +80,9 @@ function renderEditDiff(input: Record<string, any>): string {
 function renderBashTerminal(input: Record<string, any>): string {
   const command = input.command || ''
   const description = input.description || ''
+  const workdir = input.workdir || input.dir_path || ''
+  const timeout = input.timeout
+  const runInBackground = input.run_in_background || input.is_background
 
   let html = '<div class="bash-terminal-view">'
 
@@ -99,7 +102,22 @@ function renderBashTerminal(input: Record<string, any>): string {
     }
   }
 
-  html += '</div></div>'
+  html += '</div>'
+
+  // Tags row: workdir, timeout, background
+  const tags: string[] = []
+  if (workdir) tags.push(escapeHtml(workdir))
+  if (timeout) tags.push(`timeout ${timeout}ms`)
+  if (runInBackground) tags.push('background')
+  if (tags.length > 0) {
+    html += '<div class="bash-tags-row">'
+    for (const tag of tags) {
+      html += `<span class="grep-mode-tag">${tag}</span>`
+    }
+    html += '</div>'
+  }
+
+  html += '</div>'
 
   return html
 }
@@ -252,6 +270,11 @@ function renderGrepSearch(input: Record<string, any>): string {
   const pattern = input.pattern || ''
   const path = input.path || ''
   const outputMode = input.output_mode || ''
+  const globFilter = input.glob || input.include_pattern || input.include || ''
+  const caseInsensitive = input['-i'] || input.ignoreCase || input.case_sensitive === false
+  const contextLines = input.context || ''
+  const afterLines = input['-A'] || input.after || ''
+  const beforeLines = input['-B'] || input.before || ''
 
   let html = '<div class="grep-search-view">'
 
@@ -280,9 +303,20 @@ function renderGrepSearch(input: Record<string, any>): string {
     html += '</div>'
   }
 
-  // Output mode tag
-  if (outputMode) {
-    html += `<span class="grep-mode-tag">${escapeHtml(outputMode)}</span>`
+  // Tags row: output mode, case-insensitive, glob filter
+  const tags: string[] = []
+  if (outputMode) tags.push(escapeHtml(outputMode))
+  if (caseInsensitive) tags.push('-i')
+  if (globFilter) tags.push(escapeHtml(globFilter))
+  if (contextLines) tags.push(`-C ${contextLines}`)
+  if (afterLines && !contextLines) tags.push(`-A ${afterLines}`)
+  if (beforeLines && !contextLines) tags.push(`-B ${beforeLines}`)
+  if (tags.length > 0) {
+    html += '<div class="grep-tags-row">'
+    for (const tag of tags) {
+      html += `<span class="grep-mode-tag">${tag}</span>`
+    }
+    html += '</div>'
   }
 
   html += '</div>'
@@ -296,6 +330,7 @@ function renderGrepSearch(input: Record<string, any>): string {
 function renderGlobPattern(input: Record<string, any>): string {
   const pattern = input.pattern || ''
   const path = input.path || ''
+  const caseSensitive = input.case_sensitive
 
   let html = '<div class="glob-pattern-view">'
 
@@ -320,6 +355,13 @@ function renderGlobPattern(input: Record<string, any>): string {
     html += '</div>'
   }
 
+  // Case-sensitive tag
+  if (caseSensitive === true || caseSensitive === false) {
+    html += '<div class="glob-tags-row">'
+    html += `<span class="grep-mode-tag">${caseSensitive ? 'case-sensitive' : 'case-insensitive'}</span>`
+    html += '</div>'
+  }
+
   html += '</div>'
   return html
 }
@@ -330,12 +372,29 @@ function renderGlobPattern(input: Record<string, any>): string {
  */
 function renderWebSearch(input: Record<string, any>): string {
   const query = input.query || ''
+  const allowedDomains = input.allowed_domains as string[] | undefined
+  const blockedDomains = input.blocked_domains as string[] | undefined
+  const topic = input.topic || ''
 
   let html = '<div class="web-search-view">'
   html += '<div class="web-search-query">'
   html += '<span class="web-search-icon">🔍</span>'
   html += `<span class="web-search-text">${escapeHtml(query)}</span>`
   html += '</div>'
+
+  // Tags row: topic, allowed/blocked domains
+  const tags: string[] = []
+  if (topic) tags.push(escapeHtml(topic))
+  if (allowedDomains && allowedDomains.length > 0) tags.push(`${allowedDomains.length} allowed`)
+  if (blockedDomains && blockedDomains.length > 0) tags.push(`${blockedDomains.length} blocked`)
+  if (tags.length > 0) {
+    html += '<div class="web-search-tags-row">'
+    for (const tag of tags) {
+      html += `<span class="grep-mode-tag">${tag}</span>`
+    }
+    html += '</div>'
+  }
+
   html += '</div>'
   return html
 }
@@ -346,6 +405,8 @@ function renderWebSearch(input: Record<string, any>): string {
  */
 function renderWebFetch(input: Record<string, any>): string {
   const url = input.url || input.prompt || ''
+  const format = input.format || ''
+  const timeout = input.timeout
 
   let html = '<div class="web-fetch-view">'
 
@@ -367,6 +428,18 @@ function renderWebFetch(input: Record<string, any>): string {
   const prompt = input.prompt && input.url ? input.prompt : ''
   if (prompt) {
     html += `<div class="web-fetch-prompt">${escapeHtml(prompt)}</div>`
+  }
+
+  // Tags: format, timeout
+  const tags: string[] = []
+  if (format) tags.push(escapeHtml(format))
+  if (timeout) tags.push(`timeout ${timeout}ms`)
+  if (tags.length > 0) {
+    html += '<div class="web-fetch-tags-row">'
+    for (const tag of tags) {
+      html += `<span class="grep-mode-tag">${tag}</span>`
+    }
+    html += '</div>'
   }
 
   html += '</div>'

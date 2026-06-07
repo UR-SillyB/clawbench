@@ -1681,6 +1681,17 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+.content-blocks .tool-detail .grep-tags-row,
+.content-blocks .tool-detail .bash-tags-row,
+.content-blocks .tool-detail .web-search-tags-row,
+.content-blocks .tool-detail .web-fetch-tags-row,
+.content-blocks .tool-detail .glob-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
 .content-blocks .tool-detail .grep-mode-tag {
   font-size: 9px;
   padding: 1px 4px;
@@ -1688,7 +1699,6 @@ onUnmounted(() => {
   background: rgba(139, 92, 246, 0.08);
   color: #8b5cf6;
   font-weight: 500;
-  align-self: flex-start;
 }
 
 :root[data-theme="dark"] .content-blocks .tool-detail .grep-mode-tag {

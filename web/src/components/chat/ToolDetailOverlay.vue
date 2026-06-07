@@ -527,6 +527,17 @@ function handleBodyClick(event) {
   color: var(--text-primary);
 }
 
+.tool-detail-body .grep-tags-row,
+.tool-detail-body .bash-tags-row,
+.tool-detail-body .web-search-tags-row,
+.tool-detail-body .web-fetch-tags-row,
+.tool-detail-body .glob-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
 .tool-detail-body .grep-mode-tag {
   font-size: 9px;
   padding: 1px 4px;
@@ -534,7 +545,6 @@ function handleBodyClick(event) {
   background: rgba(139, 92, 246, 0.08);
   color: #8b5cf6;
   font-weight: 500;
-  align-self: flex-start;
 }
 
 :root[data-theme="dark"] .tool-detail-body .grep-mode-tag {
