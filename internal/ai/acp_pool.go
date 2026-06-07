@@ -1013,7 +1013,23 @@ func (c *ACPConn) SetSessionConfigOption(ctx context.Context, configID, value st
 		return
 	}
 
+	wasUnsupported := c.IsConfigUnsupported(configID)
+
 	c.setSessionConfigOption(ctx, acpSID, configID, value)
+
+	// Only update cache if the config was not marked as unsupported.
+	// If setSessionConfigOption failed with "Unknown config option",
+	// the agent didn't actually apply the value — updating cache would
+	// cause a mismatch between displayed and actual state.
+	nowUnsupported := c.IsConfigUnsupported(configID)
+
+	if nowUnsupported {
+		return
+	}
+
+	// If the config was previously unsupported but now succeeded (e.g., agent
+	// was updated), still update the cache — the value was applied this time.
+	_ = wasUnsupported
 
 	switch configID {
 	case "mode":
