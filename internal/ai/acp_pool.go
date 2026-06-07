@@ -1131,6 +1131,14 @@ func (c *ACPConn) KillProcessForTest() error {
 	return p.Kill()
 }
 
+// IsConfigUnsupported reports whether the agent has rejected a config ID
+// as unknown (e.g., CodeBuddy doesn't support "thinkingEffort").
+func (c *ACPConn) IsConfigUnsupported(configID string) bool {
+	c.lastSetConfigMu.Lock()
+	defer c.lastSetConfigMu.Unlock()
+	return c.unsupportedConfigs != nil && c.unsupportedConfigs[configID]
+}
+
 // ---------------------------------------------------------------------------
 // Cached state accessors
 // ---------------------------------------------------------------------------

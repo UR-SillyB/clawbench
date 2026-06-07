@@ -663,6 +663,10 @@ func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 		t.Skip("Thinking effort switch caused connection death (may not be supported)")
 	}
 
+	if conn.IsConfigUnsupported("thinkingEffort") {
+		t.Skip("Agent doesn't support thinkingEffort config (e.g., CodeBuddy)")
+	}
+
 	effortState := conn.GetCachedThinkingEffortState()
 	require.NotNil(t, effortState)
 	assert.Equal(t, "high", effortState.CurrentID, "cached thinking effort should be 'high'")
