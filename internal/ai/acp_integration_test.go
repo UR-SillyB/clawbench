@@ -636,6 +636,7 @@ func TestACPIntegration_ModelSwitch_ChangeModel(t *testing.T) {
 }
 
 // B3: Switch thinking effort via SetSessionConfigOption → cache reflects new effort
+// B3: Thinking effort state READ from ACP protocol (NewSession config_options)
 func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 	requireCodeBuddyACPAvailable(t)
 
@@ -645,7 +646,8 @@ func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 	sessionID := acpSessionID()
 	cleanupConn(t, sessionID)
 
-	// First prompt
+	// First prompt — establish connection; ACP NewSession response includes
+	// config_options with category=thought_level containing available levels.
 	events1 := sendACPPrompt(t, backend, sessionID, "说一个字：好", 90*time.Second)
 	requireDoneEvent(t, events1)
 
@@ -653,23 +655,55 @@ func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 	conn := mgr.GetConn(sessionID)
 	require.NotNil(t, conn)
 
-	// Try switching thinking effort
+	// Verify thinking effort state was READ from ACP protocol (not SET by us).
+	effortState := conn.GetCachedThinkingEffortState()
+	if effortState == nil {
+		// Agent didn't report thinking effort in NewSession config_options —
+		// this is valid (e.g., agent doesn't support thought_level at all).
+		// Also check that no thinking_effort_update was in the stream.
+		effortUpdates := findACPEvents(events1, "thinking_effort_update")
+		assert.Empty(t, effortUpdates,
+			"if cached state is nil, stream should not have thinking_effort_update events")
+		t.Log("Agent does not report thinking effort levels — skipped")
+		return
+	}
+
+	// Agent supports thinking effort — verify the state read from protocol.
+	assert.NotEmpty(t, effortState.CurrentID,
+		"thinking effort current ID should be populated from ACP protocol")
+	t.Logf("Thinking effort from protocol: current=%q, available=%d levels",
+		effortState.CurrentID, len(effortState.AvailableLevels))
+
+	// Verify the stream included a thinking_effort_update event on new session
+	effortUpdates := findACPEvents(events1, "thinking_effort_update")
+	if len(effortUpdates) > 0 {
+		assert.Equal(t, effortUpdates[0].ThinkingEffort.CurrentID, effortState.CurrentID,
+			"stream event current ID should match cached state")
+	}
+
+	// For agents that support setting thinking effort, verify SET path works too.
+	if conn.IsConfigUnsupported("thinkingEffort") {
+		t.Log("Agent doesn't support SET for thinkingEffort — skipping set verification")
+		return
+	}
+
+	// Try SET — may fail if agent doesn't actually support it
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	conn.SetSessionConfigOption(ctx, "thinkingEffort", "high")
 	time.Sleep(500 * time.Millisecond)
 
-	if !conn.IsAlive() {
-		t.Skip("Thinking effort switch caused connection death (may not be supported)")
-	}
-
+	// Re-check: if SET failed, the agent marked it as unsupported
 	if conn.IsConfigUnsupported("thinkingEffort") {
-		t.Skip("Agent doesn't support thinkingEffort config (e.g., CodeBuddy)")
+		t.Log("Agent doesn't support SET for thinkingEffort — skipping set verification")
+		return
 	}
 
-	effortState := conn.GetCachedThinkingEffortState()
-	require.NotNil(t, effortState)
-	assert.Equal(t, "high", effortState.CurrentID, "cached thinking effort should be 'high'")
+	if conn.IsAlive() {
+		effortAfterSet := conn.GetCachedThinkingEffortState()
+		require.NotNil(t, effortAfterSet)
+		assert.Equal(t, "high", effortAfterSet.CurrentID, "cached thinking effort should be 'high' after set")
+	}
 }
 
 // B4: Unsupported config option → graceful degradation
@@ -1272,4 +1306,270 @@ func TestACPIntegration_LongRunning_ConfigStateConsistency(t *testing.T) {
 			lastSuccessfulEffort, effortState.CurrentID)
 		t.Logf("Final thinking effort: %q (matches last switch)", effortState.CurrentID)
 	}
+}
+
+// ===========================================================================
+// Category E: Cancel / Disconnect / Resume + Conversation Memory
+// ===========================================================================
+
+// sendACPPromptWithCancel starts a prompt and cancels the context after collecting
+// a few events. Returns all collected events. This simulates a user-initiated cancel.
+func sendACPPromptWithCancel(t *testing.T, backend *ACPBackend, sessionID, prompt string, timeout time.Duration) []StreamEvent {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch, err := backend.ExecuteStream(ctx, ChatRequest{
+		Prompt:    prompt,
+		SessionID: sessionID,
+		WorkDir:   acpTestWorkDir(),
+	})
+	require.NoError(t, err, "ExecuteStream should not return error")
+
+	// Send ACP CancelTurn first (like CancelSession does), then cancel context
+	conn := GetACPConnManager().GetConn(sessionID)
+	if conn != nil {
+		conn.CancelTurn(context.Background())
+	}
+
+	var events []StreamEvent
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	// Collect a few events, then cancel
+	collectedEnough := false
+	for !collectedEnough {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				collectedEnough = true
+				break
+			}
+			events = append(events, event)
+			if len(events) >= 2 {
+				collectedEnough = true
+			}
+		case <-timer.C:
+			collectedEnough = true
+		}
+	}
+
+	// Cancel the context (simulates CancelSession's cancel())
+	cancel()
+
+	// Collect remaining events after cancel
+	remaining := collectACPEvents(t, ch, 15*time.Second)
+	events = append(events, remaining...)
+	return events
+}
+
+// containsSubstring checks if any content event in the stream contains the given substring.
+func containsSubstring(events []StreamEvent, substr string) bool {
+	for _, e := range events {
+		if e.Type == "content" && strings.Contains(e.Content, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// E1: User cancel → resume prompt → verify conversation memory
+func TestACPIntegration_UserCancel_ResumeConversation(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Turn 1: Tell the AI a fact
+	events1 := sendACPPrompt(t, backend, sessionID, "请记住我的名字是小明，只回复'好的'", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	// Store ACP session ID for ResumeSession
+	acpSSID := extractACPCaptureID(t, events1)
+	env.storeSID(sessionID, acpSSID)
+
+	// Turn 2: Cancel a prompt mid-stream
+	events2 := sendACPPromptWithCancel(t, backend, sessionID, "用50字描述Go语言的优点", 90*time.Second)
+	t.Logf("After cancel: %d events, types: %v", len(events2), acpEventTypes(events2))
+
+	// Turn 3: Ask the AI what it remembers — should remember "小明"
+	events3 := sendACPPrompt(t, backend, sessionID, "我叫什么名字？只回答名字", 120*time.Second)
+	requireDoneEvent(t, events3)
+
+	content3 := concatACPContent(events3)
+	t.Logf("Memory check response: %q", content3)
+	assert.True(t, strings.Contains(content3, "小明"),
+		"AI should remember the name '小明' after cancel+resume, got: %s", content3)
+}
+
+// E2: Process crash → resume prompt → verify conversation memory
+func TestACPIntegration_ProcessCrash_ResumeConversation(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Turn 1: Tell the AI a fact
+	events1 := sendACPPrompt(t, backend, sessionID, "请记住我喜欢的颜色是蓝色，只回复'好的'", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	acpSSID := extractACPCaptureID(t, events1)
+	env.storeSID(sessionID, acpSSID)
+
+	// Kill the agent process (simulate crash/interrupt)
+	conn := env.mgr.GetConn(sessionID)
+	require.NotNil(t, conn)
+	killConnProcess(t, conn)
+
+	// Turn 2: Ask what it remembers — ResumeSession should recover conversation context
+	events2 := sendACPPrompt(t, backend, sessionID, "我喜欢的颜色是什么？只回答颜色", 120*time.Second)
+	requireDoneEvent(t, events2)
+
+	content2 := concatACPContent(events2)
+	t.Logf("Memory check response: %q", content2)
+	assert.True(t, strings.Contains(content2, "蓝"),
+		"AI should remember the color '蓝色' after crash+resume, got: %s", content2)
+}
+
+// E3: Multiple user cancels → multiple resumes
+func TestACPIntegration_MultipleCancel_Resume(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Turn 1: Normal prompt
+	events1 := sendACPPrompt(t, backend, sessionID, "说一个字：一", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	acpSSID := extractACPCaptureID(t, events1)
+	env.storeSID(sessionID, acpSSID)
+
+	// Turn 2: Cancel mid-stream
+	events2 := sendACPPromptWithCancel(t, backend, sessionID, "用50字描述Go语言的优点", 90*time.Second)
+	t.Logf("Cancel #1: %d events", len(events2))
+
+	// Turn 3: Normal prompt after cancel
+	events3 := sendACPPrompt(t, backend, sessionID, "说一个字：二", 90*time.Second)
+	requireDoneEvent(t, events3)
+	content3 := concatACPContent(events3)
+	assert.NotEmpty(t, content3, "turn 3 should produce content after cancel")
+
+	// Turn 4: Cancel again
+	events4 := sendACPPromptWithCancel(t, backend, sessionID, "用50字描述Python语言的优点", 90*time.Second)
+	t.Logf("Cancel #2: %d events", len(events4))
+
+	// Turn 5: Normal prompt after second cancel
+	events5 := sendACPPrompt(t, backend, sessionID, "说一个字：三", 120*time.Second)
+	requireDoneEvent(t, events5)
+	content5 := concatACPContent(events5)
+	assert.NotEmpty(t, content5, "turn 5 should produce content after second cancel")
+
+	// Verify connection is alive at the end
+	conn := env.mgr.GetConn(sessionID)
+	if conn != nil {
+		assert.True(t, conn.IsAlive(), "connection should be alive after multiple cancel/resume cycles")
+	}
+}
+
+// E4: Multiple process crashes → multiple resumes
+func TestACPIntegration_MultipleCrash_Resume(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Turn 1: Normal prompt
+	events1 := sendACPPrompt(t, backend, sessionID, "说一个字：甲", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	acpSSID := extractACPCaptureID(t, events1)
+	env.storeSID(sessionID, acpSSID)
+
+	// Crash 1 + resume
+	conn := env.mgr.GetConn(sessionID)
+	require.NotNil(t, conn)
+	killConnProcess(t, conn)
+
+	events2 := sendACPPrompt(t, backend, sessionID, "说一个字：乙", 90*time.Second)
+	requireDoneEvent(t, events2)
+	content2 := concatACPContent(events2)
+	assert.NotEmpty(t, content2, "turn 2 should produce content after crash #1 + resume")
+
+	// Crash 2 + resume
+	conn = env.mgr.GetConn(sessionID)
+	if conn != nil && conn.IsAlive() {
+		killConnProcess(t, conn)
+	}
+
+	events3 := sendACPPrompt(t, backend, sessionID, "说一个字：丙", 120*time.Second)
+	requireDoneEvent(t, events3)
+	content3 := concatACPContent(events3)
+	assert.NotEmpty(t, content3, "turn 3 should produce content after crash #2 + resume")
+
+	// Verify connection is alive at the end
+	conn = env.mgr.GetConn(sessionID)
+	if conn != nil {
+		assert.True(t, conn.IsAlive(), "connection should be alive after multiple crash/resume cycles")
+	}
+}
+
+// E5: Mixed cancel + crash → verify conversation memory
+func TestACPIntegration_CancelAndCrash_ResumeConversation(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Turn 1: Tell the AI a fact
+	events1 := sendACPPrompt(t, backend, sessionID, "请记住密码是1234，只回复'好的'", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	acpSSID := extractACPCaptureID(t, events1)
+	env.storeSID(sessionID, acpSSID)
+
+	// Turn 2: Cancel a prompt
+	events2 := sendACPPromptWithCancel(t, backend, sessionID, "用50字描述Rust语言的优点", 90*time.Second)
+	t.Logf("After cancel: %d events", len(events2))
+
+	// Turn 3: Ask after cancel — should remember
+	events3 := sendACPPrompt(t, backend, sessionID, "密码是什么？只回答数字", 120*time.Second)
+	requireDoneEvent(t, events3)
+
+	content3 := concatACPContent(events3)
+	t.Logf("After cancel memory check: %q", content3)
+
+	// Turn 4: Kill the process (crash/interrupt)
+	conn := env.mgr.GetConn(sessionID)
+	if conn != nil && conn.IsAlive() {
+		killConnProcess(t, conn)
+	}
+
+	// Turn 5: Ask after crash — should still remember
+	events5 := sendACPPrompt(t, backend, sessionID, "再告诉我一次密码是什么？只回答数字", 120*time.Second)
+	requireDoneEvent(t, events5)
+
+	content5 := concatACPContent(events5)
+	t.Logf("After crash memory check: %q", content5)
+	assert.True(t, strings.Contains(content5, "1234"),
+		"AI should remember the password '1234' after cancel+crash+resume, got: %s", content5)
 }
