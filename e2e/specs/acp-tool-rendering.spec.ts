@@ -20,6 +20,8 @@ import { ChatPage } from '../pages/chat.page'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Tool Rendering', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -92,11 +94,9 @@ test.describe.serial('ACP Tool Rendering', () => {
     // or done state (.done). We just need to verify that after
     // the response completes, there are no active spinners.
 
-    // Wait for streaming to complete — send button reappears
-    await expect(chat.sendButton).toBeVisible({ timeout: 30000 })
-
-    // Allow a brief moment for the frontend to process completion
-    await page.waitForTimeout(1000)
+    // Wait for streaming to fully complete — stop button gone, send button back
+    await expect(chat.stopButton).not.toBeVisible({ timeout: 30000 })
+    await expect(chat.sendButton).toBeVisible({ timeout: 5000 })
 
     // After completion, all tool calls should be in "done" state
     // (no .tool-spinner should be visible)

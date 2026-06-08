@@ -20,6 +20,7 @@ const currentThinkingEffort = ref('')
 const currentModeId = ref('')
 const currentModeName = ref('')
 const currentTransport = ref('') // 'acp-stdio' or 'cli'
+const autoApprove = ref(false)
 const availableModes = ref<Array<{ id: string; name: string }>>([])
 const availableCommands = ref<Array<{ name: string; description: string; inputHint?: string }>>([])
 const availableThinkingEfforts = ref<Array<{ id: string; name: string }>>([])
@@ -50,6 +51,7 @@ export function resetIdentity(): void {
   currentModeId.value = ''
   currentModeName.value = ''
   currentTransport.value = ''
+  autoApprove.value = false
   availableModes.value = []
   availableCommands.value = []
   availableThinkingEfforts.value = []
@@ -192,6 +194,21 @@ export function clearThinkingEffortState() {
   availableThinkingEfforts.value = []
 }
 
+/** Toggle auto-approve mode and persist to server. */
+export function toggleAutoApprove(enabled: boolean) {
+  autoApprove.value = enabled
+  const sid = currentSessionId.value
+  if (sid) {
+    fetch('/api/ai/session', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, autoApprove: enabled }),
+    }).catch(err => {
+      console.error('Failed to update autoApprove:', err)
+    })
+  }
+}
+
 // ───────────────────────────────────────────────────────────
 // Action callbacks — registered by ChatPanel on mount.
 // Inversion of control: singleton owns the identity refs, but
@@ -313,6 +330,10 @@ export async function initSessionFromAPI() {
           // Fall back to agent's stored transport
           const agent = agentsApi.getAgent(data.agentId || '')
           currentTransport.value = agent?.transport || 'cli'
+        }
+        // Initialize autoApprove from server state
+        if (data.autoApprove !== undefined) {
+          autoApprove.value = data.autoApprove
         }
         // Populate slash commands from chat response (cached ACP state)
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
@@ -527,6 +548,7 @@ export function useSessionIdentity() {
     currentModeId,
     currentModeName,
     currentTransport,
+    autoApprove,
     availableModes,
     availableCommands,
     availableThinkingEfforts,
@@ -554,5 +576,6 @@ export function useSessionIdentity() {
     saveThinkingPref,
     loadModelPref,
     loadThinkingPref,
+    toggleAutoApprove,
   }
 }

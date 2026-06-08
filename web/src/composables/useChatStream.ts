@@ -85,7 +85,13 @@ export function useChatStream(options: UseChatStreamOptions) {
   function hasPendingPermissionApproval(): boolean {
     const streamingMsg = messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
     if (!streamingMsg?.blocks) return false
-    return streamingMsg.blocks.some((b: any) => b.type === 'tool_use' && b.name === 'PermissionApproval' && !b.done)
+    return streamingMsg.blocks.some(
+      (b: any) =>
+        b.type === 'tool_use' &&
+        b.name === 'PermissionApproval' &&
+        !b.done &&
+        !b.input?.autoApproved
+    )
   }
 
   function resetStreamTimeout() {

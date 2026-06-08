@@ -76,37 +76,13 @@
         @file-tag-click="$emit('file-tag-click', $event)"
       />
     </div>
-
-    <!-- Floating scroll buttons — top: scroll up controls -->
-    <Transition name="scroll-fab">
-      <div v-if="scrolledUp" class="scroll-fab-group scroll-fab-top">
-        <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
-          <ChevronsUp :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
-          <ArrowUp :size="18" />
-        </button>
-      </div>
-    </Transition>
-
-    <!-- Floating scroll buttons — bottom: scroll down controls -->
-    <Transition name="scroll-fab">
-      <div v-if="scrolledDown" class="scroll-fab-group scroll-fab-bottom">
-        <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
-          <ArrowDown :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
-          <ChevronsDown :size="18" />
-        </button>
-      </div>
-    </Transition>
   </div>
 </template>
 
 <script setup>
 import { ref, nextTick, inject, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronUp, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
+import { ChevronUp } from 'lucide-vue-next'
 import ChatMessageItem from './ChatMessageItem.vue'
 import PendingMessageItem from './PendingMessageItem.vue'
 import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
@@ -175,6 +151,8 @@ watch(() => props.messages, () => {
   isAtBottom.value = true
   scrolledUp.value = false
   scrolledDown.value = false
+  clearTimeout(scrollUpTimer)
+  clearTimeout(scrollDownTimer)
 })
 
 // Compute the last round: last assistant message + its preceding user message
@@ -293,6 +271,11 @@ const isAtBottom = ref(true)
 const scrolledUp = ref(false)
 const scrolledDown = ref(false)
 
+// Auto-hide timers for scroll buttons
+let scrollUpTimer = null
+let scrollDownTimer = null
+const SCROLL_BUTTON_HIDE_DELAY = 3000
+
 const NEAR_BOTTOM_THRESHOLD = 60
 const SCROLL_BUTTON_TRIGGER = 120
 
@@ -303,10 +286,26 @@ function handleScroll() {
   const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   const nearBottom = distFromBottom < NEAR_BOTTOM_THRESHOLD
   isAtBottom.value = nearBottom
-  // Show top buttons when scrolled up past threshold
-  scrolledUp.value = el.scrollTop > SCROLL_BUTTON_TRIGGER
-  // Show bottom buttons when away from bottom past threshold
-  scrolledDown.value = !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
+  // Show top buttons when scrolled up past threshold, auto-hide after delay
+  const shouldShowUp = el.scrollTop > SCROLL_BUTTON_TRIGGER
+  if (shouldShowUp) {
+    scrolledUp.value = true
+    clearTimeout(scrollUpTimer)
+    scrollUpTimer = setTimeout(() => { scrolledUp.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  } else {
+    scrolledUp.value = false
+    clearTimeout(scrollUpTimer)
+  }
+  // Show bottom buttons when away from bottom past threshold, auto-hide after delay
+  const shouldShowDown = !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
+  if (shouldShowDown) {
+    scrolledDown.value = true
+    clearTimeout(scrollDownTimer)
+    scrollDownTimer = setTimeout(() => { scrolledDown.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  } else {
+    scrolledDown.value = false
+    clearTimeout(scrollDownTimer)
+  }
 
   if (loadMorePending) return
   if (!props.hasMore || props.loadingMore) return
@@ -401,8 +400,14 @@ function scrollToBottomSmooth() {
 
 defineExpose({
   scrollToBottom,
+  scrollToTop,
+  scrollToPreviousMessage,
+  scrollToNextMessage,
+  scrollToBottomSmooth,
   messagesRef,
   isAtBottom: () => isAtBottom.value,
+  scrolledUp,
+  scrolledDown,
 })
 </script>
 
@@ -589,86 +594,6 @@ defineExpose({
   flex-direction: column;
   gap: 6px;
   padding-top: 4px;
-}
-
-/* ── Floating scroll buttons (capsule) ── */
-.scroll-fab-group {
-  position: sticky;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  z-index: 8;
-  pointer-events: none;
-  padding: 6px 0;
-}
-
-.scroll-fab-top {
-  top: 0;
-}
-
-.scroll-fab-bottom {
-  bottom: 0;
-}
-
-.scroll-fab-btn {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 28px;
-  border: none;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  box-shadow: var(--shadow-md);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Left button: rounded on left, flat on right */
-.scroll-fab-btn:first-child {
-  border-radius: 14px 0 0 14px;
-}
-
-/* Right button: flat on left, rounded on right */
-.scroll-fab-btn:last-child {
-  border-radius: 0 14px 14px 0;
-}
-
-.scroll-fab-btn:active {
-  transform: scale(0.93);
-}
-
-@media (hover: hover) {
-  .scroll-fab-btn:hover {
-    background: var(--bg-tertiary);
-    color: var(--accent-color);
-  }
-}
-
-.scroll-fab-enter-active {
-  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
-}
-.scroll-fab-leave-active {
-  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
-}
-.scroll-fab-top.scroll-fab-enter-from {
-  opacity: 0;
-  transform: translateY(-12px);
-}
-.scroll-fab-top.scroll-fab-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-.scroll-fab-bottom.scroll-fab-enter-from {
-  opacity: 0;
-  transform: translateY(12px);
-}
-.scroll-fab-bottom.scroll-fab-leave-to {
-  opacity: 0;
-  transform: translateY(8px);
 }
 
 </style>

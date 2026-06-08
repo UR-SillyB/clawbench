@@ -129,13 +129,112 @@ export class ChatPage {
    * Send a message and wait for the ACP reply.
    * Uses a longer timeout than waitForReply because ACP requires
    * spawning a subprocess and establishing a connection.
-   * Also waits for the streaming to complete (send button reappears).
+   * Waits for the streaming to fully complete (stop button gone).
    */
   async sendAndAwaitACPReply(text: string, timeout = 30000): Promise<void> {
     const countBefore = await this.sendMessage(text)
     await this.waitForReply(timeout, countBefore)
-    // Wait for streaming to complete — send button reappears when done
-    await expect(this.sendButton).toBeVisible({ timeout: 10000 })
+    // Wait for streaming to fully complete — stop button disappears when
+    // loading becomes false (after session_complete SSE + onLoadHistory)
+    await expect(this.stopButton).not.toBeVisible({ timeout: 45000 })
+  }
+
+  /**
+   * Wait for ACP state (mode, thinking effort) to be available.
+   * Polls GET /api/ai/chat until modeState or thinkingEffortState is populated.
+   * This is more reliable than waiting for SSE events because it reads
+   * directly from the backend's cached ACP state.
+   */
+  async waitForACPState(timeout = 15000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeout) {
+      try {
+        const result = await this.page.evaluate(async () => {
+          const resp = await fetch('/api/ai/chat?limit=1')
+          if (!resp.ok) return { hasModes: false, hasThinking: false }
+          const data = await resp.json()
+          return {
+            hasModes: (data.modeState?.availableModes?.length || 0) > 0,
+            hasThinking: (data.thinkingEffortState?.availableLevels?.length || 0) > 0,
+          }
+        })
+        if (result.hasModes && result.hasThinking) return
+      } catch {
+        // Network error — retry
+      }
+      await this.page.waitForTimeout(500)
+    }
+    throw new Error(`ACP state not available after ${timeout}ms`)
+  }
+
+  /**
+   * Wait for ACP mode state specifically (availableModes populated).
+   * Use this before opening the mode tab to avoid timing issues.
+   */
+  async waitForACPModeState(timeout = 15000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeout) {
+      try {
+        const result = await this.page.evaluate(async () => {
+          const resp = await fetch('/api/ai/chat?limit=1')
+          if (!resp.ok) return { hasModes: false }
+          const data = await resp.json()
+          return { hasModes: (data.modeState?.availableModes?.length || 0) > 0 }
+        })
+        if (result.hasModes) return
+      } catch {
+        // Network error — retry
+      }
+      await this.page.waitForTimeout(500)
+    }
+    throw new Error(`ACP mode state not available after ${timeout}ms`)
+  }
+
+  /**
+   * Wait for session mode to be persisted in the backend.
+   * Polls GET /api/ai/chat until modeId matches the expected value.
+   * Use this after switching modes to ensure PATCH has completed before reload.
+   */
+  async waitForSessionMode(expectedModeId: string, timeout = 5000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeout) {
+      try {
+        const result = await this.page.evaluate(async (expectedModeId) => {
+          const resp = await fetch('/api/ai/chat?limit=1')
+          if (!resp.ok) return { modeId: '' }
+          const data = await resp.json()
+          return { modeId: data.modeId || '' }
+        }, expectedModeId)
+        if (result.modeId === expectedModeId) return
+      } catch {
+        // retry
+      }
+      await this.page.waitForTimeout(300)
+    }
+    throw new Error(`Session mode not persisted as "${expectedModeId}" after ${timeout}ms`)
+  }
+
+  /**
+   * Wait for session thinking effort to be persisted in the backend.
+   * Polls GET /api/ai/chat until thinkingEffort matches the expected value.
+   */
+  async waitForSessionThinkingEffort(expectedEffort: string, timeout = 5000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeout) {
+      try {
+        const result = await this.page.evaluate(async (expectedEffort) => {
+          const resp = await fetch('/api/ai/chat?limit=1')
+          if (!resp.ok) return { effort: '' }
+          const data = await resp.json()
+          return { effort: data.thinkingEffort || '' }
+        }, expectedEffort)
+        if (result.effort === expectedEffort) return
+      } catch {
+        // retry
+      }
+      await this.page.waitForTimeout(300)
+    }
+    throw new Error(`Session thinking effort not persisted as "${expectedEffort}" after ${timeout}ms`)
   }
 
   /**
@@ -211,10 +310,28 @@ export class ChatPage {
     await input.fill(query)
   }
 
-  /** Switch to the thinking effort tab in SessionSettingModal */
+  /** Switch to the thinking effort tab in SessionSettingModal.
+   * Waits for ACP thinking effort state to be available before switching. */
   async openThinkingTab(): Promise<void> {
+    // Ensure thinking effort state is available
+    const start = Date.now()
+    const timeout = 10000
+    while (Date.now() - start < timeout) {
+      try {
+        const result = await this.page.evaluate(async () => {
+          const resp = await fetch('/api/ai/chat?limit=1')
+          if (!resp.ok) return { hasThinking: false }
+          const data = await resp.json()
+          return { hasThinking: (data.thinkingEffortState?.availableLevels?.length || 0) > 0 }
+        })
+        if (result.hasThinking) break
+      } catch {
+        // retry
+      }
+      await this.page.waitForTimeout(500)
+    }
     const thinkingTab = this.page.locator('.model-tab').filter({ hasText: /thinking|思考/i })
-    await expect(thinkingTab).toBeVisible({ timeout: 5000 })
+    await expect(thinkingTab).toBeVisible({ timeout: 10000 })
     await thinkingTab.click()
   }
 
@@ -243,15 +360,20 @@ export class ChatPage {
   // ACP Mode helpers
   // ───────────────────────────────────────────────────────
 
-  /** Open the ACP mode tab in SessionSettingModal by clicking the settings chip then switching to mode tab */
+  /** Open the ACP mode tab in SessionSettingModal.
+   * Waits for ACP mode state to be available before opening.
+   * This avoids timing issues where the mode tab doesn't exist yet
+   * because the mode_update SSE event hasn't been processed. */
   async openModeMenu(): Promise<void> {
+    // Ensure ACP mode state is available (backend has it cached)
+    await this.waitForACPModeState()
     // Open settings modal
     await this.settingsChip.click()
     // Wait for modal to appear
     await expect(this.page.locator('.model-tab').first()).toBeVisible({ timeout: 5000 })
     // Switch to mode tab — use exact match to avoid matching "Model" tab
     const modeTab = this.page.locator('.model-tab').filter({ hasText: /^Mode$|^模式$/ })
-    await expect(modeTab).toBeVisible({ timeout: 5000 })
+    await expect(modeTab).toBeVisible({ timeout: 10000 })
     await modeTab.click()
     // Wait for mode tab to be active
     await expect(this.page.locator('.model-tab.active').filter({ hasText: /^Mode$|^模式$/ })).toBeVisible({ timeout: 5000 })

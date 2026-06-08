@@ -220,9 +220,17 @@ func ServeAISessionUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ModeID != "" {
 		service.UpdateSessionMode(sessionID, req.ModeID)
+		// Forward mode change to ACP agent so it updates its runtime state
+		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
+			conn.SetSessionConfigOption(r.Context(), "mode", req.ModeID)
+		}
 	}
 	if req.ThinkingEffort != "" {
 		service.UpdateSessionThinkingEffort(sessionID, req.ThinkingEffort)
+		// Forward thinking effort change to ACP agent so it updates its runtime state
+		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
+			conn.SetSessionConfigOption(r.Context(), "thinkingEffort", req.ThinkingEffort)
+		}
 	}
 	if req.ModelID != "" {
 		service.UpdateSessionModel(sessionID, req.ModelID)

@@ -30,6 +30,8 @@ import { ChatPage } from '../pages/chat.page'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Slash Commands', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -171,7 +173,7 @@ test.describe.serial('ACP Slash Commands', () => {
 
   test('should show slash command badge in user message after sending /commit', async ({ page }) => {
     // Establish ACP connection first (default agent is acp-mock)
-    await chat.sendAndAwaitACPReply('hi', 60000)
+    await chat.sendAndAwaitACPReply('hi')
 
     // Send a slash command message
     await chat.textarea.click()
@@ -200,10 +202,8 @@ test.describe.serial('ACP Slash Commands', () => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Wait for mode_update SSE event to be processed
-    await page.waitForTimeout(2000)
-
     // Open settings modal — mode tab should be visible
+    // openModeMenu waits for ACP mode state before opening
     await chat.openModeMenu()
 
     // Mode tab should be active and mode items visible
@@ -219,9 +219,8 @@ test.describe.serial('ACP Slash Commands', () => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Wait for thinking_effort_update SSE event to be processed
-    // The event populates availableThinkingEfforts in useSessionIdentity
-    await page.waitForTimeout(2000)
+    // Wait for ACP state to be available
+    await chat.waitForACPState()
 
     // Open the model modal by clicking the model chip
     const settingsChip = page.locator('.settings-chip')
@@ -233,9 +232,7 @@ test.describe.serial('ACP Slash Commands', () => {
     await expect(modal.first()).toBeVisible({ timeout: 5000 })
 
     // The "Thinking Effort" tab should be visible (acp-mock provides thought_level options)
-    const thinkingTab = page.locator('.model-tab').filter({ hasText: /thinking|思考/i })
-    await expect(thinkingTab).toBeVisible({ timeout: 5000 })
-    await thinkingTab.click()
+    await chat.openThinkingTab()
 
     // Thinking effort levels should be listed (acp-mock provides low/medium/high)
     const thinkingItems = page.locator('.thinking-item')
@@ -251,16 +248,16 @@ test.describe.serial('ACP Slash Commands', () => {
   test('should select a thinking effort level via SessionSettingModal', async ({ page }) => {
     // Establish ACP connection first
     await chat.sendAndAwaitACPReply('hi')
-    await page.waitForTimeout(2000)
+
+    // Wait for ACP state to be available
+    await chat.waitForACPState()
 
     // Open model modal → thinking tab
     const settingsChip = page.locator('.settings-chip')
     await expect(settingsChip).toBeVisible({ timeout: 10000 })
     await settingsChip.click()
 
-    const thinkingTab = page.locator('.model-tab').filter({ hasText: /thinking|思考/i })
-    await expect(thinkingTab).toBeVisible({ timeout: 5000 })
-    await thinkingTab.click()
+    await chat.openThinkingTab()
 
     // Click on "Low" thinking effort level
     const lowItem = page.locator('.thinking-item').filter({ hasText: /low/i })

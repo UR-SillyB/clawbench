@@ -22,6 +22,8 @@ import { ChatPage } from '../pages/chat.page'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Mode Switching', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -33,6 +35,7 @@ test.describe.serial('ACP Mode Switching', () => {
     await chat.sendAndAwaitACPReply('hi')
 
     // Open settings modal and switch to mode tab
+    // openModeMenu waits for ACP mode state before opening
     await chat.openModeMenu()
 
     // Mode tab should be active and mode items visible
@@ -65,7 +68,9 @@ test.describe.serial('ACP Mode Switching', () => {
     // Previous test switched mode to "Plan" — verify it persists after reload
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+
+    // Wait for ACP mode state to be restored from backend API
+    await chat.waitForACPModeState()
 
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })

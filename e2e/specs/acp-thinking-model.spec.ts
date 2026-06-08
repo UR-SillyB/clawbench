@@ -20,6 +20,8 @@ import { ChatPage } from '../pages/chat.page'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Thinking Effort & Model List', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -34,8 +36,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Wait for thinking_effort_update SSE event to be processed
-    await page.waitForTimeout(2000)
+    // Wait for ACP state to be available (mode_update/thinking_effort_update SSE)
+    await chat.waitForACPState()
 
     // Open SessionSettingModal → thinking tab → select "High"
     await chat.openSessionSettingModal()
@@ -46,10 +48,15 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     const modal = page.locator('.modal-dialog, [class*="modal"]')
     await expect(modal.first()).not.toBeVisible({ timeout: 5000 })
 
+    // Wait for thinking effort to be persisted via PATCH before reloading
+    await chat.waitForSessionThinkingEffort('high')
+
     // Reload page — thinking effort should be restored from backend
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+
+    // Wait for ACP state to be restored from backend API
+    await chat.waitForACPState()
 
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
@@ -66,6 +73,9 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
 
   test('should persist thinking effort selection across sessions', async ({ page }) => {
     // Previous test already established ACP connection and set thinking to "High"
+    // Wait for ACP state to be available
+    await chat.waitForACPState()
+
     // Verify by opening the modal
     await chat.openSessionSettingModal()
     await chat.openThinkingTab()
@@ -81,7 +91,7 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     await chat.createSessionWithAgent('acp-mock')
 
     // Wait for the new session to be ready and ACP state to populate
-    await page.waitForTimeout(2000)
+    await chat.waitForACPState()
 
     // Open SessionSettingModal → thinking tab
     await chat.openSessionSettingModal()
@@ -119,7 +129,6 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
   test('should show agent models in SessionSettingModal for ACP session', async ({ page }) => {
     // Warm up ACP connection (may still be warm from previous test)
     await chat.sendAndAwaitACPReply('hi')
-    await page.waitForTimeout(1000)
 
     // Open SessionSettingModal
     await chat.openSessionSettingModal()
@@ -139,7 +148,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
   test('should return acpStates with thinking effort in agents API', async ({ page }) => {
     // Ensure ACP connection is warm
     await chat.sendAndAwaitACPReply('hi')
-    await page.waitForTimeout(2000)
+    // Wait for ACP state to be populated in cache
+    await chat.waitForACPState()
 
     // Call the agents API and check acpStates
     const result = await page.evaluate(async () => {
@@ -259,7 +269,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
   test('chat API should return thinkingEffortState with correct structure', async ({ page }) => {
     // Ensure ACP connection is established
     await chat.sendAndAwaitACPReply('hi')
-    await page.waitForTimeout(2000)
+    // Wait for ACP state to be populated
+    await chat.waitForACPState()
 
     const result = await page.evaluate(async () => {
       const resp = await fetch('/api/ai/chat?limit=1')

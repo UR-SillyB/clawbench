@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -794,4 +795,111 @@ func TestClawBenchACPClient_ReleaseTerminal_NoError(t *testing.T) {
 		TerminalId: "nonexistent",
 	})
 	assert.NoError(t, err)
+}
+
+// --- Auto-approve RequestPermission tests ---
+
+func TestRequestPermission_AutoApprove(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ch := make(chan StreamEvent, 10)
+	conn := &ACPConn{autoApprove: true}
+	client.connRef = conn
+
+	acpSessionID := "test-acp-sid-auto"
+	client.RegisterSession(acpSessionID, ch)
+
+	ctx := context.Background()
+	allowOptID := "allow_once"
+	title := "Bash"
+	kind := acp.ToolKindExecute
+	resp, err := client.RequestPermission(ctx, acp.RequestPermissionRequest{
+		SessionId: acp.SessionId(acpSessionID),
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: "tc-auto-1",
+			Title:      &title,
+			Kind:       &kind,
+		},
+		Options: []acp.PermissionOption{
+			{OptionId: acp.PermissionOptionId(allowOptID), Name: "Allow once", Kind: acp.PermissionOptionKindAllowOnce},
+			{OptionId: "reject", Name: "Reject", Kind: acp.PermissionOptionKindRejectOnce},
+		},
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp.Outcome.Selected)
+	assert.Equal(t, acp.PermissionOptionId(allowOptID), resp.Outcome.Selected.OptionId)
+
+	// Should have emitted tool_use and tool_result events
+	var toolUseFound, toolResultFound bool
+	for i := 0; i < 2; i++ {
+		select {
+		case evt := <-ch:
+			if evt.Type == "tool_use" && evt.Tool.Name == "PermissionApproval" {
+				toolUseFound = true
+				var input map[string]any
+				assert.NoError(t, json.Unmarshal([]byte(evt.Tool.Input), &input))
+				assert.True(t, input["autoApproved"].(bool))
+			}
+			if evt.Type == "tool_result" {
+				toolResultFound = true
+				assert.Equal(t, "Auto-Approved", evt.Tool.Output)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for SSE event")
+		}
+	}
+	assert.True(t, toolUseFound, "expected tool_use event for PermissionApproval")
+	assert.True(t, toolResultFound, "expected tool_result event for PermissionApproval")
+}
+
+func TestRequestPermission_AutoApproveOff_Interactive(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ch := make(chan StreamEvent, 10)
+	conn := &ACPConn{autoApprove: false}
+	client.connRef = conn
+
+	acpSessionID := "test-acp-sid-interactive"
+	client.RegisterSession(acpSessionID, ch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Start RequestPermission in a goroutine — it should block waiting for user
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		title := "Bash"
+		kind := acp.ToolKindExecute
+		resp, err := client.RequestPermission(ctx, acp.RequestPermissionRequest{
+			SessionId: acp.SessionId(acpSessionID),
+			ToolCall: acp.ToolCallUpdate{
+				ToolCallId: "tc-interactive-1",
+				Title:      &title,
+				Kind:       &kind,
+			},
+			Options: []acp.PermissionOption{
+				{OptionId: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce},
+				{OptionId: "reject", Name: "Reject", Kind: acp.PermissionOptionKindRejectOnce},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, resp.Outcome.Selected)
+	}()
+
+	// Read the tool_use event — should NOT have autoApproved
+	select {
+	case evt := <-ch:
+		if evt.Type == "tool_use" && evt.Tool.Name == "PermissionApproval" {
+			var input map[string]any
+			assert.NoError(t, json.Unmarshal([]byte(evt.Tool.Input), &input))
+			_, hasAutoApproved := input["autoApproved"]
+			assert.False(t, hasAutoApproved, "autoApproved should not be set when autoApprove is off")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for tool_use event")
+	}
+
+	// Respond to unblock the goroutine
+	client.RespondPermission(PermissionKey(acpSessionID, "tc-interactive-1"), "allow", false)
+	<-done
 }

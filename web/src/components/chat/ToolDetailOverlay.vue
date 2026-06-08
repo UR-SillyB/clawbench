@@ -1656,6 +1656,27 @@ function handleBodyClick(event) {
   color: #fee2e2;
 }
 
+.tool-detail-body .permission-auto-approved .permission-header {
+  opacity: 0.85;
+}
+
+.tool-detail-body .permission-result-auto-approved {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+:root[data-theme="dark"] .tool-detail-body .permission-result-auto-approved {
+  background: #166534;
+  color: #dcfce7;
+  border-color: #15803d;
+}
+
 /* Tool output status badge (for Write/Edit etc. that return short status) */
 .tool-detail-body .tool-output-status-msg {
   padding: 6px 0;

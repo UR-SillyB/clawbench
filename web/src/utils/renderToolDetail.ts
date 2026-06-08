@@ -517,6 +517,7 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
   const options = Array.isArray(input.options) ? input.options : []
   const toolName = input.toolName || ''
   const toolInput = input.toolInput || ''
+  const isAutoApproved = input.autoApproved === true
   const isDone = blockCtx?.done
   // Require explicit output to consider this genuinely responded.
   // done=true without output can happen when cleanup/timeout marks the block done
@@ -530,13 +531,21 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
   if (hasRealResult) {
     html += ' permission-responded'
   }
+  if (isAutoApproved) {
+    html += ' permission-auto-approved'
+  }
 
   html += '">'
 
   // Header
   html += '<div class="permission-header">'
-  html += `<span class="permission-icon">⚠️</span>`
-  html += `<span class="permission-title">${escapeHtml(gt('tool.permission.title'))}</span>`
+  if (isAutoApproved) {
+    html += `<span class="permission-icon">✅</span>`
+    html += `<span class="permission-title">${escapeHtml(gt('tool.permission.autoApprovedTitle'))}</span>`
+  } else {
+    html += `<span class="permission-icon">⚠️</span>`
+    html += `<span class="permission-title">${escapeHtml(gt('tool.permission.title'))}</span>`
+  }
   html += '</div>'
 
   // Tool description
@@ -560,7 +569,7 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
     }
   }
 
-  // Option buttons
+  // Option buttons / result
   if (hasRealResult) {
     // Already responded — show result badge instead of buttons
     if (isApproved) {
@@ -568,6 +577,9 @@ function renderPermissionApproval(input: Record<string, any>, blockCtx?: ToolBlo
     } else {
       html += `<div class="permission-result permission-result-denied">${escapeHtml(gt('tool.permission.denied'))}</div>`
     }
+  } else if (isAutoApproved) {
+    // Auto-approved but SSE result not yet arrived — show auto-approved badge
+    html += `<div class="permission-result permission-result-auto-approved">${escapeHtml(gt('tool.permission.autoApproved'))}</div>`
   } else if (options.length > 0) {
     html += '<div class="permission-options">'
     for (let i = 0; i < options.length; i++) {
@@ -1481,7 +1493,7 @@ registerToolActionHandler('PermissionApproval', (event, emit) => {
     event.preventDefault()
 
     const view = btn.closest('.permission-approval-view')
-    if (!view || view.classList.contains('permission-responded')) {
+    if (!view || view.classList.contains('permission-responded') || view.classList.contains('permission-auto-approved')) {
       return true
     }
 

@@ -2139,4 +2139,25 @@ onUnmounted(() => {
   background: #991b1b;
   color: #fee2e2;
 }
+
+.content-blocks .tool-detail .permission-auto-approved .permission-header {
+  opacity: 0.85;
+}
+
+.content-blocks .tool-detail .permission-result-auto-approved {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+:root[data-theme="dark"] .content-blocks .tool-detail .permission-result-auto-approved {
+  background: #166534;
+  color: #dcfce7;
+  border-color: #15803d;
+}
 </style>

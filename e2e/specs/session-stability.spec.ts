@@ -14,12 +14,14 @@ import { ChatPage } from '../pages/chat.page'
  * All API calls use page.evaluate() so they inherit auth cookies.
  */
 test.describe.serial('Session Stability', () => {
+  test.setTimeout(120000)
+
   test('should preserve current session after tab switch and back', async ({ page }) => {
     const chat = new ChatPage(page)
 
     // Send a message to establish a session with content
     const uniqueText = 'stability_tab_' + Date.now()
-    await chat.sendAndAwaitACPReply(uniqueText, 60000)
+    await chat.sendAndAwaitACPReply(uniqueText)
 
     // Record the current session ID
     const sessionIdBefore = await page.evaluate(async () => {
@@ -61,7 +63,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message to establish a session
     const uniqueText = 'stability_visibility_' + Date.now()
-    await chat.sendAndAwaitACPReply(uniqueText, 60000)
+    await chat.sendAndAwaitACPReply(uniqueText)
 
     // Record session ID
     const sessionIdBefore = await page.evaluate(async () => {
@@ -128,7 +130,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message in the first session
     const firstMsg = 'stability_first_' + Date.now()
-    await chat.sendAndAwaitACPReply(firstMsg, 60000)
+    await chat.sendAndAwaitACPReply(firstMsg)
 
     // Record the first session ID
     const firstSessionId = await page.evaluate(async () => {
@@ -142,7 +144,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message in the new session
     const secondMsg = 'stability_second_' + Date.now()
-    await chat.sendAndAwaitACPReply(secondMsg, 60000)
+    await chat.sendAndAwaitACPReply(secondMsg)
 
     // Record the second session ID — should be different
     const secondSessionId = await page.evaluate(async () => {

@@ -73,9 +73,8 @@ test.describe('Chat', () => {
     await chat.waitForReply(30000, countBefore)
 
     // After response completes, stop button should be gone
-    // Allow extra time for frontend to process the session_complete event
-    await page.waitForTimeout(1000)
-    await expect(chat.stopButton).not.toBeVisible({ timeout: 10000 })
+    // Use stopButton disappearing as the definitive signal (session_complete processed)
+    await expect(chat.stopButton).not.toBeVisible({ timeout: 15000 })
   })
 
   // ───────────────────────────────────────────────────────

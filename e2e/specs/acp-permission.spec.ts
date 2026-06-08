@@ -21,6 +21,8 @@ import type { Page } from '@playwright/test'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Permission Approval', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -35,7 +37,8 @@ test.describe.serial('ACP Permission Approval', () => {
     // First message warms up ACP connection (default mode is bypass-permissions)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Switch to Code mode (non-bypass) so permission requests are triggered
+    // Wait for ACP mode state to be available, then switch to Code mode
+    await chat.waitForACPModeState()
     await chat.openModeMenu()
     await chat.selectMode('Code')
 

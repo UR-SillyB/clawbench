@@ -29,6 +29,8 @@ import { ChatPage } from '../pages/chat.page'
  * cause the JSON-RPC stream to become corrupted.
  */
 test.describe.serial('ACP Session State Persistence', () => {
+  test.setTimeout(120000)
+
   let chat: ChatPage
 
   test.beforeEach(async ({ page }) => {
@@ -44,6 +46,7 @@ test.describe.serial('ACP Session State Persistence', () => {
     await chat.sendAndAwaitACPReply('hi')
 
     // Wait for mode_update SSE event — verify via settings chip + modal
+    // openModeMenu waits for ACP mode state before opening
     await chat.openModeMenu()
 
     // Switch to a different mode to make the test meaningful
@@ -53,10 +56,15 @@ test.describe.serial('ACP Session State Persistence', () => {
     const modal = page.locator('.modal-dialog, [class*="modal"]')
     await expect(modal.first()).not.toBeVisible({ timeout: 5000 })
 
+    // Wait for mode to be persisted via PATCH before reloading
+    await chat.waitForSessionMode('plan')
+
     // Reload the page — mode should be restored from backend API
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+
+    // Wait for ACP mode state to be restored from backend API
+    await chat.waitForACPModeState()
 
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
@@ -83,10 +91,12 @@ test.describe.serial('ACP Session State Persistence', () => {
     // GET /api/ai/commands without needing to send a message first
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
 
     // Wait for textarea to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
+
+    // Wait for commands to be available via REST API
+    await chat.waitForACPCommands()
 
     // Type / to trigger slash command menu — should work without sending a message
     await chat.textarea.click()
@@ -112,6 +122,9 @@ test.describe.serial('ACP Session State Persistence', () => {
 
   test('should restore ACP state when switching back to session', async ({ page }) => {
     // ACP connection is already warm. Current session has "Plan" mode.
+    // Wait for ACP mode state before opening the menu
+    await chat.waitForACPModeState()
+
     // Open mode menu to verify state
     await chat.openModeMenu()
 
@@ -128,7 +141,7 @@ test.describe.serial('ACP Session State Persistence', () => {
     await chat.createSessionWithAgent('acp-mock')
 
     // Wait for the new session to be ready
-    await page.waitForTimeout(1000)
+    await chat.waitForACPState()
 
     // Now switch back to the original session (first in the list)
     // Open session drawer, click the first session item
@@ -145,7 +158,12 @@ test.describe.serial('ACP Session State Persistence', () => {
 
     // Click the second session (the older one with Plan mode)
     await sessionItems.nth(1).click()
-    await page.waitForTimeout(1000)
+
+    // Wait for mode to be restored to "plan" from backend
+    await chat.waitForSessionMode('plan', 10000)
+
+    // Wait for ACP mode state to be restored for this session
+    await chat.waitForACPModeState()
 
     // Open mode menu to verify "Plan" is still selected for the original session
     await chat.openModeMenu()
@@ -161,7 +179,6 @@ test.describe.serial('ACP Session State Persistence', () => {
   test('should restore thinking effort state after page reload', async ({ page }) => {
     // Warm up ACP connection (session switch may have reset state)
     await chat.sendAndAwaitACPReply('hi')
-    await page.waitForTimeout(2000)
 
     // Open SessionSettingModal → thinking tab → select "High"
     await chat.openSessionSettingModal()
@@ -172,10 +189,15 @@ test.describe.serial('ACP Session State Persistence', () => {
     const modal = page.locator('.modal-dialog, [class*="modal"]')
     await expect(modal.first()).not.toBeVisible({ timeout: 5000 })
 
+    // Wait for thinking effort to be persisted via PATCH before reloading
+    await chat.waitForSessionThinkingEffort('high')
+
     // Reload page — thinking effort should be restored from backend
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await page.waitForTimeout(500)
+
+    // Wait for ACP state to be restored from backend API
+    await chat.waitForACPState()
 
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
