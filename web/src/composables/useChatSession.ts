@@ -89,7 +89,7 @@ export function useChatSession(options: UseChatSessionOptions) {
   const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands, autoApprove } = identity
 
   // ── Agents from singleton ──
-  const { agents, loadAgents, getAgentIcon, getAgentName, syncModelFromAgent, getAgentModel, agentHeaderTitle: makeAgentTitle } = useAgents()
+  const { agents, loadAgents, getAgentIcon, getAgentName, getAgent, syncModelFromAgent, getAgentModel, agentHeaderTitle: makeAgentTitle } = useAgents()
 
   // Helper: sync model state from agent config when agent changes
   function syncModelFromAgentLocal(agentId: string) {
@@ -154,7 +154,7 @@ export function useChatSession(options: UseChatSessionOptions) {
     if (transportFromServer) {
       identity.currentTransport.value = transportFromServer
     } else {
-      const agent = agentsApi.getAgent(currentAgentId.value)
+      const agent = getAgent(currentAgentId.value)
       identity.currentTransport.value = agent?.transport || 'cli'
     }
   }
