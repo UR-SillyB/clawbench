@@ -78,3 +78,10 @@ stdout.log
 /acp-mock
 clawbench-new
 clawbench-test
+
+# Codebuddy runtime
+.codebuddy/worktrees/
+.codebuddy/scheduled_tasks.lock
+
+# Compiled test binaries
+*.test
