@@ -121,10 +121,10 @@ export default {
       title: 'Model',
     },
     modeSwitcher: {
-      title: 'Session mode',
+      title: 'Mode',
     },
     transportSwitcher: {
-      title: 'Interface Type',
+      title: 'API',
       acp: 'ACP Mode',
       acpDesc: 'Structured protocol communication with mode switching and permission management',
       cli: 'CLI Mode',
@@ -150,7 +150,7 @@ export default {
       noSearchResults: 'No matching models',
     },
     thinkingEffortSwitcher: {
-      title: 'Thinking effort',
+      title: 'Thinking',
       auto: 'Auto',
     },
     attach: {

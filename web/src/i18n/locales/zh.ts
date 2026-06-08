@@ -121,10 +121,10 @@ export default {
       title: '模型',
     },
     modeSwitcher: {
-      title: '会话模式',
+      title: '模式',
     },
     transportSwitcher: {
-      title: '接口类型',
+      title: 'API',
       acp: 'ACP 模式',
       acpDesc: '结构化协议通信，支持模式切换与权限管理',
       cli: 'CLI 模式',
@@ -150,7 +150,7 @@ export default {
       noSearchResults: '未找到匹配的模型',
     },
     thinkingEffortSwitcher: {
-      title: '思考档位',
+      title: '思考',
       auto: '自动',
     },
     attach: {

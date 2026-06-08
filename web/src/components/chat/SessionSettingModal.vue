@@ -7,20 +7,16 @@
     <!-- Tab bar -->
     <div class="session-setting-tabs">
       <button class="model-tab" :class="{ active: activeTab === 'model' }" @click="activeTab = 'model'">
-        <Cpu :size="14" />
         {{ t('chat.modelSwitcher.title') }}
       </button>
       <button v-if="thinkingLevels.length > 0" class="model-tab" :class="{ active: activeTab === 'thinking' }" @click="activeTab = 'thinking'">
-        <Brain :size="14" />
         {{ t('chat.thinkingEffortSwitcher.title') }}
       </button>
-      <button v-if="showTransportTab" class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
-        <ArrowLeftRight :size="14" />
-        {{ t('chat.transportSwitcher.title') }}
-      </button>
       <button v-if="availableModes.length > 0 && isACP" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
-        <Layers :size="14" />
         {{ t('chat.modeSwitcher.title') }}
+      </button>
+      <button v-if="showTransportTab" class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
+        {{ t('chat.transportSwitcher.title') }}
       </button>
     </div>
 
@@ -185,7 +181,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Cpu, Brain, Layers, RefreshCw, Star, ArrowLeftRight } from 'lucide-vue-next'
+import { RefreshCw, Star } from 'lucide-vue-next'
 import ModalDialog from '@/components/common/ModalDialog.vue'
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import { useAgents, restoreOriginalModels, populateACPStateFromCache, invalidateACPStateCache } from '@/composables/useAgents'
