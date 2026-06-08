@@ -20,7 +20,9 @@ export async function loadSessionsOnce() {
       const data = await res.json()
       const sessions = data.sessions || []
       const hasRunning = sessions.some((s: any) => s.running)
-      const hasUnread = sessions.some((s: any) => s.unreadCount > 0 && s.id !== identity.currentSessionId.value)
+      const hasUnread = sessions.some((s: any) =>
+        (s.unreadCount > 0 || s.pendingApproval) && s.id !== identity.currentSessionId.value
+      )
       store.state.chatRunning = hasRunning
       store.state.chatUnread = hasUnread
       // Update session count for header indicator
@@ -84,7 +86,7 @@ export function useChatSession(options: UseChatSessionOptions) {
 
   // ── Identity refs from singleton ──
   const identity = useSessionIdentity()
-  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands } = identity
+  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands, autoApprove } = identity
 
   // ── Agents from singleton ──
   const { agents, loadAgents, getAgentIcon, getAgentName, syncModelFromAgent, getAgentModel, agentHeaderTitle: makeAgentTitle } = useAgents()
@@ -224,6 +226,9 @@ export function useChatSession(options: UseChatSessionOptions) {
             syncThinkingEffortFromData(recoverData.thinkingEffort)
             syncModeFromData(recoverData.modeId, recoverData.modeState?.availableModes)
             syncTransportFromData(recoverData.transport)
+            if (recoverData.autoApprove !== undefined) {
+              autoApprove.value = recoverData.autoApprove
+            }
           }
         }
         // If recovery still yields no session, bail — createSession will handle it
@@ -289,6 +294,10 @@ export function useChatSession(options: UseChatSessionOptions) {
       syncThinkingEffortFromData(data.thinkingEffort)
       syncModeFromData(data.modeId, data.modeState?.availableModes)
       syncTransportFromData(data.transport)
+      // Restore autoApprove from server state (per-session, not global)
+      if (data.autoApprove !== undefined) {
+        autoApprove.value = data.autoApprove
+      }
       // Populate ACP mode available modes from REST response.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
@@ -381,6 +390,7 @@ export function useChatSession(options: UseChatSessionOptions) {
     clearModeState()
     clearCommandState()
     clearThinkingEffortState()
+    autoApprove.value = false
     // Restore original CLI model list in case ACP had overridden it
     const prevAgentId = _currentAgentId.value
     if (prevAgentId) restoreOriginalModels(prevAgentId)
@@ -561,6 +571,13 @@ export function useChatSession(options: UseChatSessionOptions) {
     if (data.status === 'running') {
       store.state.chatRunning = true
       if (sid) { runningSessions.value.add(sid); runningSessionsVersion.value++ }
+    } else if (data.status === 'permission_pending' || data.status === 'permission_resolved') {
+      // Permission approval state changed — reload sessions to update dot indicators
+      if (sessionEventDebounce) clearTimeout(sessionEventDebounce)
+      sessionEventDebounce = setTimeout(() => {
+        sessionEventDebounce = null
+        loadSessionsOnce()
+      }, 300)
     } else {
       if (sid) { runningSessions.value.delete(sid); runningSessionsVersion.value++ }
       // Update global boolean from remaining set

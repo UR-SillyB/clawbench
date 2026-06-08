@@ -59,8 +59,11 @@ func ServeSessions(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,g
 		for _, id := range runningIDs {
 			runningSet[id] = true
 		}
+		// Batch-check pending approval state from ACP connection pool
+		pendingApprovalSet := ai.GetACPConnManager().GetPendingApprovalSessionIDs()
 		for i := range sessions {
 			sessions[i].Running = runningSet[sessions[i].ID]
+			sessions[i].PendingApproval = pendingApprovalSet[sessions[i].ID]
 		}
 		totalCount, _ := service.GetSessionCount(projectPath)
 		writeJSON(w, http.StatusOK, map[string]interface{}{

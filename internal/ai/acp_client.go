@@ -316,12 +316,28 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 		"tool_name", toolName,
 	)
 
+	// Notify frontend that this session has a pending approval
+	if c.connRef != nil {
+		c.connRef.mu.Lock()
+		csid := c.connRef.clawbenchSID
+		c.connRef.mu.Unlock()
+		onPermissionStateChange(csid, true)
+	}
+
 	// Block until user responds or context is cancelled
 	select {
 	case resp := <-pp.Ch:
 		c.mu.Lock()
 		delete(c.pendingPermission, key)
 		c.mu.Unlock()
+
+		// Notify frontend that this session's pending approval was resolved
+		if c.connRef != nil {
+			c.connRef.mu.Lock()
+			csid := c.connRef.clawbenchSID
+			c.connRef.mu.Unlock()
+			onPermissionStateChange(csid, false)
+		}
 
 		// Emit tool_result to mark the PermissionApproval as done
 		resultStatus := "success"

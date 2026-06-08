@@ -529,6 +529,17 @@ func SetAutoApproveGetter(fn func(clawbenchSID string) bool) {
 	getSessionAutoApprove = fn
 }
 
+// onPermissionStateChange is called when a pending permission request is added or resolved.
+// Set by the application startup via SetPermissionStateChangeCallback.
+var onPermissionStateChange = func(clawbenchSID string, pending bool) {}
+
+// SetPermissionStateChangeCallback sets the callback invoked when a permission
+// approval state changes for a session. Must be called once during startup by
+// the service layer (avoids circular import between ai and service/ws packages).
+func SetPermissionStateChangeCallback(fn func(clawbenchSID string, pending bool)) {
+	onPermissionStateChange = fn
+}
+
 // persistAgentACPStateToDB is the global function for persisting ACP state to the database.
 // Set by the application startup via SetACPStatePersister.
 var persistAgentACPStateToDB = func(agentID, modeState, commands, thinkingState, modelListState string) error {
@@ -1720,6 +1731,32 @@ func (c *ACPConn) GetOrCreateSession(ctx context.Context, clawbenchSID string, c
 		return "", false, err
 	}
 	return c.AcpSID(), isNew, nil
+}
+
+// GetPendingApprovalSessionIDs returns the set of ClawBench session IDs that
+// currently have a pending permission approval request (user needs to click
+// allow/deny). Used by the sessions API to annotate sessions with pendingApproval.
+func (m *ACPConnManager) GetPendingApprovalSessionIDs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make(map[string]bool)
+	for sid, conn := range m.conns {
+		conn.mu.Lock()
+		if conn.client != nil {
+			conn.client.mu.Lock()
+			for _, pp := range conn.client.pendingPermission {
+				// pp.SessionID is the ACP session ID; map it to ClawBenchSID
+				// Since we're iterating conns keyed by clawbenchSID, use sid directly
+				if pp.SessionID == conn.acpSID {
+					result[sid] = true
+				}
+			}
+			conn.client.mu.Unlock()
+		}
+		conn.mu.Unlock()
+	}
+	return result
 }
 
 // GetClient returns the ClawBenchACPClient for the given agent ID.

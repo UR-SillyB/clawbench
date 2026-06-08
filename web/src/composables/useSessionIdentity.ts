@@ -199,7 +199,7 @@ export function toggleAutoApprove(enabled: boolean) {
   autoApprove.value = enabled
   const sid = currentSessionId.value
   if (sid) {
-    fetch('/api/ai/session', {
+    fetch('/api/ai/session/update', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: sid, autoApprove: enabled }),
