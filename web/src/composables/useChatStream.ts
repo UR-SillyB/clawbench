@@ -54,6 +54,9 @@ export function useChatStream(options: UseChatStreamOptions) {
   let streamTimeout: ReturnType<typeof setTimeout> | null = null
   let renderTimer: ReturnType<typeof setTimeout> | null = null
   let pollingInterval: ReturnType<typeof setInterval> | null = null
+  // Flag to indicate the EventSource was closed intentionally by cleanupActiveStream
+  // (session switch), so the stale onerror handler should not schedule reconnects.
+  let disconnectedByCleanup = false
   // Track tool_use timeout timers so we can clean them up
   const toolUseTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map()
 
@@ -117,12 +120,18 @@ export function useChatStream(options: UseChatStreamOptions) {
     }, STREAM_TIMEOUT_MS)
   }
 
-  function disconnectStream() {
+  function disconnectStream(calledFromCleanup = false) {
     if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
     clearToolUseTimeouts()
     if (eventSource) {
       eventSource.close()
       eventSource = null
+    }
+    // When called from cleanupActiveStream (session switch), mark that
+    // the disconnection was intentional so the stale onerror handler
+    // can skip reconnect/polling logic.
+    if (calledFromCleanup) {
+      disconnectedByCleanup = true
     }
   }
 
@@ -296,6 +305,8 @@ export function useChatStream(options: UseChatStreamOptions) {
   function connectStream(sessionId: string, isRetry = false) {
     disconnectStream()
     stopPolling()
+    // Reset the cleanup flag — any new connection is intentional
+    disconnectedByCleanup = false
     // Only reset reconnect state for fresh/intentional connections (user action,
     // foreground return, network recovery). Do NOT reset for automatic reconnection
     // attempts — that would clear reconnectAttempts, making maxAttempts useless.
@@ -801,6 +812,13 @@ export function useChatStream(options: UseChatStreamOptions) {
       // CONNECTING (0) / OPEN (1) = transient, safe to reconnect.
       // CLOSED (2) = permanent failure (e.g. 404, server shutdown), fall back.
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
+      // If the EventSource was closed by cleanupActiveStream (session switch),
+      // this onerror is from a stale connection — ignore it entirely to avoid
+      // setting loading=true or scheduling reconnects for the new session.
+      if (disconnectedByCleanup) {
+        disconnectedByCleanup = false
+        return
+      }
       // If the SSE 'error' named event handler already processed this (e.g.
       // server sent `event: error\ndata: {"error":"SessionNotRunning"}`),
       // skip all reconnect/polling logic — the session is already finalized.

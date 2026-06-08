@@ -211,19 +211,36 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 	sessResp := conn.GetAndClearNewSessionResp()
 	if sessResp == nil {
+		slog.Warn("acp: cacheNewSessionState called with nil sessResp")
 		return
 	}
+	slog.Info("acp: caching new session state",
+		"has_modes", sessResp.Modes != nil,
+		"config_options_count", len(sessResp.ConfigOptions),
+	)
 	if modeState := extractACPModeState(sessResp); modeState != nil {
 		conn.SetCachedModeState(modeState)
+		slog.Info("acp: extracted mode from v1 Modes field", "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+	} else {
+		slog.Info("acp: no mode from v1 Modes field, will rely on configOptions fallback")
 	}
 	if configState := extractACPConfigOptions(sessResp); configState != nil {
 		conn.SetCachedConfigState(configState)
+		slog.Info("acp: extracted config from configOptions", "config_id", configState.ConfigID, "current", configState.CurrentID, "options", len(configState.Options))
+	} else {
+		slog.Info("acp: no mode config from configOptions")
 	}
 	if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
 		conn.SetCachedThinkingEffortState(effortState)
+		slog.Info("acp: extracted thinking effort", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
+	} else {
+		slog.Info("acp: no thinking effort from configOptions")
 	}
 	if modelList := extractACPModelList(sessResp); modelList != nil {
 		conn.SetCachedModelListState(modelList)
+		slog.Info("acp: extracted model list", "current", modelList.CurrentModelID, "available", len(modelList.Models))
+	} else {
+		slog.Info("acp: no model list from configOptions")
 	}
 }
 

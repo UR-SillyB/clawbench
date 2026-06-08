@@ -32,7 +32,7 @@ export interface UseSessionManagerOptions {
   checkContinueSessionCore: (taskId: number, execId: number) => Promise<{ exists: boolean; sessionId: string }>
 
   // Stream operations (from useChatStream)
-  disconnectStream: () => void
+  disconnectStream: (calledFromCleanup?: boolean) => void
   stopPolling: () => void
 
   // Render callback
@@ -137,8 +137,7 @@ export function useSessionManager(options: UseSessionManagerOptions) {
    *  while AI is still generating. */
   function cleanupActiveStream() {
     if (!loading.value) return
-    disconnectStream()
-    stopPolling()
+    disconnectStream(true)    stopPolling()
     const streamingMsg = messages.value.find(m => m.role === 'assistant' && m.streaming)
     if (streamingMsg) {
       delete streamingMsg.streaming
@@ -149,6 +148,7 @@ export function useSessionManager(options: UseSessionManagerOptions) {
       }
     }
     updateRenderedContents(true)
+    loading.value = false
   }
 
   // ── Unified session operations (cleanup + core + queue sync) ──
