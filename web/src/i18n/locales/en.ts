@@ -130,6 +130,10 @@ export default {
       cli: 'CLI Mode',
       cliDesc: 'Command-line text interaction with better compatibility',
     },
+    autoApprove: {
+      title: 'Auto-Approve',
+      description: 'Automatically approve all permission requests from the agent.',
+    },
     plan: {
       title: 'Execution Plan',
       completedCount: '{completed}/{total} done',
@@ -236,6 +240,8 @@ export default {
       startConversationAI: 'Send a message to start chatting with AI',
       scrollToTop: 'Scroll to top',
       scrollToPrev: 'Previous message',
+      scrollToNext: 'Next message',
+      scrollToBottom: 'Scroll to bottom',
     },
     pending: {
       uploadedAttachment: 'Upload',
@@ -844,6 +850,8 @@ export default {
       command: 'Command',
       approved: 'Approved',
       denied: 'Denied',
+      autoApprovedTitle: 'Auto-Approved',
+      autoApproved: 'Auto-Approved',
     },
   },
   agents: {

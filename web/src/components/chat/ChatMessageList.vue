@@ -77,14 +77,26 @@
       />
     </div>
 
-    <!-- Floating scroll buttons — appear when scrolled up -->
+    <!-- Floating scroll buttons — top: scroll up controls -->
     <Transition name="scroll-fab">
-      <div v-if="scrolledUp" class="scroll-fab-group">
+      <div v-if="scrolledUp" class="scroll-fab-group scroll-fab-top">
         <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
           <ChevronsUp :size="18" />
         </button>
         <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
           <ArrowUp :size="18" />
+        </button>
+      </div>
+    </Transition>
+
+    <!-- Floating scroll buttons — bottom: scroll down controls -->
+    <Transition name="scroll-fab">
+      <div v-if="scrolledDown" class="scroll-fab-group scroll-fab-bottom">
+        <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
+          <ArrowDown :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
+          <ChevronsDown :size="18" />
         </button>
       </div>
     </Transition>
@@ -94,7 +106,7 @@
 <script setup>
 import { ref, nextTick, inject, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronUp, ChevronsUp, ArrowUp } from 'lucide-vue-next'
+import { ChevronUp, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
 import ChatMessageItem from './ChatMessageItem.vue'
 import PendingMessageItem from './PendingMessageItem.vue'
 import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
@@ -162,6 +174,7 @@ watch(() => props.messages, () => {
   collapsedSet.value = new Set()
   isAtBottom.value = true
   scrolledUp.value = false
+  scrolledDown.value = false
 })
 
 // Compute the last round: last assistant message + its preceding user message
@@ -276,20 +289,24 @@ let loadMorePending = false
 // When the user scrolls back to the bottom during streaming, auto-scroll resumes.
 const isAtBottom = ref(true)
 
-// Whether user has scrolled up enough to show floating scroll buttons
+// Whether user has scrolled up/down enough to show floating scroll buttons
 const scrolledUp = ref(false)
+const scrolledDown = ref(false)
 
 const NEAR_BOTTOM_THRESHOLD = 60
+const SCROLL_BUTTON_TRIGGER = 120
 
 function handleScroll() {
   if (!messagesRef.value) return
   const el = messagesRef.value
 
-  // Update isAtBottom state based on current scroll position
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+  const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  const nearBottom = distFromBottom < NEAR_BOTTOM_THRESHOLD
   isAtBottom.value = nearBottom
-  // Show floating buttons when scrolled up past one viewport height from bottom
-  scrolledUp.value = !nearBottom && el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight
+  // Show top buttons when scrolled up past threshold
+  scrolledUp.value = el.scrollTop > SCROLL_BUTTON_TRIGGER
+  // Show bottom buttons when away from bottom past threshold
+  scrolledDown.value = !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
 
   if (loadMorePending) return
   if (!props.hasMore || props.loadingMore) return
@@ -356,6 +373,30 @@ function scrollToPreviousMessage() {
   }
   // If no message is above, scroll to top
   el.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function scrollToNextMessage() {
+  if (!messagesRef.value) return
+  const el = messagesRef.value
+  const items = el.querySelectorAll('.chat-messages-list > .chat-message')
+  if (items.length === 0) return
+  // Find the first message whose top is below the viewport bottom
+  for (let i = 0; i < items.length; i++) {
+    const rect = items[i].getBoundingClientRect()
+    const containerRect = el.getBoundingClientRect()
+    if (rect.top > containerRect.bottom - 8) {
+      items[i].scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+  }
+  // If no message is below, scroll to bottom
+  scrollToBottomSmooth()
+}
+
+function scrollToBottomSmooth() {
+  if (!messagesRef.value) return
+  const el = messagesRef.value
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
 }
 
 defineExpose({
@@ -550,18 +591,24 @@ defineExpose({
   padding-top: 4px;
 }
 
-/* ── Floating scroll buttons ── */
+/* ── Floating scroll buttons (capsule) ── */
 .scroll-fab-group {
   position: sticky;
-  top: 0;
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
-  gap: 8px;
-  padding: 8px 0;
   z-index: 8;
   pointer-events: none;
+  padding: 6px 0;
+}
+
+.scroll-fab-top {
+  top: 0;
+}
+
+.scroll-fab-bottom {
+  bottom: 0;
 }
 
 .scroll-fab-btn {
@@ -569,10 +616,9 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 28px;
   border: none;
-  border-radius: 50%;
   background: var(--bg-secondary);
   color: var(--text-secondary);
   box-shadow: var(--shadow-md);
@@ -581,8 +627,18 @@ defineExpose({
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Left button: rounded on left, flat on right */
+.scroll-fab-btn:first-child {
+  border-radius: 14px 0 0 14px;
+}
+
+/* Right button: flat on left, rounded on right */
+.scroll-fab-btn:last-child {
+  border-radius: 0 14px 14px 0;
+}
+
 .scroll-fab-btn:active {
-  transform: scale(0.9);
+  transform: scale(0.93);
 }
 
 @media (hover: hover) {
@@ -598,13 +654,21 @@ defineExpose({
 .scroll-fab-leave-active {
   transition: opacity 0.15s ease-in, transform 0.15s ease-in;
 }
-.scroll-fab-enter-from {
+.scroll-fab-top.scroll-fab-enter-from {
   opacity: 0;
   transform: translateY(-12px);
 }
-.scroll-fab-leave-to {
+.scroll-fab-top.scroll-fab-leave-to {
   opacity: 0;
   transform: translateY(-8px);
+}
+.scroll-fab-bottom.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.scroll-fab-bottom.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 </style>

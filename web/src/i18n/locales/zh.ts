@@ -130,6 +130,10 @@ export default {
       cli: 'CLI 模式',
       cliDesc: '命令行文本交互，兼容性更好',
     },
+    autoApprove: {
+      title: '自动批准',
+      description: '自动批准代理的所有权限请求。',
+    },
     plan: {
       title: '执行计划',
       completedCount: '{completed}/{total} 完成',
@@ -236,6 +240,8 @@ export default {
       startConversationAI: '发送消息开始与 AI 对话',
       scrollToTop: '回到顶部',
       scrollToPrev: '上一条消息',
+      scrollToNext: '下一条消息',
+      scrollToBottom: '回到底部',
     },
     pending: {
       uploadedAttachment: '上传附件',
@@ -844,6 +850,8 @@ export default {
       command: '命令',
       approved: '已批准',
       denied: '已拒绝',
+      autoApprovedTitle: '自动批准',
+      autoApproved: '自动批准',
     },
   },
   agents: {
