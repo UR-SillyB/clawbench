@@ -138,6 +138,22 @@ export function useChatSession(options: UseChatSessionOptions) {
       identity.currentModeId.value = modeIdFromServer
       const mode = availableModes?.find(m => m.id === modeIdFromServer)
       identity.currentModeName.value = mode?.name || modeIdFromServer
+    } else {
+      // No server-persisted mode — clear stale value from previous session.
+      // Mode is ACP-only; CLI agents don't have modes.
+      identity.currentModeId.value = ''
+      identity.currentModeName.value = ''
+    }
+  }
+
+  // Helper: sync transport from server data
+  // Falls back to agent's configured transport, defaulting to 'cli'.
+  function syncTransportFromData(transportFromServer?: string) {
+    if (transportFromServer) {
+      identity.currentTransport.value = transportFromServer
+    } else {
+      const agent = agentsApi.getAgent(currentAgentId.value)
+      identity.currentTransport.value = agent?.transport || 'cli'
     }
   }
 
@@ -207,6 +223,7 @@ export function useChatSession(options: UseChatSessionOptions) {
             syncModelFromData(currentAgentId.value, recoverData.modelId)
             syncThinkingEffortFromData(recoverData.thinkingEffort)
             syncModeFromData(recoverData.modeId, recoverData.modeState?.availableModes)
+            syncTransportFromData(recoverData.transport)
           }
         }
         // If recovery still yields no session, bail — createSession will handle it
@@ -271,6 +288,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
       syncModeFromData(data.modeId, data.modeState?.availableModes)
+      syncTransportFromData(data.transport)
       // Populate ACP mode available modes from REST response.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
@@ -392,6 +410,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       syncModelFromData(currentAgentId.value, data.modelId)
       syncThinkingEffortFromData(data.thinkingEffort)
       syncModeFromData(data.modeId, data.modeState?.availableModes)
+      syncTransportFromData(data.transport)
       // Populate ACP mode available modes from REST response.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)

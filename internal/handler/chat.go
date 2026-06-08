@@ -623,7 +623,8 @@ func executeStreamRun(
 	chatReq ai.ChatRequest,
 	fileDir string,
 ) streamRunResult {
-	backend, err := ai.NewBackendForAgentWithTransport(backendName, agentID, service.GetSessionTransport(sessionID))
+	sessionTransport := service.GetSessionTransport(sessionID)
+	backend, err := ai.NewBackendForAgentWithTransport(backendName, agentID, sessionTransport)
 	if err != nil {
 		slog.Error("failed to create backend", slog.String("backend", backendName), slog.String("err", err.Error()))
 		errMsg := T(r, "BackendCreateFailed", map[string]any{"Error": err.Error()})
@@ -632,6 +633,14 @@ func executeStreamRun(
 		}
 		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "assistant", errMsg, nil, false, "")
 		return streamRunResult{err: errMsg}
+	}
+
+	// If session transport was acp-stdio but agent fell back to CLI, clear the
+	// stale transport override so subsequent messages don't keep warning.
+	if sessionTransport == "acp-stdio" {
+		if _, ok := backend.(*ai.ACPBackend); !ok {
+			_ = service.UpdateSessionTransport(sessionID, "")
+		}
 	}
 
 	eventCh, err := backend.ExecuteStream(ctx, chatReq)

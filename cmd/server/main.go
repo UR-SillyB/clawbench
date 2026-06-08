@@ -463,6 +463,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// Inject external session ID getter for ResumeSession recovery
 	ai.SetExternalSessionIDGetter(service.GetExternalSessionID)
 
+	// Inject auto-approve getter for ACP permission auto-approval
+	ai.SetAutoApproveGetter(service.GetSessionAutoApprove)
+
 	// Inject session running checker for ACP idle sweep (avoids import cycle)
 	ai.GetACPConnManager().SetSessionRunningChecker(service.IsSessionRunning)
 

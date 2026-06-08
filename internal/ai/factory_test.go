@@ -265,6 +265,33 @@ func TestNewBackendForAgent_CLITransport_FallsBack(t *testing.T) {
 	assert.True(t, ok, "inner should be CLIBackend for cli transport")
 }
 
+func TestNewBackendForAgentWithTransport_ACPOverrideOnCLIAgent_FallsBack(t *testing.T) {
+	origAgents := model.Agents
+	t.Cleanup(func() { model.Agents = origAgents })
+
+	model.Agents = map[string]*model.Agent{
+		"test-pi": {
+			ID:        "test-pi",
+			Backend:   "pi",
+			Transport: "cli",
+		},
+	}
+
+	// Session had acp-stdio persisted but agent (pi) only supports CLI.
+	// Should fall back gracefully to CLI backend instead of erroring out.
+	backend, err := NewBackendForAgentWithTransport("pi", "test-pi", "acp-stdio")
+	assert.NoError(t, err)
+	assert.NotNil(t, backend)
+	assert.Equal(t, "pi", backend.Name())
+
+	// Should be AutoResumeBackend (CLI mode), NOT ACPBackend
+	_, ok := backend.(*AutoResumeBackend)
+	assert.True(t, ok, "acp-stdio override on CLI agent should fall back to AutoResumeBackend")
+
+	_, ok = backend.(*ACPBackend)
+	assert.False(t, ok, "should NOT be ACPBackend when agent transport is cli")
+}
+
 // --- needsAutoResume tests ---
 
 func TestNeedsAutoResume(t *testing.T) {

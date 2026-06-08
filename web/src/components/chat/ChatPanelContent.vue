@@ -467,13 +467,13 @@ watch(
 // Reactively update tool overlay content as block.output/done/status changes during streaming
 watch(
   () => {
-    if (!activeToolOverlay.value || !toolDetailOverlay.value.show) return null
+    if (!activeToolOverlay.value) return null
     const block = findToolBlock(activeToolOverlay.value)
     if (!block) return null
     return { output: block.output, done: block.done, status: block.status, input: block.input, name: block.name }
   },
   (data) => {
-    if (data === null) return
+    if (data === null || !toolDetailOverlay.value.show) return
     const { formatToolInput } = render
     toolDetailOverlay.value = {
       ...toolDetailOverlay.value,

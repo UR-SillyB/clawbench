@@ -64,10 +64,26 @@ export const TOOL_ICONS: Record<string, { icon: typeof Wrench; category: string 
 
 export const FALLBACK_TOOL_ICON = { icon: WrenchFallback, category: 'fallback' }
 
-/** Look up tool icon by name (case-insensitive) */
+/**
+ * Known Agent sub-type names that should use the Agent icon/category.
+ * ACP ToolCallUpdate may set block.name to the sub-type title (e.g. "Explore")
+ * instead of the canonical "Agent". Without this mapping, the frontend falls
+ * back to the wrench icon. These names always render with Bot icon + agent category.
+ */
+const AGENT_SUBTYPE_NAMES = new Set([
+  'explore', 'plan', 'general-purpose', 'general', 'claude',
+  'code-reviewer', 'statusline-setup', 'fork',
+])
+
+/** Look up tool icon by name (case-insensitive), with Agent sub-type fallback */
 export function getToolIcon(name: string) {
   const entry = Object.entries(TOOL_ICONS).find(([k]) => k.toLowerCase() === name.toLowerCase())
-  return entry ? entry[1] : FALLBACK_TOOL_ICON
+  if (entry) return entry[1]
+  // Unrecognized name that is a known Agent sub-type → use Agent icon/category
+  if (AGENT_SUBTYPE_NAMES.has(name.toLowerCase())) {
+    return TOOL_ICONS['Agent']
+  }
+  return FALLBACK_TOOL_ICON
 }
 
 /**

@@ -707,7 +707,13 @@ func extractToolName(title string, kind acp.ToolKind, toolCallID ...string) stri
 		// If title is a single word (no spaces), use it directly — it may already be canonical.
 		// But file paths with dots/slashes (e.g., "README.md", "cmd/server") are not canonical
 		// tool names — fall through to kind mapping instead.
+		// Exception: known Agent sub-type names (e.g., "Explore", "Plan") are not standalone
+		// tools — they are always Agent calls with a subagent_type field. Map them to "Agent"
+		// so the frontend uses the correct icon/category.
 		if !strings.Contains(title, " ") && !strings.Contains(title, ".") && !strings.Contains(title, "/") {
+			if acpIsAgentSubtype(title) {
+				return "Agent"
+			}
 			return title
 		}
 	}
@@ -752,6 +758,28 @@ var acpLowerAlias = map[string]string{
 	"list":     "LS",
 	"agent":    "Agent",
 	"skill":    "Skill",
+}
+
+// acpAgentSubtypes lists known Agent sub-type names that ACP agents use as
+// tool call titles. These are not standalone tools — they represent Agent
+// delegation calls with a subagent_type input field. Without this mapping,
+// extractToolName returns them as-is (e.g. "Explore"), which has no frontend
+// icon and falls back to the wrench. Map them to "Agent" so the frontend
+// uses the Bot icon + agent category color, and reads subagent_type from
+// input for the display name.
+var acpAgentSubtypes = map[string]bool{
+	"explore":          true,
+	"plan":             true,
+	"general-purpose":  true,
+	"general":          true,
+	"claude":           true,
+	"code-reviewer":    true,
+	"statusline-setup": true,
+	"fork":             true,
+}
+
+func acpIsAgentSubtype(title string) bool {
+	return acpAgentSubtypes[strings.ToLower(title)]
 }
 
 // acpToolNamePatterns maps ACP tool title prefixes to canonical tool names.

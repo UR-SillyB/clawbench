@@ -517,6 +517,18 @@ func SetExternalSessionIDGetter(fn func(clawbenchSID string) string) {
 	getExternalSessionID = fn
 }
 
+// getSessionAutoApprove is the global function for looking up auto-approve state
+// from the database. Set by the application startup via SetAutoApproveGetter.
+var getSessionAutoApprove = func(clawbenchSID string) bool {
+	return false // no-op until SetAutoApproveGetter is called
+}
+
+// SetAutoApproveGetter sets the function used to look up auto-approve state
+// from the database. Must be called once during application startup, after service.InitDB().
+func SetAutoApproveGetter(fn func(clawbenchSID string) bool) {
+	getSessionAutoApprove = fn
+}
+
 // persistAgentACPStateToDB is the global function for persisting ACP state to the database.
 // Set by the application startup via SetACPStatePersister.
 var persistAgentACPStateToDB = func(agentID, modeState, commands, thinkingState, modelListState string) error {

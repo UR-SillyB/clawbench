@@ -1507,6 +1507,21 @@ func TestMapToolCallInput_NilKindNoRawInputFallsToLocations(t *testing.T) {
 	assert.Equal(t, "", tool.Input)
 }
 
+func TestExtractToolName_AgentSubtypeMappedToAgent(t *testing.T) {
+	// Known Agent sub-type titles should be mapped to "Agent" so the frontend
+	// uses the correct icon/category, not a fallback wrench.
+	for _, title := range []string{"Explore", "explore", "Plan", "plan", "General-purpose", "code-reviewer"} {
+		result := extractToolName(title, acp.ToolKindOther)
+		assert.Equal(t, "Agent", result, "title %q should map to Agent", title)
+	}
+}
+
+func TestExtractToolName_UnknownSingleWordNotAgent(t *testing.T) {
+	// A single-word title that is NOT a known agent subtype should pass through.
+	result := extractToolName("CustomTool", acp.ToolKindOther)
+	assert.Equal(t, "CustomTool", result)
+}
+
 func TestMapToolCallName_ExistingCanonicalNotOverwritten(t *testing.T) {
 	// When a tool already has a canonical name (e.g., "Agent" from the initial
 	// ToolCall event), a ToolCallUpdate with a different title should NOT

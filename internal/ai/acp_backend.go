@@ -86,6 +86,10 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 
 		acpSessionID := conn.AcpSID()
 
+		// Sync autoApprove from DB to ACPConn before prompt,
+		// so RequestPermission callbacks use the correct state.
+		conn.SetAutoApprove(getSessionAutoApprove(req.SessionID))
+
 		// Step 2: Handle new vs recovered session
 		b.emitSessionAndCacheState(conn, isNew, ch)
 
@@ -132,6 +136,8 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				}
 				// Re-emit session/cache state for the respawned connection
 				b.emitSessionAndCacheState(conn2, isNew2, ch)
+				// Re-sync autoApprove for the respawned connection
+				conn2.SetAutoApprove(getSessionAutoApprove(req.SessionID))
 				promptBlocks2 := b.buildPromptBlocks(req)
 				retryPromptErr := conn2.Prompt(ctx, promptBlocks2, ch, req)
 				if retryPromptErr != nil {

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"fmt"
+	"log/slog"
 
 	"clawbench/internal/model"
 )
@@ -53,6 +54,8 @@ func NewBackendForAgent(backendType, agentID string) (AIBackend, error) {
 // NewBackendForAgentWithTransport creates a backend with an optional per-session
 // transport override. If transportOverride is non-empty, it takes precedence over
 // the agent's configured transport. Otherwise, falls back to the agent's Transport.
+// If the override requests acp-stdio but the agent doesn't support it, falls back
+// to CLI backend gracefully instead of erroring out.
 func NewBackendForAgentWithTransport(backendType, agentID, transportOverride string) (AIBackend, error) {
 	if agentID != "" {
 		if agent, ok := model.Agents[agentID]; ok {
@@ -61,11 +64,16 @@ func NewBackendForAgentWithTransport(backendType, agentID, transportOverride str
 				effectiveTransport = agent.Transport
 			}
 			if effectiveTransport == "acp-stdio" {
-				acpBackend, err := NewACPBackend(agent)
-				if err != nil {
-					return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)
+				if agent.Transport == "acp-stdio" {
+					acpBackend, err := NewACPBackend(agent)
+					if err != nil {
+						return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)
+					}
+					return acpBackend, nil
 				}
-				return acpBackend, nil
+				// transport override says acp-stdio but agent doesn't support it;
+				// fall through to CLI backend instead of erroring out.
+				slog.Warn("agent does not support acp-stdio transport, falling back to CLI", "agentID", agentID, "agentTransport", agent.Transport)
 			}
 		}
 	}
