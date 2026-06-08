@@ -177,6 +177,7 @@ watch(() => props.messages, () => {
   isAtBottom.value = true
   scrolledUp.value = false
   scrolledDown.value = false
+  lastScrollTop = 0
   clearTimeout(scrollUpTimer)
   clearTimeout(scrollDownTimer)
 })
@@ -294,12 +295,14 @@ let loadMorePending = false
 const isAtBottom = ref(true)
 
 // Whether user has scrolled up/down enough to show floating scroll buttons
+// Only one group shows at a time — whichever direction the user last scrolled toward
 const scrolledUp = ref(false)
 const scrolledDown = ref(false)
 
 // Auto-hide timers for scroll buttons
 let scrollUpTimer = null
 let scrollDownTimer = null
+let lastScrollTop = 0
 const SCROLL_BUTTON_HIDE_DELAY = 3000
 
 const NEAR_BOTTOM_THRESHOLD = 60
@@ -312,25 +315,28 @@ function handleScroll() {
   const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   const nearBottom = distFromBottom < NEAR_BOTTOM_THRESHOLD
   isAtBottom.value = nearBottom
-  // Show top buttons when scrolled up past threshold, auto-hide after delay
-  const shouldShowUp = el.scrollTop > SCROLL_BUTTON_TRIGGER
+
+  // Determine scroll direction
+  const scrollDelta = el.scrollTop - lastScrollTop
+  lastScrollTop = el.scrollTop
+
+  // Scrolled up (toward top): show top buttons, hide bottom
+  const shouldShowUp = scrollDelta < 0 && el.scrollTop > SCROLL_BUTTON_TRIGGER
+  // Scrolled down (toward bottom): show bottom buttons, hide top
+  const shouldShowDown = scrollDelta > 0 && !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
+
   if (shouldShowUp) {
+    scrolledDown.value = false
+    clearTimeout(scrollDownTimer)
     scrolledUp.value = true
     clearTimeout(scrollUpTimer)
     scrollUpTimer = setTimeout(() => { scrolledUp.value = false }, SCROLL_BUTTON_HIDE_DELAY)
-  } else {
+  } else if (shouldShowDown) {
     scrolledUp.value = false
     clearTimeout(scrollUpTimer)
-  }
-  // Show bottom buttons when away from bottom past threshold, auto-hide after delay
-  const shouldShowDown = !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
-  if (shouldShowDown) {
     scrolledDown.value = true
     clearTimeout(scrollDownTimer)
     scrollDownTimer = setTimeout(() => { scrolledDown.value = false }, SCROLL_BUTTON_HIDE_DELAY)
-  } else {
-    scrolledDown.value = false
-    clearTimeout(scrollDownTimer)
   }
 
   if (loadMorePending) return
@@ -379,7 +385,7 @@ function scrollToBottom(force = false) {
 
 function scrollToTop() {
   if (!messagesRef.value) return
-  messagesRef.value.scrollTop = 0
+  messagesRef.value.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function scrollToPreviousMessage() {
