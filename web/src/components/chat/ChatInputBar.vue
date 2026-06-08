@@ -1,18 +1,21 @@
 <template>
   <div class="chat-input-wrapper">
-    <!-- Session info bar (model + mode + thinking) -->
-    <div class="chat-session-info" v-if="currentModelName || currentModeName || currentThinkingEffort">
-      <span class="session-info-model" @click.stop="openSettingsModal('model')">{{ currentModelName }}</span>
-      <span v-if="currentModeName" class="session-info-sep">·</span>
-      <span v-if="currentModeName" class="session-info-mode" @click.stop="openSettingsModal('mode')">{{ currentModeName }}</span>
-      <span v-if="currentThinkingEffort" class="session-info-sep">·</span>
-      <span v-if="currentThinkingEffort" class="session-info-thinking" @click.stop="openSettingsModal('thinking')">{{ currentThinkingEffort }}</span>
+    <!-- Session info bar (model + mode + thinking + transport) -->
+    <div class="chat-session-info" v-if="currentModelName || currentModeName || currentThinkingEffort || currentTransport">
+      <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
+      <span v-if="currentModeName" class="session-info-divider"></span>
+      <span v-if="currentModeName" class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
+      <span v-if="currentThinkingEffort" class="session-info-divider"></span>
+      <span v-if="currentThinkingEffort" class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ currentThinkingEffort }}</span>
+      <span v-if="currentTransport" class="session-info-divider"></span>
+      <span v-if="currentTransport" class="session-info-transport" @click.stop="openSettingsModal('transport')"><Cable :size="11" />{{ currentTransport }}</span>
     </div>
     <!-- Top action bar (above input box) -->
     <div class="chat-top-actions">
       <div class="chat-action-group">
         <span class="chat-group-label" :title="t('chat.actions.session')">
           <MessageSquare :size="12" />
+          {{ t('chat.actions.session') }}
         </span>
         <button class="chat-action-btn" :class="{ 'has-unread': chatUnread, 'has-running': chatRunning }"
           @click="$emit('open-session-tab', 'sessions')"
@@ -35,12 +38,7 @@
         @click="$emit('toggle-auto-speech')"
         :title="t('chat.actions.autoSpeech')">
         <Volume2 :size="14" />
-      </button>
-      <!-- Settings button — opens session settings modal -->
-      <button class="chat-action-btn settings-chip clickable"
-        @click.stop="openSettingsModal('model')"
-        :title="t('chat.actions.sessionSettings')">
-        <Settings :size="14" />
+        <span class="chat-action-label">{{ t('chat.actions.autoSpeech') }}</span>
       </button>
     </div>
     <!-- Input container -->
@@ -200,7 +198,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Loader2 } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Loader2, Cpu, Compass, Brain, Cable } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -281,6 +279,7 @@ const props = defineProps({
   currentModelName: String,
   currentThinkingEffort: String,
   currentModeName: String,
+  currentTransport: String,
   currentAgentId: String,
   active: Boolean,
 })
@@ -746,6 +745,7 @@ defineExpose({
 .chat-session-info {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   padding: 2px 8px 0;
   font-size: 11px;
@@ -756,48 +756,44 @@ defineExpose({
   min-width: 0;
 }
 
-.session-info-model {
+.session-info-model,
+.session-info-mode,
+.session-info-thinking,
+.session-info-transport {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  flex: 2;
   cursor: pointer;
   transition: color 0.15s;
 }
 
-.session-info-model:active {
+.session-info-model { flex: 2; }
+.session-info-mode { flex: 1; }
+.session-info-thinking { flex-shrink: 1; }
+.session-info-transport { flex-shrink: 1; }
+
+.session-info-model:active,
+.session-info-mode:active,
+.session-info-thinking:active,
+.session-info-transport:active {
   color: var(--accent-color, #0066cc);
 }
 
-.session-info-sep {
+.session-info-model svg,
+.session-info-mode svg,
+.session-info-thinking svg,
+.session-info-transport svg {
   flex-shrink: 0;
-  color: var(--border-color, #e5e5e5);
 }
 
-.session-info-mode {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-.session-info-mode:active {
-  color: var(--accent-color, #0066cc);
-}
-
-.session-info-thinking {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  flex-shrink: 1;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-.session-info-thinking:active {
-  color: var(--accent-color, #0066cc);
+.session-info-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 10px;
+  background: var(--border-color, #e5e5e5);
 }
 
 /* Top action bar (above input box, compact) */
@@ -1326,10 +1322,9 @@ defineExpose({
   to   { transform: rotate(360deg); }
 }
 
-/* Session settings chip */
-.settings-chip {
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
+.chat-action-label {
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 
@@ -1340,7 +1335,7 @@ defineExpose({
 /* Attach menu content styles */
 .attach-menu-group-title {
   padding: 4px 10px 1px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted, #999);
   font-weight: 500;
   letter-spacing: 0.3px;
@@ -1350,12 +1345,12 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 8px 14px;
   width: 100%;
   border: none;
   background: none;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
   text-align: left;
@@ -1368,13 +1363,13 @@ defineExpose({
 
 .attach-menu-item svg {
   flex-shrink: 0;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .attach-menu-item-name {
   font-family: monospace;
-  font-size: 11px;
+  font-size: 12px;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1389,7 +1384,7 @@ defineExpose({
 
 .attach-menu-item-count {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted, #999);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;

@@ -40,6 +40,30 @@
       </div>
     </Transition>
 
+    <!-- Floating scroll buttons — top: scroll up controls -->
+    <Transition name="scroll-fab">
+      <div v-if="messageListRef?.scrolledUp?.value" class="scroll-fab-group scroll-fab-top">
+        <button class="scroll-fab-btn" @click="messageListRef?.scrollToTop()" :title="t('chat.messageList.scrollToTop')">
+          <ChevronsUp :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="messageListRef?.scrollToPreviousMessage()" :title="t('chat.messageList.scrollToPrev')">
+          <ArrowUp :size="18" />
+        </button>
+      </div>
+    </Transition>
+
+    <!-- Floating scroll buttons — bottom: scroll down controls -->
+    <Transition name="scroll-fab">
+      <div v-if="messageListRef?.scrolledDown?.value" class="scroll-fab-group scroll-fab-bottom">
+        <button class="scroll-fab-btn" @click="messageListRef?.scrollToBottomSmooth()" :title="t('chat.messageList.scrollToBottom')">
+          <ChevronsDown :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="messageListRef?.scrollToNextMessage()" :title="t('chat.messageList.scrollToNext')">
+          <ArrowDown :size="18" />
+        </button>
+      </div>
+    </Transition>
+
     <!-- Session swipe indicator — floats above the message area -->
     <Transition name="session-indicator">
       <div v-if="swipeSession.indicatorText.value" class="session-switch-indicator" :class="swipeSession.indicatorDirection.value">
@@ -87,6 +111,7 @@
       :currentModelName="identity.currentModelName.value"
       :currentThinkingEffort="identity.currentThinkingEffort.value"
       :currentModeName="identity.currentModeName.value"
+      :currentTransport="identity.currentTransport.value"
       :currentAgentId="identity.currentAgentId.value"
       :active="props.active"
       @send="sendMessage"
@@ -187,7 +212,7 @@ import { useGlobalEvents } from '@/composables/useGlobalEvents'
 import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import { useDialog } from '@/composables/useDialog'
-import { ChevronRight } from 'lucide-vue-next'
+import { ChevronRight, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
 
 const { t } = useI18n()
 
@@ -1091,5 +1116,85 @@ onUnmounted(() => {
 
 .rag-detail-resume-btn:active {
   opacity: 0.7;
+}
+
+/* ── Floating scroll buttons (capsule, overlay on message area) ── */
+.scroll-fab-group {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 8;
+  pointer-events: none;
+  padding: 6px 0;
+}
+
+.scroll-fab-top {
+  top: 0;
+}
+
+.scroll-fab-bottom {
+  bottom: 56px;
+}
+
+.scroll-fab-btn {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Left button: rounded on left, flat on right */
+.scroll-fab-btn:first-child {
+  border-radius: 14px 0 0 14px;
+}
+
+/* Right button: flat on left, rounded on right */
+.scroll-fab-btn:last-child {
+  border-radius: 0 14px 14px 0;
+}
+
+.scroll-fab-btn:active {
+  transform: scale(0.93);
+}
+
+@media (hover: hover) {
+  .scroll-fab-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--accent-color);
+  }
+}
+
+.scroll-fab-enter-active {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+.scroll-fab-leave-active {
+  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
+}
+.scroll-fab-top.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+.scroll-fab-top.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.scroll-fab-bottom.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.scroll-fab-bottom.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 </style>

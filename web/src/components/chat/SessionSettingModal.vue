@@ -7,16 +7,16 @@
     <!-- Tab bar -->
     <div class="session-setting-tabs">
       <button class="model-tab" :class="{ active: activeTab === 'model' }" @click="activeTab = 'model'">
-        {{ t('chat.modelSwitcher.title') }}
+        <Cpu :size="13" />{{ t('chat.modelSwitcher.title') }}
       </button>
       <button v-if="thinkingLevels.length > 0" class="model-tab" :class="{ active: activeTab === 'thinking' }" @click="activeTab = 'thinking'">
-        {{ t('chat.thinkingEffortSwitcher.title') }}
+        <Brain :size="13" />{{ t('chat.thinkingEffortSwitcher.title') }}
       </button>
       <button v-if="availableModes.length > 0 && isACP" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
-        {{ t('chat.modeSwitcher.title') }}
+        <Compass :size="13" />{{ t('chat.modeSwitcher.title') }}
       </button>
       <button v-if="showTransportTab" class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
-        {{ t('chat.transportSwitcher.title') }}
+        <Cable :size="13" />{{ t('chat.transportSwitcher.title') }}
       </button>
     </div>
 
@@ -167,6 +167,20 @@
           <div v-if="idx < availableModes.length - 1" class="model-divider"></div>
         </div>
       </div>
+      <!-- Auto-Approve toggle (embedded in Mode tab) -->
+      <div class="auto-approve-section">
+        <div class="model-divider"></div>
+        <div class="auto-approve-toggle">
+          <div class="auto-approve-label">
+            <span class="auto-approve-title">{{ t('chat.autoApprove.title') }}</span>
+            <span class="auto-approve-desc">{{ t('chat.autoApprove.description') }}</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" :checked="autoApprove" @change="toggleAutoApprove($event.target.checked)" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
     </div>
 
     <!-- Long-press PopupMenu for "Set as Default" (kept for backward compat) -->
@@ -181,7 +195,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RefreshCw, Star } from 'lucide-vue-next'
+import { RefreshCw, Star, Cpu, Brain, Compass, Cable } from 'lucide-vue-next'
 import ModalDialog from '@/components/common/ModalDialog.vue'
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import { useAgents, restoreOriginalModels, populateACPStateFromCache, invalidateACPStateCache } from '@/composables/useAgents'
@@ -201,7 +215,7 @@ const emit = defineEmits(['update:show', 'switch-model', 'switch-thinking-effort
 const { t } = useI18n()
 const toast = useToast()
 const { getAgentModels, getAgentThinkingEffortLevels, getAgent, updateAgentField, getDefaultModelId, canRefreshModels, supportsDualTransport, getAgentTransport } = useAgents()
-const { currentModelId, currentThinkingEffort, currentModeId, currentTransport, availableThinkingEfforts, availableModes } = useSessionIdentity()
+const { currentModelId, currentThinkingEffort, currentModeId, currentTransport, availableThinkingEfforts, availableModes, autoApprove, toggleAutoApprove } = useSessionIdentity()
 
 const activeTab = ref('model')
 const searchQuery = ref('')
@@ -668,6 +682,83 @@ function handleClose() {
   text-align: center;
   color: var(--text-muted, #999);
   font-size: 13px;
+}
+
+.auto-approve-section {
+  flex-shrink: 0;
+}
+
+.auto-approve-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.auto-approve-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.auto-approve-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.auto-approve-desc {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  line-height: 1.3;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-tertiary, #ccc);
+  transition: 0.2s;
+  border-radius: 20px;
+}
+
+.toggle-slider::before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: 0.2s;
+  border-radius: 50%;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background-color: var(--accent-color, #0066cc);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
 }
 </style>
 
