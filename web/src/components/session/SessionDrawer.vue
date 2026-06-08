@@ -28,11 +28,11 @@
             :class="{ active: session.id === currentSessionId, running: session.running }"
             @click="selectSession(session.id, session.backend)"
           >
-            <span v-if="session.unreadCount > 0 || session.pendingApproval" class="session-item-badge"></span>
+            <span v-if="session.unreadCount > 0 || session.pendingApproval" class="session-item-badge">{{ session.pendingApproval ? '!' : '' }}</span>
+            <span v-if="session.running" class="session-running-dot"></span>
             <div class="session-item-info">
               <div class="session-item-header">
                 <span class="session-item-title">{{ session.title }}</span>
-                <span v-if="session.running" class="session-running-dot"></span>
               </div>
               <div class="session-item-meta">
                 <span class="session-item-time">{{ formatRelativeTime(session.updatedAt) }}</span>
@@ -329,6 +329,8 @@ onUnmounted(() => {
 
 .session-item.active {
   background: var(--accent-bg, rgba(0, 102, 204, 0.1));
+  border-left: 3px solid var(--accent-color, #0066cc);
+  padding-left: 9px;
 }
 
 .session-item-info {
@@ -358,6 +360,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-right: 28px;
 }
 
 .session-item.active .session-item-title {
@@ -375,17 +378,18 @@ onUnmounted(() => {
 }
 
 .session-running-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
   background: #22c55e;
-  flex-shrink: 0;
-  animation: pulse 1.5s infinite;
+  animation: pulse-bar 1.5s infinite;
 }
 
-@keyframes pulse {
+@keyframes pulse-bar {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.3; }
 }
 
 .session-item.running {
