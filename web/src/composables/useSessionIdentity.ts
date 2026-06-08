@@ -308,12 +308,21 @@ export async function initSessionFromAPI() {
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
           availableCommands.value = data.commands
         }
+        // Initialize mode: prefer server-persisted modeId (DB user choice)
+        if (data.modeId) {
+          currentModeId.value = data.modeId
+        }
         // Populate mode state from chat response — only update available modes.
         // currentModeId was already set above from data.modeId (DB-persisted
         // user choice); data.modeState.currentModeId is the agent's runtime
         // value which should not override the user's selection.
         if (data.modeState && data.modeState.availableModes?.length > 0) {
           updateAvailableModes(data.modeState.availableModes)
+          // Set mode name from available modes now that the list is populated
+          if (currentModeId.value) {
+            const mode = data.modeState.availableModes.find(m => m.id === currentModeId.value)
+            currentModeName.value = mode?.name || currentModeId.value
+          }
         }
         // Populate thinking effort state — only update available levels.
         // currentThinkingEffort was already set above from data.thinkingEffort
