@@ -130,13 +130,36 @@ export class ChatPage {
    * Uses a longer timeout than waitForReply because ACP requires
    * spawning a subprocess and establishing a connection.
    * Waits for the streaming to fully complete (stop button gone).
+   * Uses API polling as a more reliable signal than UI-only waiting.
    */
   async sendAndAwaitACPReply(text: string, timeout = 30000): Promise<void> {
     const countBefore = await this.sendMessage(text)
     await this.waitForReply(timeout, countBefore)
-    // Wait for streaming to fully complete — stop button disappears when
-    // loading becomes false (after session_complete SSE + onLoadHistory)
-    await expect(this.stopButton).not.toBeVisible({ timeout: 45000 })
+    // Wait for the backend to mark the session as not running.
+    // This is the ground-truth signal that the AI turn has completed.
+    // We use the /api/ai/sessions endpoint to check running status
+    // because it doesn't require a session_id and reflects all sessions.
+    const apiTimeout = 60000
+    const start = Date.now()
+    while (Date.now() - start < apiTimeout) {
+      try {
+        const isRunning = await this.page.evaluate(async () => {
+          // Use /api/ai/sessions which lists running status for all sessions
+          const resp = await fetch('/api/ai/sessions')
+          if (!resp.ok) return true
+          const data = await resp.json()
+          // If any session is running, assume it's ours (workers=1, serial tests)
+          return (data.sessions || []).some((s: any) => s.running === true)
+        })
+        if (!isRunning) break
+      } catch {
+        // retry
+      }
+      await this.page.waitForTimeout(1000)
+    }
+    // Now wait for the UI to catch up — stop button should disappear.
+    // The SSE done event + onLoadHistory should set loading=false.
+    await expect(this.stopButton).not.toBeVisible({ timeout: 30000 })
   }
 
   /**

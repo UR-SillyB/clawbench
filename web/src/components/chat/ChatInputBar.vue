@@ -763,17 +763,13 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
   cursor: pointer;
   transition: color 0.15s;
 }
-
-.session-info-model { flex: 2; }
-.session-info-mode { flex: 1; }
-.session-info-thinking { flex-shrink: 1; }
-.session-info-transport { flex-shrink: 1; }
 
 .session-info-model:active,
 .session-info-mode:active,
@@ -833,12 +829,15 @@ defineExpose({
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 3px;
     padding: 5px 6px 5px 8px;
     color: var(--text-muted, #999);
     background: var(--bg-tertiary, #f0f0f0);
     pointer-events: none;
     user-select: none;
     border-right: 1px solid var(--border-color, #e5e5e5);
+    font-size: 11px;
+    line-height: 1.3;
 }
 
 .chat-action-group .chat-action-btn:last-child {

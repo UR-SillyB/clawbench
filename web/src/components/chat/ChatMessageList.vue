@@ -1,4 +1,5 @@
 <template>
+  <div class="chat-messages-wrapper">
   <div class="chat-messages" id="aiChatMessages" ref="messagesRef" @click="handleChatClick" @scroll="handleScroll">
     <!-- Lazy load feedback -->
     <div class="chat-load-area">
@@ -77,12 +78,37 @@
       />
     </div>
   </div>
+
+  <!-- Floating scroll buttons — outside scroll container, inside relative wrapper -->
+  <Transition name="scroll-fab">
+    <div v-if="scrolledUp" class="scroll-fab-group scroll-fab-top">
+      <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
+        <ChevronsUp :size="18" />
+      </button>
+      <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
+        <ArrowUp :size="18" />
+      </button>
+    </div>
+  </Transition>
+
+  <Transition name="scroll-fab">
+    <div v-if="scrolledDown" class="scroll-fab-group scroll-fab-bottom">
+      <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
+        <ChevronsDown :size="18" />
+      </button>
+      <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
+        <ArrowDown :size="18" />
+      </button>
+    </div>
+  </Transition>
+
+  </div>
 </template>
 
 <script setup>
 import { ref, nextTick, inject, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronUp } from 'lucide-vue-next'
+import { ChevronUp, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
 import ChatMessageItem from './ChatMessageItem.vue'
 import PendingMessageItem from './PendingMessageItem.vue'
 import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
@@ -412,6 +438,15 @@ defineExpose({
 </script>
 
 <style scoped>
+/* Wrapper: positioning context for floating scroll buttons */
+.chat-messages-wrapper {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -419,7 +454,6 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 8px;
-  position: relative;
 }
 
 /* Message list container */
@@ -596,4 +630,83 @@ defineExpose({
   padding-top: 4px;
 }
 
+/* ── Floating scroll buttons (capsule) ── */
+.scroll-fab-group {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 8;
+  pointer-events: none;
+  padding: 6px 0;
+}
+
+.scroll-fab-top {
+  top: 0;
+}
+
+.scroll-fab-bottom {
+  bottom: 0;
+}
+
+.scroll-fab-btn {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Left button: rounded on left, flat on right */
+.scroll-fab-btn:first-child {
+  border-radius: 14px 0 0 14px;
+}
+
+/* Right button: flat on left, rounded on right */
+.scroll-fab-btn:last-child {
+  border-radius: 0 14px 14px 0;
+}
+
+.scroll-fab-btn:active {
+  transform: scale(0.93);
+}
+
+@media (hover: hover) {
+  .scroll-fab-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--accent-color);
+  }
+}
+
+.scroll-fab-enter-active {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+.scroll-fab-leave-active {
+  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
+}
+.scroll-fab-top.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+.scroll-fab-top.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.scroll-fab-bottom.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.scroll-fab-bottom.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
 </style>

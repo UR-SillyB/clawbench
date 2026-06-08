@@ -303,7 +303,12 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 
 		case <-checkTicker.C:
 			if !service.IsSessionRunning(sessionID) {
-				fmt.Fprintf(w, "event: cancelled\ndata: {\"reason\":\"cancelled\"}\n\n")
+				// Session is no longer running — the AI goroutine has finished
+				// but the "done" event may not have been sent through the channel
+				// (e.g. if the channel was already closed/consumed). Send "done"
+				// instead of "cancelled" so the frontend properly finalizes the
+				// streaming state and hides the stop button.
+				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 				if canFlush {
 					flusher.Flush()
 				}

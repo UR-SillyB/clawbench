@@ -38,9 +38,9 @@
       </div>
       <!-- Tool use block -->
       <template v-else-if="block.type === 'tool_use'">
-        <div class="chat-tool-call" :class="{ done: block.done }" :data-category="getToolIcon(block.name).category" @click.stop="handleToolClick(block, key(bi))">
+        <div class="chat-tool-call" :class="{ done: block.done }" :data-category="getToolIcon(block.name).category" @click.stop="handleToolClick(block, key(bi), bi)">
           <component :is="getToolIcon(block.name).icon" :size="12" class="tool-icon" />
-          <span class="tool-name">{{ block.name }}</span>
+          <span class="tool-name">{{ toolDisplayName(block.name, block.input) }}</span>
           <span v-if="toolCallSummary(block)" class="tool-summary">{{ toolCallSummary(block) }}</span>
           <!-- Loading: spinner -->
           <span v-if="!block.done" class="tool-spinner"></span>
@@ -145,7 +145,7 @@
 import { ref, watch, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { handleToolAction, shouldAutoExpandTool } from '@/utils/renderToolDetail.ts'
-import { getToolIcon } from '@/utils/icons'
+import { getToolIcon, toolDisplayName } from '@/utils/icons'
 import { Brain, ChevronRight, CheckCircle2, AlertCircle, AlertTriangle, XCircle } from 'lucide-vue-next'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import {
@@ -180,7 +180,7 @@ function shouldAutoExpand(block) {
 }
 
 /** Handle tool call bar click: open overlay for regular tools, toggle inline for AskUserQuestion. */
-function handleToolClick(block, blockKeyStr) {
+function handleToolClick(block, blockKeyStr, blockIdx) {
   // AskUserQuestion stays inline — toggle expand state
   if (shouldAutoExpand(block)) {
     emit('toggle-tool', blockKeyStr)
@@ -193,6 +193,8 @@ function handleToolClick(block, blockKeyStr) {
     output: block.output,
     status: block.status,
     done: block.done,
+    msgId: props.msgId,
+    blockIdx,
   })
 }
 

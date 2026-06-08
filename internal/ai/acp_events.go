@@ -505,6 +505,16 @@ func mapToolCallName(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
 	if tcu.Title == nil || *tcu.Title == "" || tool.Done {
 		return
 	}
+	// If tool already has a recognized canonical name (from the initial ToolCall
+	// event), don't let a later ToolCallUpdate with a different title overwrite
+	// it. ACP agents send progressive title updates (e.g., "Agent" → "Explore
+	// project structure"), and extractToolName would return "Explore" which has
+	// no frontend icon mapping — causing a fallback wrench icon. Keep the
+	// original canonical name; the frontend uses input.subagent_type to display
+	// the sub-agent's specific name.
+	if tool.Name != "" && tool.Name != strings.ToLower(tool.Name) {
+		return
+	}
 	kind := acp.ToolKindExecute // default kind for title-based name extraction
 	if tcu.Kind != nil {
 		kind = *tcu.Kind

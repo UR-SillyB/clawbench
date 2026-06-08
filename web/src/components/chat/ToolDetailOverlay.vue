@@ -3,7 +3,7 @@
     <template #header>
       <div class="tool-detail-header" :data-category="category">
         <component :is="headerIcon" :size="14" class="tool-detail-header-icon" />
-        <span class="tool-detail-header-name">{{ toolName }}</span>
+        <span class="tool-detail-header-name">{{ displayName }}</span>
         <span v-if="toolSummary" class="tool-detail-header-summary">{{ toolSummary }}</span>
         <span v-if="!toolDone" class="tool-detail-spinner"></span>
         <XCircle v-else-if="toolStatus === 'error'" :size="14" color="#ef4444" class="tool-detail-status" />
@@ -29,7 +29,7 @@
 import { computed } from 'vue'
 import { CheckCircle2, XCircle } from 'lucide-vue-next'
 import BottomSheet from '@/components/common/BottomSheet.vue'
-import { getToolIcon } from '@/utils/icons'
+import { getToolIcon, toolDisplayName } from '@/utils/icons'
 import { handleToolAction } from '@/utils/renderToolDetail.ts'
 import { useLocalhostUrlClickHandler } from '@/composables/useLocalhostAnnotation.ts'
 import { store } from '@/stores/app.ts'
@@ -37,6 +37,7 @@ import { store } from '@/stores/app.ts'
 const props = defineProps({
   show: { type: Boolean, default: false },
   toolName: { type: String, default: '' },
+  toolSubagentType: { type: String, default: '' },
   toolSummary: { type: String, default: '' },
   toolInputHtml: { type: String, default: '' },
   toolOutputHtml: { type: String, default: '' },
@@ -48,6 +49,13 @@ const emit = defineEmits(['close', 'file-open', 'send-message'])
 
 const category = computed(() => getToolIcon(props.toolName).category)
 const headerIcon = computed(() => getToolIcon(props.toolName).icon)
+const displayName = computed(() => {
+  if (props.toolSubagentType) {
+    const raw = props.toolSubagentType
+    return raw.charAt(0).toUpperCase() + raw.slice(1)
+  }
+  return props.toolName
+})
 
 const { handleLocalhostUrlClick } = useLocalhostUrlClickHandler()
 

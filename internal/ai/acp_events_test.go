@@ -1506,3 +1506,30 @@ func TestMapToolCallInput_NilKindNoRawInputFallsToLocations(t *testing.T) {
 	mapToolCallInput(tcu, tool)
 	assert.Equal(t, "", tool.Input)
 }
+
+func TestMapToolCallName_ExistingCanonicalNotOverwritten(t *testing.T) {
+	// When a tool already has a canonical name (e.g., "Agent" from the initial
+	// ToolCall event), a ToolCallUpdate with a different title should NOT
+	// overwrite it. ACP agents send progressive title updates like
+	// "Agent" → "Explore project structure", and extractToolName would return
+	// "Explore" which has no frontend icon mapping.
+	tool := &ToolCall{Name: "Agent"}
+	title := "Explore project structure"
+	tcu := acp.SessionToolCallUpdate{
+		Title: &title,
+	}
+	mapToolCallName(tcu, tool)
+	assert.Equal(t, "Agent", tool.Name, "existing canonical name should not be overwritten by ToolCallUpdate")
+}
+
+func TestMapToolCallName_LowercaseNameGetsOverwritten(t *testing.T) {
+	// If the existing name is all-lowercase (not yet canonicalized), it should
+	// still be updated by the ToolCallUpdate.
+	tool := &ToolCall{Name: "agent"}
+	title := "Bash"
+	tcu := acp.SessionToolCallUpdate{
+		Title: &title,
+	}
+	mapToolCallName(tcu, tool)
+	assert.Equal(t, "Bash", tool.Name, "lowercase name should be overwritten by ToolCallUpdate")
+}

@@ -40,30 +40,6 @@
       </div>
     </Transition>
 
-    <!-- Floating scroll buttons — top: scroll up controls -->
-    <Transition name="scroll-fab">
-      <div v-if="messageListRef?.scrolledUp?.value" class="scroll-fab-group scroll-fab-top">
-        <button class="scroll-fab-btn" @click="messageListRef?.scrollToTop()" :title="t('chat.messageList.scrollToTop')">
-          <ChevronsUp :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="messageListRef?.scrollToPreviousMessage()" :title="t('chat.messageList.scrollToPrev')">
-          <ArrowUp :size="18" />
-        </button>
-      </div>
-    </Transition>
-
-    <!-- Floating scroll buttons — bottom: scroll down controls -->
-    <Transition name="scroll-fab">
-      <div v-if="messageListRef?.scrolledDown?.value" class="scroll-fab-group scroll-fab-bottom">
-        <button class="scroll-fab-btn" @click="messageListRef?.scrollToBottomSmooth()" :title="t('chat.messageList.scrollToBottom')">
-          <ChevronsDown :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="messageListRef?.scrollToNextMessage()" :title="t('chat.messageList.scrollToNext')">
-          <ArrowDown :size="18" />
-        </button>
-      </div>
-    </Transition>
-
     <!-- Session swipe indicator — floats above the message area -->
     <Transition name="session-indicator">
       <div v-if="swipeSession.indicatorText.value" class="session-switch-indicator" :class="swipeSession.indicatorDirection.value">
@@ -153,6 +129,7 @@
   <ToolDetailOverlay
     :show="toolDetailOverlay.show"
     :toolName="toolDetailOverlay.name"
+    :toolSubagentType="toolDetailOverlay.subagentType"
     :toolSummary="toolDetailOverlay.summary"
     :toolInputHtml="toolDetailOverlay.inputHtml"
     :toolOutputHtml="toolDetailOverlay.outputHtml"
@@ -212,7 +189,7 @@ import { useGlobalEvents } from '@/composables/useGlobalEvents'
 import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import { useDialog } from '@/composables/useDialog'
-import { ChevronRight, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
+import { ChevronRight } from 'lucide-vue-next'
 
 const { t } = useI18n()
 
@@ -252,6 +229,7 @@ const metadataModal = ref({
 const toolDetailOverlay = ref({
   show: false,
   name: '',
+  subagentType: '',
   summary: '',
   inputHtml: '',
   outputHtml: '',
@@ -260,6 +238,8 @@ const toolDetailOverlay = ref({
 })
 // Active thinking overlay: tracks which block is being shown so we can reactively update
 const activeThinkingOverlay = ref(null) // { msgId, blockIdx } or null
+// Active tool overlay: tracks which tool block is being shown so we can reactively update
+const activeToolOverlay = ref(null) // { msgId, blockIdx } or null
 let thinkingRenderTimer = null
 const toast = useToast()
 const dialog = useDialog()
@@ -484,10 +464,33 @@ watch(
   }
 )
 
-// Clean up thinking overlay state when overlay closes
+// Reactively update tool overlay content as block.output/done/status changes during streaming
+watch(
+  () => {
+    if (!activeToolOverlay.value || !toolDetailOverlay.value.show) return null
+    const block = findToolBlock(activeToolOverlay.value)
+    if (!block) return null
+    return { output: block.output, done: block.done, status: block.status, input: block.input, name: block.name }
+  },
+  (data) => {
+    if (data === null) return
+    const { formatToolInput } = render
+    toolDetailOverlay.value = {
+      ...toolDetailOverlay.value,
+      outputHtml: data.output ? formatToolOutput(data.output, data.name) : '',
+      status: data.status || '',
+      done: !!data.done,
+      // Update input in case it was enriched by a later tool_use/tool_result event
+      inputHtml: formatToolInput(data.input, data.name, { done: data.done, status: data.status, output: data.output }),
+    }
+  }
+)
+
+// Clean up overlay state when overlay closes
 watch(() => toolDetailOverlay.value.show, (show) => {
   if (!show) {
     activeThinkingOverlay.value = null
+    activeToolOverlay.value = null
     if (thinkingRenderTimer) { clearTimeout(thinkingRenderTimer); thinkingRenderTimer = null }
   }
 })
@@ -702,9 +705,13 @@ function showMetadata(msg) {
 
 function handleShowToolDetail(block) {
   const { formatToolInput } = render
+  // Store identifiers for reactive lookup (survives messages array replacement on loadHistory)
+  activeToolOverlay.value = { msgId: String(block.msgId), blockIdx: block.blockIdx }
+
   toolDetailOverlay.value = {
     show: true,
     name: block.name || '',
+    subagentType: block.input?.subagent_type || '',
     summary: render.toolCallSummary(block),
     inputHtml: formatToolInput(block.input, block.name, { done: block.done, status: block.status, output: block.output }),
     outputHtml: block.output ? formatToolOutput(block.output, block.name) : '',
@@ -738,6 +745,14 @@ function findThinkingBlock({ msgId, blockIdx }) {
   if (!msg || !msg.blocks) return null
   const block = msg.blocks[blockIdx]
   return (block && block.type === 'thinking') ? block : null
+}
+
+/** Look up the tool_use block from the live messages array by msgId + blockIdx */
+function findToolBlock({ msgId, blockIdx }) {
+  const msg = messages.value.find(m => String(m.id) === msgId)
+  if (!msg || !msg.blocks) return null
+  const block = msg.blocks[blockIdx]
+  return (block && block.type === 'tool_use') ? block : null
 }
 
 function handleFileOpenInOverlay(filePath) {
@@ -1116,85 +1131,5 @@ onUnmounted(() => {
 
 .rag-detail-resume-btn:active {
   opacity: 0.7;
-}
-
-/* ── Floating scroll buttons (capsule, overlay on message area) ── */
-.scroll-fab-group {
-  position: absolute;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  z-index: 8;
-  pointer-events: none;
-  padding: 6px 0;
-}
-
-.scroll-fab-top {
-  top: 0;
-}
-
-.scroll-fab-bottom {
-  bottom: 56px;
-}
-
-.scroll-fab-btn {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 28px;
-  border: none;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  box-shadow: var(--shadow-md);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Left button: rounded on left, flat on right */
-.scroll-fab-btn:first-child {
-  border-radius: 14px 0 0 14px;
-}
-
-/* Right button: flat on left, rounded on right */
-.scroll-fab-btn:last-child {
-  border-radius: 0 14px 14px 0;
-}
-
-.scroll-fab-btn:active {
-  transform: scale(0.93);
-}
-
-@media (hover: hover) {
-  .scroll-fab-btn:hover {
-    background: var(--bg-tertiary);
-    color: var(--accent-color);
-  }
-}
-
-.scroll-fab-enter-active {
-  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
-}
-.scroll-fab-leave-active {
-  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
-}
-.scroll-fab-top.scroll-fab-enter-from {
-  opacity: 0;
-  transform: translateY(-12px);
-}
-.scroll-fab-top.scroll-fab-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-.scroll-fab-bottom.scroll-fab-enter-from {
-  opacity: 0;
-  transform: translateY(12px);
-}
-.scroll-fab-bottom.scroll-fab-leave-to {
-  opacity: 0;
-  transform: translateY(8px);
 }
 </style>

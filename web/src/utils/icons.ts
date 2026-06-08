@@ -69,3 +69,18 @@ export function getToolIcon(name: string) {
   const entry = Object.entries(TOOL_ICONS).find(([k]) => k.toLowerCase() === name.toLowerCase())
   return entry ? entry[1] : FALLBACK_TOOL_ICON
 }
+
+/**
+ * Return the display name for a tool call block.
+ * For Agent/Task calls with a subagent_type, show the sub-agent name
+ * (PascalCased) instead of the generic "Agent".
+ */
+export function toolDisplayName(name: string, input?: Record<string, any>): string {
+  const lower = name.toLowerCase()
+  if ((lower === 'agent' || lower === 'task') && input?.subagent_type) {
+    // PascalCase the subagent_type: "explore" → "Explore", "general-purpose" → "General-purpose"
+    const raw = String(input.subagent_type)
+    return raw.charAt(0).toUpperCase() + raw.slice(1)
+  }
+  return name
+}

@@ -502,6 +502,17 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		defer service.UnregisterSessionStream(sessionID)
 		defer cancel()
 		defer service.UnregisterSessionCancel(sessionID)
+		// Mark session as not-running BEFORE sending terminal SSE event.
+		// Without this, a race exists: the "done" event reaches the client,
+		// which calls loadHistory(), but the deferred SetSessionRunning(false)
+		// hasn't run yet, so the API returns running=true and the frontend
+		// reconnects SSE in a loop — leaving the stop button stuck.
+		// By setting running=false first, loadHistory() always sees the
+		// correct terminal state.
+		markDoneAndSendFinal := func(event ai.StreamEvent) {
+			service.SetSessionRunning(sessionID, false, true) // skip event — we send SSE directly
+			sendFinalEvent(streamCh, event)
+		}
 		// Mark ACP connection as idle when the session goroutine exits.
 		// Previously this used CloseConn, which caused a race: the goroutine
 		// sets session-running=false, then a new request starts and reuses the
@@ -532,20 +543,20 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		for {
 			if result.cancelReason == "user" {
 				service.ClearQueue(sessionID)
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
+				markDoneAndSendFinal(ai.StreamEvent{Type: "cancelled"})
 				return
 			}
 			if result.err != "" {
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "error", Error: result.err})
+				markDoneAndSendFinal(ai.StreamEvent{Type: "error", Error: result.err})
 				return
 			}
 			if result.empty {
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "error", Error: "AI returned no content", Reason: ai.ReasonEmpty})
+				markDoneAndSendFinal(ai.StreamEvent{Type: "error", Error: "AI returned no content", Reason: ai.ReasonEmpty})
 				return
 			}
 			if result.cancelReason != "" {
 				// Other cancel reasons
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
+				markDoneAndSendFinal(ai.StreamEvent{Type: "cancelled"})
 				return
 			}
 
@@ -558,7 +569,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if !ok {
 				// Queue empty — truly done
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "done"})
+				markDoneAndSendFinal(ai.StreamEvent{Type: "done"})
 				return
 			}
 
