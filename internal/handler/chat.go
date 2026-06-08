@@ -167,7 +167,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		if cachedSessionInfo == nil {
 			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
 		}
-		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort, sessionMode string
+		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort, sessionMode, sessionTransport string
 		var sessionInfoBackend string
 		if cachedSessionInfo != nil {
 			sessionTitle = cachedSessionInfo.Title
@@ -176,6 +176,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			sessionModelID = cachedSessionInfo.Model
 			sessionThinkingEffort = cachedSessionInfo.ThinkingEffort
 			sessionMode = cachedSessionInfo.Mode
+			sessionTransport = cachedSessionInfo.Transport
 		}
 		if sessionInfoBackend != "" {
 			sessionBackend = sessionInfoBackend
@@ -243,10 +244,10 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 		return
 	}
 
@@ -290,6 +291,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		ModelID        string   `json:"modelId"`
 		ThinkingEffort string   `json:"thinkingEffort"`
 		ModeID         string   `json:"modeId"`
+		Transport      string   `json:"transport"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -408,6 +410,17 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		service.UpdateSessionMode(sessionID, req.ModeID)
 	}
 
+	// Persist transport selection for this session so subsequent loads
+	// restore the user's choice instead of the agent default.
+	// Per-session cleanup: when switching THIS session to CLI, close only
+	// this session's ACP connection (not all sessions for the agent).
+	if req.Transport != "" {
+		service.UpdateSessionTransport(sessionID, req.Transport)
+		if req.Transport == "cli" {
+			ai.GetACPConnManager().CloseConn(sessionID)
+		}
+	}
+
 	// Prevent concurrent sessions for the same session ID
 	if !service.TrySetSessionRunning(sessionID) {
 		// Session already running — enqueue the message
@@ -482,19 +495,28 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		defer service.UnregisterSessionStream(sessionID)
 		defer cancel()
 		defer service.UnregisterSessionCancel(sessionID)
-		// Close ACP connection when the session goroutine exits to prevent
-		// stale agent processes from lingering indefinitely. For ACP agents,
-		// the connection and its subprocess are no longer needed after the
-		// session's AI goroutine finishes. Non-ACP agents are unaffected.
+		// Mark ACP connection as idle when the session goroutine exits.
+		// Previously this used CloseConn, which caused a race: the goroutine
+		// sets session-running=false, then a new request starts and reuses the
+		// connection, but the deferred CloseConn still fires and kills the
+		// process mid-prompt. MarkIdle is safe because idleSweep will close
+		// the connection after the idle timeout only if no new request has
+		// claimed it.
 		defer func() {
-			if agent, ok := model.Agents[effectiveAgentID]; ok && agent.Transport == "acp-stdio" {
-				slog.Info("acp: closing connection for completed session", "session_id", sessionID, "agent_id", effectiveAgentID)
-				ai.GetACPConnManager().CloseConn(sessionID)
+			effectiveTransport := "cli"
+			if t := service.GetSessionTransport(sessionID); t != "" {
+				effectiveTransport = t
+			} else if agent, ok := model.Agents[effectiveAgentID]; ok && agent.Transport == "acp-stdio" {
+				effectiveTransport = "acp-stdio"
+			}
+			if effectiveTransport == "acp-stdio" {
+				slog.Info("acp: marking connection idle for completed session", "session_id", sessionID, "agent_id", effectiveAgentID)
+				ai.GetACPConnManager().MarkIdle(sessionID)
 			}
 		}()
 
 		// Build the first chat request
-		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, fileDir)
+		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, req.Transport, fileDir)
 
 		// Execute first message
 		result := executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, firstChatReq, fileDir)
@@ -583,7 +605,7 @@ func executeStreamRun(
 	chatReq ai.ChatRequest,
 	fileDir string,
 ) streamRunResult {
-	backend, err := ai.NewBackendForAgent(backendName, agentID)
+	backend, err := ai.NewBackendForAgentWithTransport(backendName, agentID, service.GetSessionTransport(sessionID))
 	if err != nil {
 		slog.Error("failed to create backend", slog.String("backend", backendName), slog.String("err", err.Error()))
 		errMsg := T(r, "BackendCreateFailed", map[string]any{"Error": err.Error()})
@@ -848,12 +870,14 @@ func finalizeStreamRun(
 			responseMetadata.ThinkingEffort = effort
 		}
 	}
-	// Inject transport type (acp vs cli) based on agent configuration
-	if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
-		responseMetadata.Transport = "acp"
-	} else {
-		responseMetadata.Transport = "cli"
+	// Inject transport type based on session-level override or agent configuration
+	effectiveTransport := "cli"
+	if t := service.GetSessionTransport(sessionID); t != "" {
+		effectiveTransport = t
+	} else if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+		effectiveTransport = "acp-stdio"
 	}
+	responseMetadata.Transport = effectiveTransport
 
 	// Always store our own model selection (not the AI backend's reported model).
 	// The backend may report a different model or none at all; we want consistency.
@@ -1002,7 +1026,7 @@ saveRaw:
 // modelOverride, if non-empty, takes precedence over the agent's default model.
 // thinkingEffortOverride, if non-empty, takes precedence over the agent's YAML default.
 // modeOverride, if non-empty, takes precedence over the current ACP session mode.
-func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, modeOverride, fileDir string) ai.ChatRequest {
+func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, modeOverride, transportOverride, fileDir string) ai.ChatRequest {
 	systemPrompt := ""
 	agentModel := ""
 	agentCommand := ""
@@ -1044,7 +1068,9 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 	effectiveSessionID := sessionID
 	resume := service.SessionHasAssistant(sessionID)
 	isACP := false
-	if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+	if transportOverride != "" {
+		isACP = transportOverride == "acp-stdio"
+	} else if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
 		isACP = true
 	}
 	if resume && !isACP {
@@ -1133,7 +1159,8 @@ func buildChatRequestFromQueue(qMsg model.QueuedMessage, sessionID, projectPath,
 	// so queued messages respect the user's model choice, not just the agent default.
 	sessionModel := service.GetSessionModel(sessionID)
 	sessionMode := service.GetSessionMode(sessionID)
-	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, service.GetSessionThinkingEffort(sessionID), sessionMode, fileDir)
+	sessionTransport := service.GetSessionTransport(sessionID)
+	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, service.GetSessionThinkingEffort(sessionID), sessionMode, sessionTransport, fileDir)
 }
 
 // CancelChat handles POST to cancel an ongoing AI stream for a session.

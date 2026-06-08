@@ -171,15 +171,39 @@ func (m *ACPConnManager) sweepOnce() {
 	for _, sid := range toClose {
 		m.mu.Lock()
 		conn, ok := m.conns[sid]
+		m.mu.Unlock()
+
+		if !ok {
+			continue // already removed by CloseConn
+		}
+
+		// Re-check under conn.mu: the connection may have been used since
+		// the initial scan (TOCTOU race). If it's no longer idle or the
+		// session started running, skip it.
+		conn.mu.Lock()
+		idle := time.Since(conn.lastUsed)
+		alive := conn.alive
+		conn.mu.Unlock()
+
+		if !alive {
+			continue // already dead
+		}
+		if idle < idleConnTimeout {
+			continue // recently used, no longer idle
+		}
+		if m.isSessionRunning != nil && m.isSessionRunning(sid) {
+			continue // session started running since initial scan
+		}
+
+		// Re-acquire manager lock to atomically delete + close.
+		m.mu.Lock()
+		conn, ok = m.conns[sid]
 		if ok {
 			delete(m.conns, sid)
 		}
 		m.mu.Unlock()
 
 		if ok {
-			conn.mu.Lock()
-			idle := time.Since(conn.lastUsed)
-			conn.mu.Unlock()
 			slog.Info("acp: idle sweep closing connection", "clawbench_sid", sid, "idle_duration", idle)
 			conn.close()
 		}
@@ -236,6 +260,9 @@ func (m *ACPConnManager) CancelTurn(clawbenchSID string) {
 }
 
 // CloseConn closes and removes the connection for the given ClawBench session ID.
+// Used for explicit teardown (session deletion, server shutdown). Do NOT call
+// this from AI goroutine defers — use MarkIdle instead to avoid racing with a
+// new prompt on the same session.
 func (m *ACPConnManager) CloseConn(clawbenchSID string) {
 	m.mu.Lock()
 	conn, ok := m.conns[clawbenchSID]
@@ -246,6 +273,27 @@ func (m *ACPConnManager) CloseConn(clawbenchSID string) {
 
 	if ok {
 		conn.close()
+	}
+}
+
+// MarkIdle marks the connection for a ClawBench session as idle by setting
+// lastUsed to the current time. This replaces the old deferred CloseConn in
+// the AI goroutine, which caused a race condition: the goroutine sets
+// session-running=false, then a new request starts and reuses the connection,
+// but the deferred CloseConn still fires and kills the process mid-prompt.
+//
+// MarkIdle is safe because idleSweep will close the connection after the
+// idle timeout only if no new request has claimed it. If a new request arrives
+// before the sweep, GetOrCreateConn reuses the live connection.
+func (m *ACPConnManager) MarkIdle(clawbenchSID string) {
+	m.mu.Lock()
+	conn, ok := m.conns[clawbenchSID]
+	m.mu.Unlock()
+
+	if ok {
+		conn.mu.Lock()
+		conn.lastUsed = time.Now()
+		conn.mu.Unlock()
 	}
 }
 
@@ -1575,6 +1623,24 @@ func (m *ACPConnManager) SetEntryForTest(agentID string, entry *ACPConn) {
 // Deprecated: use CloseConn.
 func (m *ACPConnManager) CloseConnection(key string) {
 	m.CloseConn(key)
+}
+
+// CloseConnsByAgentID closes all ACP connections for the given agent ID.
+// Used when transport is switched from ACP to CLI to ensure stale connections
+// are cleaned up immediately rather than waiting for idle timeout.
+func (m *ACPConnManager) CloseConnsByAgentID(agentID string) {
+	m.mu.Lock()
+	var toClose []*ACPConn
+	for sid, conn := range m.conns {
+		if conn.agent != nil && conn.agent.ID == agentID {
+			delete(m.conns, sid)
+			toClose = append(toClose, conn)
+		}
+	}
+	m.mu.Unlock()
+	for _, conn := range toClose {
+		conn.close()
+	}
 }
 
 // GetACPSessionID resolves a ClawBench session ID to an ACP session ID.

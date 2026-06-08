@@ -43,6 +43,8 @@ var orphanCmdlinePatterns = [][2]string{
 // On Linux: scans /proc/<pid>/environ for CLAWBENCH_CHILD=1 or
 // CLAWBENCH_NO_SUPERVISOR=1, and also checks /proc/<pid>/cmdline for
 // known ACP agent patterns (e.g., "--acp") as a fallback.
+// Processes whose parent is still alive are skipped — they are actively
+// managed, not orphans.
 // On macOS/Windows: no-op (orphaned processes exit when stdin pipe closes).
 func CleanupOrphans() {
 	if runtime.GOOS != "linux" {
@@ -55,20 +57,23 @@ func CleanupOrphans() {
 		return
 	}
 
-	var killed int
+	var killed, skipped int
 	for _, entry := range entries {
 		pid, ok := parseDirEntryAsPID(entry)
 		if !ok {
 			continue
 		}
 
-		if isOrphanProcess(entry.Name()) {
+		orphan, parentAlive := isOrphanProcess(entry.Name())
+		if orphan {
 			killed += killOrphan(pid)
+		} else if parentAlive {
+			skipped++
 		}
 	}
 
-	if killed > 0 {
-		slog.Info("orphan_cleanup: complete", "killed", killed)
+	if killed > 0 || skipped > 0 {
+		slog.Info("orphan_cleanup: complete", "killed", killed, "skipped_parent_alive", skipped)
 	}
 }
 
@@ -87,25 +92,75 @@ func parseDirEntryAsPID(entry os.DirEntry) (int, bool) {
 	return pid, true
 }
 
-// isOrphanProcess checks if a process is a ClawBench orphan by environment markers or cmdline patterns.
-func isOrphanProcess(entryName string) bool {
+// isOrphanProcess checks if a process is a ClawBench orphan by environment
+// markers or cmdline patterns. A process is only considered an orphan if its
+// parent process is dead — a living parent means the subprocess is still
+// actively managed (e.g., by a running clawbench server or a test process).
+//
+// When a parent dies, its children are re-parented to PID 1 (init/systemd).
+// So PPid=1 is a reliable indicator that the original parent is gone.
+//
+// Returns (isOrphan, parentAlive). parentAlive is true only when the process
+// matched orphan markers but was skipped because its parent is still alive.
+func isOrphanProcess(entryName string) (isOrphan, parentAlive bool) {
 	environPath := "/proc/" + entryName + "/environ"
 	data, err := os.ReadFile(environPath)
 	if err != nil {
-		return false // permission denied or process exited
+		return false, false // permission denied or process exited
 	}
 
-	if hasClawBenchChildMarker(data) || hasClawBenchSupervisorMarker(data) {
-		return true
+	matched := hasClawBenchChildMarker(data) || hasClawBenchSupervisorMarker(data)
+
+	if !matched {
+		// Fallback: check cmdline for known ACP agent patterns
+		cmdlinePath := "/proc/" + entryName + "/cmdline"
+		cmdData, cmdErr := os.ReadFile(cmdlinePath)
+		if cmdErr != nil {
+			return false, false
+		}
+		matched = hasOrphanCmdlinePattern(cmdData)
 	}
 
-	// Fallback: check cmdline for known ACP agent patterns
-	cmdlinePath := "/proc/" + entryName + "/cmdline"
-	cmdData, cmdErr := os.ReadFile(cmdlinePath)
-	if cmdErr != nil {
+	if !matched {
+		return false, false
+	}
+
+	// The process matches an orphan marker/pattern, but is it truly orphaned?
+	// If its parent is still alive, it's being actively managed — not an orphan.
+	pid := 0
+	if _, err := parsePID(entryName, &pid); err != nil || pid <= 0 {
+		return false, false
+	}
+	if isParentAlive(pid) {
+		slog.Debug("orphan_cleanup: skipping process with living parent", "pid", pid)
+		return false, true
+	}
+
+	return true, false
+}
+
+// isParentAlive checks whether the parent of the given process is still alive.
+// Returns true if the parent is alive (meaning the child is actively managed).
+// Returns false if the parent is dead (the child has been re-parented to PID 1,
+// or the parent PID no longer exists).
+func isParentAlive(pid int) bool {
+	ppid, _, err := readProcStatus(pid)
+	if err != nil {
+		return false // can't read status — assume orphaned
+	}
+	if ppid <= 1 {
+		// Re-parented to init/systemd — original parent is dead
 		return false
 	}
-	return hasOrphanCmdlinePattern(cmdData)
+	// Check if the parent process still exists
+	proc, err := os.FindProcess(ppid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false // parent is dead
+	}
+	return true
 }
 
 // killOrphan kills an orphan process and returns 1 if successful, 0 otherwise.

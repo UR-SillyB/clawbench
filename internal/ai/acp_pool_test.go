@@ -93,6 +93,41 @@ func TestACPConnManager_GetConn_NotExists(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+// --- ACPConnManager.MarkIdle ---
+
+func TestACPConnManager_MarkIdle_ExistingConn(t *testing.T) {
+	mgr := GetACPConnManager()
+
+	agent := &model.Agent{ID: "test-markidle", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-markidle")
+	mgr.SetConnForTest("session-markidle", conn)
+	defer mgr.CloseConn("session-markidle")
+
+	// Set lastUsed to a known old time
+	conn.mu.Lock()
+	conn.lastUsed = time.Now().Add(-10 * time.Minute)
+	oldLastUsed := conn.lastUsed
+	conn.mu.Unlock()
+
+	// MarkIdle should update lastUsed
+	mgr.MarkIdle("session-markidle")
+
+	conn.mu.Lock()
+	newLastUsed := conn.lastUsed
+	conn.mu.Unlock()
+
+	assert.True(t, newLastUsed.After(oldLastUsed), "MarkIdle should update lastUsed")
+}
+
+func TestACPConnManager_MarkIdle_NonexistentConn(t *testing.T) {
+	mgr := GetACPConnManager()
+
+	// MarkIdle on a nonexistent session should not panic
+	assert.NotPanics(t, func() {
+		mgr.MarkIdle("nonexistent-session")
+	})
+}
+
 // --- spawnLocked mutex release during cmd.Wait ---
 
 func TestACPConn_CancelTurn_DoesNotBlockOnDeadConn(t *testing.T) {
