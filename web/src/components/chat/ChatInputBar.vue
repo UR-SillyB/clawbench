@@ -1,5 +1,13 @@
 <template>
   <div class="chat-input-wrapper">
+    <!-- Session info bar (model + mode + thinking) -->
+    <div class="chat-session-info" v-if="currentModelName || currentModeName || currentThinkingEffort">
+      <span class="session-info-model" @click.stop="openSettingsModal('model')">{{ currentModelName }}</span>
+      <span v-if="currentModeName" class="session-info-sep">·</span>
+      <span v-if="currentModeName" class="session-info-mode" @click.stop="openSettingsModal('mode')">{{ currentModeName }}</span>
+      <span v-if="currentThinkingEffort" class="session-info-sep">·</span>
+      <span v-if="currentThinkingEffort" class="session-info-thinking" @click.stop="openSettingsModal('thinking')">{{ currentThinkingEffort }}</span>
+    </div>
     <!-- Top action bar (above input box) -->
     <div class="chat-top-actions">
       <div class="chat-action-group">
@@ -28,12 +36,11 @@
         :title="t('chat.actions.autoSpeech')">
         <Volume2 :size="14" />
       </button>
-      <!-- Settings chip — opens session settings modal (model/thinking/mode) -->
+      <!-- Settings button — opens session settings modal -->
       <button class="chat-action-btn settings-chip clickable"
         @click.stop="openSettingsModal('model')"
         :title="t('chat.actions.sessionSettings')">
         <Settings :size="14" />
-        <span class="chat-action-label">{{ currentModelName }}</span>
       </button>
     </div>
     <!-- Input container -->
@@ -98,8 +105,9 @@
           <!-- Normal mode: paper plane (send) -->
           <Send v-else :size="16" />
         </button>
-        <button v-if="loading" class="chat-stop-btn" :class="{ primed: stopPrimed }" @click="handleStopClick" :title="stopPrimed ? t('chat.input.confirmStop') : t('chat.input.stopGenerating')">
-          <Square :size="16" fill="currentColor" />
+        <button v-if="loading" class="chat-stop-btn" :class="{ primed: stopPrimed, cancelling: cancelling }" @click="handleStopClick" :title="stopPrimed ? t('chat.input.confirmStop') : t('chat.input.stopGenerating')" :disabled="cancelling">
+          <Loader2 v-if="cancelling" class="spin-icon" :size="16" />
+          <Square v-else :size="16" fill="currentColor" />
         </button>
       </div>
       <!-- Teleported attach menu (avoids overflow:hidden clipping) -->
@@ -192,7 +200,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Loader2 } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -272,6 +280,7 @@ const props = defineProps({
   currentModelId: String,
   currentModelName: String,
   currentThinkingEffort: String,
+  currentModeName: String,
   currentAgentId: String,
   active: Boolean,
 })
@@ -390,8 +399,12 @@ const chatKeyboard = useChatKeyboard()
 
 // Stop button two-click confirmation state
 const stopPrimed = ref(false)
+const cancelling = ref(false)
 const stopMachine = createStopButtonMachine({
-  onConfirm: () => emit('cancel'),
+  onConfirm: () => {
+    cancelling.value = true
+    emit('cancel')
+  },
   onPrimeReset: () => { stopPrimed.value = false },
 })
 
@@ -699,6 +712,7 @@ onBeforeUnmount(() => {
 watch(() => props.loading, (val) => {
   if (!val) {
     stopPrimed.value = false
+    cancelling.value = false
     stopMachine.reset()
   }
 })
@@ -726,6 +740,64 @@ defineExpose({
   margin: 0 8px 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border-color, #e5e5e5);
+}
+
+/* Session info bar (model + mode + thinking, above action bar) */
+.chat-session-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted, #999);
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.session-info-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 2;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.session-info-model:active {
+  color: var(--accent-color, #0066cc);
+}
+
+.session-info-sep {
+  flex-shrink: 0;
+  color: var(--border-color, #e5e5e5);
+}
+
+.session-info-mode {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.session-info-mode:active {
+  color: var(--accent-color, #0066cc);
+}
+
+.session-info-thinking {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.session-info-thinking:active {
+  color: var(--accent-color, #0066cc);
 }
 
 /* Top action bar (above input box, compact) */
@@ -905,11 +977,6 @@ defineExpose({
 
 .chat-action-btn svg {
   flex-shrink: 0;
-}
-
-.chat-action-label {
-  font-size: 11px;
-  line-height: 1.3;
 }
 
 /* Unified input container */
@@ -1230,6 +1297,15 @@ defineExpose({
   animation: stop-heartbeat 0.8s ease-in-out infinite;
 }
 
+/* Stop button — cancelling (API request in flight): spinner, dimmed */
+.chat-stop-btn.cancelling {
+  background: color-mix(in srgb, var(--danger-color, #dc3545) 25%, transparent);
+  color: color-mix(in srgb, #fff 50%, var(--danger-color, #dc3545));
+  cursor: wait;
+  animation: none;
+  transform: none;
+}
+
 /* Pressed in primed state: scale feedback */
 .chat-stop-btn.primed:active {
   transform: scale(1.0);
@@ -1241,18 +1317,19 @@ defineExpose({
   50%      { box-shadow: 0 0 0 8px rgba(220, 53, 69, 0); }
 }
 
+.spin-icon {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* Session settings chip */
 .settings-chip {
   font-variant-numeric: tabular-nums;
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.settings-chip .chat-action-label {
-  overflow-x: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 

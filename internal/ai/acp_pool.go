@@ -249,13 +249,17 @@ func (m *ACPConnManager) GetConn(clawbenchSID string) *ACPConn {
 // This tells the ACP agent to stop its current turn gracefully, which prevents
 // zombie processes when the user cancels mid-stream. Safe to call even if no
 // connection exists or the connection is dead.
+// Uses a 3-second timeout to avoid blocking the caller if the agent's stdin
+// pipe is full (e.g. agent busy with a long tool call and not reading stdin).
 func (m *ACPConnManager) CancelTurn(clawbenchSID string) {
 	m.mu.Lock()
 	conn := m.conns[clawbenchSID]
 	m.mu.Unlock()
 
 	if conn != nil {
-		conn.CancelTurn(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		conn.CancelTurn(ctx)
+		cancel()
 	}
 }
 
@@ -484,6 +488,10 @@ type ACPConn struct {
 	lastSetModel    string
 	lastSetEffort   string
 	lastSetMode     string
+
+	// autoApprove enables hands-off mode: all permission requests are
+	// automatically approved with the first allow_* option.
+	autoApprove bool
 
 	// unsupportedConfigs tracks config IDs that the agent reported as unknown
 	// (e.g., CodeBuddy doesn't support "thinkingEffort"). Once detected, we
@@ -1426,6 +1434,20 @@ func (c *ACPConn) SetCachedModelListState(state *ModelListState) {
 	defer c.mu.Unlock()
 	c.cachedModelListState = state
 	c.debouncePersistACPState()
+}
+
+// SetAutoApprove enables or disables hands-off mode for this connection.
+func (c *ACPConn) SetAutoApprove(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.autoApprove = enabled
+}
+
+// IsAutoApprove returns whether hands-off mode is enabled.
+func (c *ACPConn) IsAutoApprove() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.autoApprove
 }
 
 func (c *ACPConn) UpdateCachedCurrentModel(modelID string) {

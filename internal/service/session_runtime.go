@@ -240,17 +240,15 @@ func CancelSession(sessionID string) bool {
 		return false
 	}
 
-	// Send ACP Cancel notification BEFORE cancelling the Go context.
-	// This lets the ACP agent stop its current turn gracefully instead of
-	// being killed mid-stream, which prevents zombie processes and makes
-	// respawn + ResumeSession faster on the next prompt.
-	ai.GetACPConnManager().CancelTurn(sessionID)
-
-	// Cancel the context first (kills CLI subprocess), which causes the goroutine
-	// to stop producing events and drain the channel, making room for the cancelled event.
+	// Cancel the Go context first so the agent process starts shutting down,
+	// freeing its stdin pipe. Then send ACP Cancel (with 3s timeout) so the
+	// agent can stop its turn gracefully on next stdin read.
 	sessionCancelReasons.Store(sessionID, "user")
 	ClearQueue(sessionID)
 	cancel()
+
+	ai.GetACPConnManager().CancelTurn(sessionID)
+
 	EmitSessionEvent(sessionID, "cancelled", false)
 
 	// Send cancelled event to SSE stream after cancelling context (non-blocking)
