@@ -167,7 +167,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		if cachedSessionInfo == nil {
 			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
 		}
-		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort, sessionMode, sessionTransport string
+		var sessionTitle, sessionAgentID, sessionModelID, sessionTransport string
 		var sessionAutoApprove bool
 		var sessionInfoBackend string
 		if cachedSessionInfo != nil {
@@ -175,8 +175,6 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			sessionInfoBackend = cachedSessionInfo.Backend
 			sessionAgentID = cachedSessionInfo.AgentID
 			sessionModelID = cachedSessionInfo.Model
-			sessionThinkingEffort = cachedSessionInfo.ThinkingEffort
-			sessionMode = cachedSessionInfo.Mode
 			sessionTransport = cachedSessionInfo.Transport
 			sessionAutoApprove = cachedSessionInfo.AutoApprove
 		}
@@ -216,10 +214,10 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 		return
 	}
 

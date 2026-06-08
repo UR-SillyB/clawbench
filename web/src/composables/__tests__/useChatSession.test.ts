@@ -104,6 +104,14 @@ vi.mock('@/composables/useSessionIdentity', () => ({
       get value() { return mockIdentity.currentThinkingEffort },
       set value(v) { mockIdentity.currentThinkingEffort = v },
     },
+    currentModeId: {
+      get value() { return mockIdentity.currentModeId || '' },
+      set value(v) { mockIdentity.currentModeId = v },
+    },
+    currentModeName: {
+      get value() { return mockIdentity.currentModeName || '' },
+      set value(v) { mockIdentity.currentModeName = v },
+    },
     availableCommands: { value: [] },
     runningSessions: {
       get value() { return mockState.runningSessions },

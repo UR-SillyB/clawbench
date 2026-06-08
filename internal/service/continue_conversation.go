@@ -113,11 +113,11 @@ func ContinueFromExecution(execID int64, projectPath string) (sessionID string, 
 	}
 
 	// 5. Get source session metadata (without deleted=0 — soft-deleted sessions still have valid metadata)
-	var backend, agentID, agentSource, modelName, thinkingEffort, sessProjectPath, externalSessionID string
+	var backend, agentID, agentSource, modelName, sessProjectPath, externalSessionID string
 	err = DB.QueryRow(
-		"SELECT backend, agent_id, agent_source, model, thinking_effort, project_path, external_session_id FROM chat_sessions WHERE id = ?",
+		"SELECT backend, agent_id, agent_source, model, project_path, external_session_id FROM chat_sessions WHERE id = ?",
 		sourceSessionID,
-	).Scan(&backend, &agentID, &agentSource, &modelName, &thinkingEffort, &sessProjectPath, &externalSessionID)
+	).Scan(&backend, &agentID, &agentSource, &modelName, &sessProjectPath, &externalSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, fmt.Errorf("source session %s not found", sourceSessionID)
 	}

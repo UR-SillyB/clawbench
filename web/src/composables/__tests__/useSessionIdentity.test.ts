@@ -355,7 +355,10 @@ describe('useSessionIdentity', () => {
                     backend: 'codebuddy',
                     agentId: 'agent-1',
                     modelId: 'model-1',
-                    thinkingEffort: 'high',
+                    thinkingEffortState: {
+                        currentLevelId: 'high',
+                        availableLevels: [{ id: 'low' }, { id: 'high' }],
+                    },
                 }),
             })
             vi.stubGlobal('fetch', mockFetch)
@@ -436,7 +439,7 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
 
-        it('handles thinking effort from server', async () => {
+        it('handles thinking effort from server ACP state', async () => {
             const identity = useSessionIdentity()
 
             const mockFetch = vi.fn().mockResolvedValue({
@@ -444,7 +447,10 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
-                    thinkingEffort: 'xhigh',
+                    thinkingEffortState: {
+                        currentLevelId: 'xhigh',
+                        availableLevels: [{ id: 'low' }, { id: 'xhigh' }],
+                    },
                 }),
             })
             vi.stubGlobal('fetch', mockFetch)
@@ -809,7 +815,7 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
 
-        it('falls back to data.modeId when modeState.currentModeId is absent', async () => {
+        it('uses modeState.currentModeId when available', async () => {
             const identity = useSessionIdentity()
             clearModeState()
 
@@ -818,8 +824,8 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
-                    modeId: 'architect',
                     modeState: {
+                        currentModeId: 'architect',
                         availableModes: [
                             { id: 'ask', name: 'Ask' },
                             { id: 'architect', name: 'Architect' },
@@ -838,7 +844,7 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
 
-        it('does not populate mode state when availableModes is empty', async () => {
+        it('does not populate available modes when availableModes is empty but sets currentModeId', async () => {
             const identity = useSessionIdentity()
             clearModeState()
 
@@ -858,7 +864,8 @@ describe('useSessionIdentity', () => {
 
             await initSessionFromAPI()
 
-            expect(identity.currentModeId.value).toBe('')
+            // currentModeId is set from ACP state even without available modes
+            expect(identity.currentModeId.value).toBe('code')
             expect(identity.availableModes.value).toEqual([])
 
             vi.unstubAllGlobals()
@@ -897,7 +904,7 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
 
-        it('falls back to data.thinkingEffort when thinkingEffortState.currentLevelId is absent', async () => {
+        it('uses thinkingEffortState.currentLevelId when available', async () => {
             const identity = useSessionIdentity()
             clearThinkingEffortState()
 
@@ -906,8 +913,8 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
-                    thinkingEffort: 'medium',
                     thinkingEffortState: {
+                        currentLevelId: 'medium',
                         availableLevels: [
                             { id: 'low', name: 'Low' },
                             { id: 'medium', name: 'Medium' },

@@ -607,17 +607,14 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 		systemPrompt = strings.ReplaceAll(systemPrompt, "{{PROJECT_PATH}}", projectPath)
 	}
 
-	// Respect user's global model/thinking preference (from most recent session).
+	// Respect user's global model preference (from most recent session).
 	// Falls back to agent defaults when no user preference exists.
-	userModel, userThinking := GetLatestUserModel(task.AgentID, projectPath)
+	userModel := GetLatestUserModel(task.AgentID, projectPath)
 	effectiveModel := userModel
 	if effectiveModel == "" {
 		effectiveModel = agent.DefaultModelID()
 	}
-	effectiveThinking := userThinking
-	if effectiveThinking == "" {
-		effectiveThinking = agent.ThinkingEffort
-	}
+	effectiveThinking := agent.ThinkingEffort
 
 	chatReq := ai.ChatRequest{
 		Prompt:             task.Prompt,

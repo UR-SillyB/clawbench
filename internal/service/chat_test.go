@@ -41,8 +41,6 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 	session_type TEXT NOT NULL DEFAULT 'chat',
 	external_session_id TEXT DEFAULT '',
 	source_session_id TEXT DEFAULT NULL,
-	thinking_effort TEXT DEFAULT '',
-	mode TEXT DEFAULT '',
 	transport TEXT DEFAULT '',
 	auto_approve INTEGER NOT NULL DEFAULT 0,
 	deleted INTEGER NOT NULL DEFAULT 0,
@@ -1910,7 +1908,6 @@ func TestGetSessionFullInfo(t *testing.T) {
 	assert.Equal(t, "Full Info Test", info.Title)
 	assert.Equal(t, "my-agent", info.AgentID)
 	assert.Equal(t, "gpt-4o", info.Model)
-	assert.Equal(t, "", info.ThinkingEffort)
 	assert.Equal(t, "", info.Transport)
 }
 
@@ -1955,8 +1952,6 @@ func TestGetSessionInfo(t *testing.T) {
 	assert.Equal(t, "claude", info.Backend)
 	assert.Equal(t, "claude", info.AgentID)
 	assert.Equal(t, "claude-sonnet-4-6", info.Model)
-	assert.Equal(t, "", info.ThinkingEffort)
-	assert.Equal(t, "", info.Mode)
 	assert.Equal(t, "", info.Transport)
 }
 
@@ -2706,9 +2701,8 @@ func TestGetLatestUserModel_Found(t *testing.T) {
 	_, err := service.CreateSession("/project", "claude", "Test", "claude", "gpt-4o", "user", "chat")
 	assert.NoError(t, err)
 
-	modelID, thinkingEffort := service.GetLatestUserModel("claude", "/project")
+	modelID := service.GetLatestUserModel("claude", "/project")
 	assert.Equal(t, "gpt-4o", modelID)
-	assert.Equal(t, "", thinkingEffort)
 }
 
 func TestGetLatestUserModel_WithThinkingEffort(t *testing.T) {
@@ -2718,17 +2712,15 @@ func TestGetLatestUserModel_WithThinkingEffort(t *testing.T) {
 	assert.NoError(t, err)
 
 	// ThinkingEffort is no longer persisted to DB; only model is returned
-	modelID, thinkingEffort := service.GetLatestUserModel("claude", "/project")
+	modelID := service.GetLatestUserModel("claude", "/project")
 	assert.Equal(t, "gpt-4o", modelID)
-	assert.Equal(t, "", thinkingEffort)
 }
 
 func TestGetLatestUserModel_NotFound(t *testing.T) {
 	setupDB(t)
 
-	modelID, thinkingEffort := service.GetLatestUserModel("claude", "/project")
+	modelID := service.GetLatestUserModel("claude", "/project")
 	assert.Equal(t, "", modelID)
-	assert.Equal(t, "", thinkingEffort)
 }
 
 // ---------- GetChatHistoryPaged: all branches ----------

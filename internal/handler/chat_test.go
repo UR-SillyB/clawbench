@@ -872,43 +872,6 @@ func TestServeAISession_NoProjectCookie(t *testing.T) {
 
 // --- ServeAISessionUpdate (PATCH /api/ai/session/update) ---
 
-func TestServeAISessionUpdate_PersistMode(t *testing.T) {
-	env, teardown := setupTestEnv(t)
-	defer teardown()
-
-	// Create a session first
-	sid, err := service.CreateSession(env.ProjectDir, "codebuddy", "Test", "codebuddy", "", "default", "chat")
-	assert.NoError(t, err)
-
-	// PATCH with modeId
-	req := newRequest(t, http.MethodPatch, "/api/ai/session/update?session_id="+sid, map[string]any{
-		"modeId": "architect",
-	})
-	w := callHandler(ServeAISessionUpdate, req)
-	assertStatus(t, w, http.StatusOK)
-
-	// Verify mode was persisted
-	mode := service.GetSessionMode(sid)
-	assert.Equal(t, "architect", mode)
-}
-
-func TestServeAISessionUpdate_PersistThinkingEffort(t *testing.T) {
-	env, teardown := setupTestEnv(t)
-	defer teardown()
-
-	sid, err := service.CreateSession(env.ProjectDir, "codebuddy", "Test", "codebuddy", "", "default", "chat")
-	assert.NoError(t, err)
-
-	req := newRequest(t, http.MethodPatch, "/api/ai/session/update?session_id="+sid, map[string]any{
-		"thinkingEffort": "high",
-	})
-	w := callHandler(ServeAISessionUpdate, req)
-	assertStatus(t, w, http.StatusOK)
-
-	effort := service.GetSessionThinkingEffort(sid)
-	assert.Equal(t, "high", effort)
-}
-
 func TestServeAISessionUpdate_NoSessionID(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
@@ -3100,25 +3063,9 @@ func TestBuildChatRequest_ModeEmpty(t *testing.T) {
 	assert.Equal(t, "", req.Mode, "empty modeOverride should result in empty Mode")
 }
 
-// --- buildChatRequestFromQueue uses session mode ---
-
-func TestBuildChatRequestFromQueue_UsesSessionMode(t *testing.T) {
-	env, teardown := setupTestEnv(t)
-	defer teardown()
-
-	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "queue-mode-test", "claude", "", "default", "chat")
-	assert.NoError(t, err)
-
-	// Persist mode to session
-	err = service.UpdateSessionMode(sessionID, "architect")
-	assert.NoError(t, err)
-
-	model.Agents["claude"] = &model.Agent{ID: "claude", Backend: "cli", Command: "echo"}
-
-	qMsg := model.QueuedMessage{Text: "test message"}
-	req := buildChatRequestFromQueue(qMsg, sessionID, env.ProjectDir, "claude", "claude", "")
-	assert.Equal(t, "architect", req.Mode, "buildChatRequestFromQueue should use session-persisted mode")
-}
+// --- buildChatRequestFromQueue no longer reads mode from DB ---
+// Mode and thinking effort are no longer persisted to DB; they come from ACP runtime.
+// buildChatRequestFromQueue now passes empty strings for modeOverride and thinkingEffortOverride.
 
 // --- POST /api/ai/chat without session_id should return 400 (not auto-create) ---
 

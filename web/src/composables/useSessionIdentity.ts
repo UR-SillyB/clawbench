@@ -317,9 +317,9 @@ export async function initSessionFromAPI() {
             currentModelName.value = modelName
           }
         }
-        // Initialize thinking effort: prefer server data, then localStorage pref
-        if (data.thinkingEffort) {
-          currentThinkingEffort.value = data.thinkingEffort
+        // Initialize thinking effort: from ACP state or localStorage pref
+        if (data.thinkingEffortState?.currentLevelId) {
+          currentThinkingEffort.value = data.thinkingEffortState.currentLevelId
         } else {
           currentThinkingEffort.value = loadThinkingPref(data.agentId || '') || ''
         }
@@ -339,14 +339,11 @@ export async function initSessionFromAPI() {
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
           availableCommands.value = data.commands
         }
-        // Initialize mode: prefer server-persisted modeId (DB user choice)
-        if (data.modeId) {
-          currentModeId.value = data.modeId
+        // Initialize mode: from ACP state currentModeId
+        if (data.modeState?.currentModeId) {
+          currentModeId.value = data.modeState.currentModeId
         }
-        // Populate mode state from chat response — only update available modes.
-        // currentModeId was already set above from data.modeId (DB-persisted
-        // user choice); data.modeState.currentModeId is the agent's runtime
-        // value which should not override the user's selection.
+        // Populate mode state from chat response — update available modes.
         if (data.modeState && data.modeState.availableModes?.length > 0) {
           updateAvailableModes(data.modeState.availableModes)
           // Set mode name from available modes now that the list is populated
@@ -355,10 +352,8 @@ export async function initSessionFromAPI() {
             currentModeName.value = mode?.name || currentModeId.value
           }
         }
-        // Populate thinking effort state — only update available levels.
-        // currentThinkingEffort was already set above from data.thinkingEffort
-        // (DB-persisted user choice); data.thinkingEffortState.currentLevelId
-        // is the agent's runtime value which should not override the user's selection.
+        // Populate thinking effort state — update available levels.
+        // currentThinkingEffort was already set above from ACP state.
         if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
           updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
         }

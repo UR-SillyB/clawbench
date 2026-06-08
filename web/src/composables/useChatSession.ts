@@ -223,8 +223,8 @@ export function useChatSession(options: UseChatSessionOptions) {
             currentBackend.value = recoverData.backend || ''
             currentAgentId.value = recoverData.agentId || ''
             syncModelFromData(currentAgentId.value, recoverData.modelId)
-            syncThinkingEffortFromData(recoverData.thinkingEffort)
-            syncModeFromData(recoverData.modeId, recoverData.modeState?.availableModes)
+            syncThinkingEffortFromData(recoverData.thinkingEffortState?.currentLevelId || '')
+            syncModeFromData(recoverData.modeState?.currentModeId || '', recoverData.modeState?.availableModes)
             syncTransportFromData(recoverData.transport)
             if (recoverData.autoApprove !== undefined) {
               autoApprove.value = recoverData.autoApprove
@@ -291,8 +291,8 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentBackend.value = data.backend || ''
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
-      syncThinkingEffortFromData(data.thinkingEffort)
-      syncModeFromData(data.modeId, data.modeState?.availableModes)
+      syncThinkingEffortFromData(data.thinkingEffortState?.currentLevelId || '')
+      syncModeFromData(data.modeState?.currentModeId || '', data.modeState?.availableModes)
       syncTransportFromData(data.transport)
       // Restore autoApprove from server state (per-session, not global)
       if (data.autoApprove !== undefined) {
@@ -302,7 +302,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
       }
-      // Only update available levels; currentId comes from data.thinkingEffort (DB-persisted)
+      // Update available thinking effort levels from ACP state
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
         updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
       }
@@ -418,14 +418,14 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentBackend.value = data.backend || ''
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
-      syncThinkingEffortFromData(data.thinkingEffort)
-      syncModeFromData(data.modeId, data.modeState?.availableModes)
+      syncThinkingEffortFromData(data.thinkingEffortState?.currentLevelId || '')
+      syncModeFromData(data.modeState?.currentModeId || '', data.modeState?.availableModes)
       syncTransportFromData(data.transport)
       // Populate ACP mode available modes from REST response.
       if (data.modeState && data.modeState.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
       }
-      // Only update available levels; currentId comes from data.thinkingEffort (DB-persisted)
+      // Update available thinking effort levels from ACP state
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
         updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
       }

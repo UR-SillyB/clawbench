@@ -548,19 +548,20 @@ func SaveMetadata(messageID int64, meta *ai.Metadata) error {
 	return err
 }
 
-// GetLatestUserModel returns the most recent model and thinking effort the user
-// explicitly chose for the given agent+project. Returns ("", "") if no user
-// preference exists (caller should fall back to agent defaults).
+// GetLatestUserModel returns the most recent model the user explicitly chose
+// for the given agent+project. Returns "" if no user preference exists
+// (caller should fall back to agent defaults).
 // Used by scheduled tasks to respect the user's global model preference.
-func GetLatestUserModel(agentID, projectPath string) (modelID, thinkingEffort string) {
+func GetLatestUserModel(agentID, projectPath string) string {
+	var modelID string
 	err := DBRead.QueryRow(
-		"SELECT model, thinking_effort FROM chat_sessions WHERE agent_id = ? AND project_path = ? AND deleted = 0 AND model != '' ORDER BY updated_at DESC LIMIT 1",
+		"SELECT model FROM chat_sessions WHERE agent_id = ? AND project_path = ? AND deleted = 0 AND model != '' ORDER BY updated_at DESC LIMIT 1",
 		agentID, projectPath,
-	).Scan(&modelID, &thinkingEffort)
+	).Scan(&modelID)
 	if err != nil {
-		return "", ""
+		return ""
 	}
-	return modelID, thinkingEffort
+	return modelID
 }
 
 // CreateSession creates a new chat session and returns its ID.
@@ -693,26 +694,24 @@ func GetSessionTitlesBatchIncludeDeleted(sessionIDs []string) (map[string]string
 
 // SessionInfo contains session metadata for the chat view.
 type SessionInfo struct {
-	Title          string
-	Backend        string
-	AgentID        string
-	Model          string
-	ThinkingEffort string
-	Mode           string
-	Transport      string
-	AutoApprove    bool
-	ProjectPath    string // populated by GetSessionFullInfo only
+	Title       string
+	Backend     string
+	AgentID     string
+	Model       string
+	Transport   string
+	AutoApprove bool
+	ProjectPath string // populated by GetSessionFullInfo only
 }
 
-// GetSessionInfo fetches session metadata (title, backend, agent_id, model, thinking_effort, mode)
+// GetSessionInfo fetches session metadata (title, backend, agent_id, model, transport)
 // in a single query instead of separate queries.
 func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 	info := &SessionInfo{}
 	err := DBRead.QueryRow(
-		`SELECT title, backend, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, '')
+		`SELECT title, backend, agent_id, model, COALESCE(transport, '')
 		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
 		sessionID,
-	).Scan(&info.Title, &info.Backend, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport)
+	).Scan(&info.Title, &info.Backend, &info.AgentID, &info.Model, &info.Transport)
 	if err != nil {
 		return nil, err
 	}
@@ -726,10 +725,10 @@ func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 func GetSessionFullInfo(sessionID string) *SessionInfo {
 	info := &SessionInfo{}
 	err := DBRead.QueryRow(
-		`SELECT backend, project_path, title, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, ''), auto_approve
+		`SELECT backend, project_path, title, agent_id, model, COALESCE(transport, ''), auto_approve
 		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
 		sessionID,
-	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport, &info.AutoApprove)
+	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.Transport, &info.AutoApprove)
 	if err != nil {
 		return nil
 	}
