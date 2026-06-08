@@ -55,6 +55,11 @@ func errConfigKilledConnection(configID, value string) error {
 	return &configKilledConnectionError{configID: configID, value: value}
 }
 
+// errConfigKilledConnectionWithDiag creates a configKilledConnectionError with crash diagnostics.
+func errConfigKilledConnectionWithDiag(configID, value string, diag crashDiagnostics) error {
+	return &configKilledConnectionError{configID: configID, value: value, diag: diag}
+}
+
 // isConfigKilledConnection reports whether the error indicates a set_config_option
 // call killed the agent connection. These errors are retryable.
 func isConfigKilledConnection(err error) bool {
@@ -70,8 +75,8 @@ func isConfigKilledConnection(err error) bool {
 // Idle connections are reaped by a background sweep goroutine to prevent
 // stale agent processes from consuming resources indefinitely.
 type ACPConnManager struct {
-	mu       sync.Mutex
-	conns    map[string]*ACPConn // keyed by clawbenchSID
+	mu        sync.Mutex
+	conns     map[string]*ACPConn // keyed by clawbenchSID
 	stopSweep chan struct{}       // closed to stop the idle sweep goroutine
 
 	// isSessionRunning is a callback that checks whether a session is
@@ -244,29 +249,47 @@ func (m *ACPConnManager) CloseConn(clawbenchSID string) {
 	}
 }
 
+// ACPCachedState holds the cached ACP state for a connection.
+type ACPCachedState struct {
+	Mode      *ModeState
+	Config    *ConfigOptionState
+	Effort    *ThinkingEffortState
+	Commands  []AvailableCommandInfo
+	ModelList *ModelListState
+	Plan      *PlanState
+}
+
 // GetCachedStateByClawbenchSID returns the cached state for the connection
 // owned by the given ClawBench session ID.
-func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, cmds []AvailableCommandInfo, modelList *ModelListState, plan *PlanState) {
+func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCachedState {
 	m.mu.Lock()
 	conn := m.conns[clawbenchSID]
 	m.mu.Unlock()
 
 	if conn == nil {
-		return nil, nil, nil, nil, nil, nil
+		return ACPCachedState{}
 	}
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+	var cmds []AvailableCommandInfo
 	if conn.client != nil {
 		cmds = conn.client.GetCommandsAsInfo()
 	}
-	return conn.cachedModeState, conn.cachedConfigState, conn.cachedThinkingEffortState, cmds, conn.cachedModelListState, conn.cachedPlanState
+	return ACPCachedState{
+		Mode:      conn.cachedModeState,
+		Config:    conn.cachedConfigState,
+		Effort:    conn.cachedThinkingEffortState,
+		Commands:  cmds,
+		ModelList: conn.cachedModelListState,
+		Plan:      conn.cachedPlanState,
+	}
 }
 
 // GetCachedStateByAgentID returns the cached state for any connection
 // belonging to the given agent. Returns the first match found.
 // Used for pre-fetching state before the first message (no session yet).
-func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) (mode *ModeState, config *ConfigOptionState, effort *ThinkingEffortState, modelList *ModelListState, plan *PlanState) {
+func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) ACPCachedState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -275,17 +298,19 @@ func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) (mode *ModeStat
 		// Match by agent.ID, or by map key if agent is nil (test entries)
 		matched := (conn.agent != nil && conn.agent.ID == agentID) || key == agentID
 		if matched {
-			mode = conn.cachedModeState
-			config = conn.cachedConfigState
-			effort = conn.cachedThinkingEffortState
-			modelList = conn.cachedModelListState
-			plan = conn.cachedPlanState
+			s := ACPCachedState{
+				Mode:      conn.cachedModeState,
+				Config:    conn.cachedConfigState,
+				Effort:    conn.cachedThinkingEffortState,
+				ModelList: conn.cachedModelListState,
+				Plan:      conn.cachedPlanState,
+			}
 			conn.mu.Unlock()
-			return
+			return s
 		}
 		conn.mu.Unlock()
 	}
-	return nil, nil, nil, nil, nil
+	return ACPCachedState{}
 }
 
 // GetCommandsByAgentID returns the cached slash commands for any connection
@@ -341,16 +366,19 @@ func (m *ACPConnManager) SetConnForTest(clawbenchSID string, conn *ACPConn) {
 // ---------------------------------------------------------------------------
 
 // GetACPConnectionPool returns the singleton connection manager.
+//
 // Deprecated: use GetACPConnManager() instead.
 func GetACPConnectionPool() *ACPConnManager {
 	return GetACPConnManager()
 }
 
 // ACPConnectionPool is an alias for ACPConnManager for backward compatibility.
+//
 // Deprecated: use ACPConnManager instead.
 type ACPConnectionPool = ACPConnManager
 
 // ACPConnEntry is an alias for ACPConn for backward compatibility.
+//
 // Deprecated: use ACPConn instead.
 type ACPConnEntry = ACPConn
 
@@ -361,9 +389,9 @@ type ACPConnEntry = ACPConn
 // ACPConn represents a dedicated ACP stdio connection for one ClawBench session.
 // One session = one agent process = one ACP session. No sharing, no pooling.
 type ACPConn struct {
-	agent       *model.Agent
+	agent        *model.Agent
 	clawbenchSID string
-	mu          sync.Mutex
+	mu           sync.Mutex
 
 	cmd    *exec.Cmd
 	conn   *acp.ClientSideConnection
@@ -382,8 +410,8 @@ type ACPConn struct {
 	lastResumeSessionResp *acp.ResumeSessionResponse
 
 	// liveness
-	lastUsed time.Time
-	alive    bool
+	lastUsed  time.Time
+	alive     bool
 	startedAt time.Time // when the agent process was spawned
 
 	// cmdWaitOnce ensures cmd.Wait() is called exactly once; the result is
@@ -474,18 +502,7 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// ResumeSession response reports the agent's DEFAULT config values (not
 	// the previously-set ones), which would overwrite our cache and cause
 	// "amnesia" — the user's mode/model/thinking selections would be lost.
-	prevMode := ""
-	if c.cachedModeState != nil {
-		prevMode = c.cachedModeState.CurrentModeID
-	}
-	prevModel := ""
-	if c.cachedModelListState != nil {
-		prevModel = c.cachedModelListState.CurrentModelID
-	}
-	prevEffort := ""
-	if c.cachedThinkingEffortState != nil {
-		prevEffort = c.cachedThinkingEffortState.CurrentID
-	}
+	prevConfig := c.snapshotCachedConfig()
 
 	// Need to spawn or respawn
 	if err := c.spawnLocked(ctx); err != nil {
@@ -495,56 +512,7 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
 	acpSID := getExternalSessionID(c.clawbenchSID)
 	if acpSID != "" {
-		resumeResp, err := c.conn.ResumeSession(ctx, acp.ResumeSessionRequest{
-			SessionId: acp.SessionId(acpSID),
-			Cwd:       cwd,
-			McpServers: []acp.McpServer{},
-		})
-		if err != nil {
-			slog.Error("acp conn: ResumeSession failed",
-				"clawbench_sid", c.clawbenchSID,
-				"acp_sid", acpSID,
-				"error", err)
-			return false, fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
-		}
-		c.acpSID = acpSID
-		c.lastResumeSessionResp = &resumeResp
-		c.lastUsed = time.Now()
-		slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
-
-		// Re-apply previously cached config values to the respawned process.
-		// ResumeSession reports the agent's defaults, not the user's selections.
-		// Since spawnLocked already called resetLastSetConfig(), shouldSetConfig
-		// will return true for these values — they won't be dedup-skipped.
-		if prevMode != "" && c.alive && c.isAliveLocked() {
-			c.mu.Unlock()
-			c.setSessionConfigOption(ctx, acpSID, "mode", prevMode)
-			c.mu.Lock()
-			if c.alive {
-				c.markConfigSet("mode", prevMode)
-				slog.Info("acp conn: re-applied mode after resume", "mode", prevMode, "clawbench_sid", c.clawbenchSID)
-			}
-		}
-		if prevModel != "" && c.alive && c.isAliveLocked() {
-			c.mu.Unlock()
-			c.setSessionConfigOption(ctx, acpSID, "model", prevModel)
-			c.mu.Lock()
-			if c.alive {
-				c.markConfigSet("model", prevModel)
-				slog.Info("acp conn: re-applied model after resume", "model", prevModel, "clawbench_sid", c.clawbenchSID)
-			}
-		}
-		if prevEffort != "" && c.alive && c.isAliveLocked() {
-			c.mu.Unlock()
-			c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", prevEffort)
-			c.mu.Lock()
-			if c.alive {
-				c.markConfigSet("thinkingEffort", prevEffort)
-				slog.Info("acp conn: re-applied thinking effort after resume", "effort", prevEffort, "clawbench_sid", c.clawbenchSID)
-			}
-		}
-
-		return false, nil // not new — recovered
+		return false, c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
 	}
 
 	// No prior session — first message ever, create new session
@@ -561,6 +529,78 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	c.lastUsed = time.Now()
 	slog.Info("acp conn: created new session", "clawbench_sid", c.clawbenchSID, "acp_sid", c.acpSID)
 	return true, nil
+}
+
+// cachedConfigSnapshot holds previously-set config values to re-apply after respawn.
+type cachedConfigSnapshot struct {
+	mode   string
+	model  string
+	effort string
+}
+
+// snapshotCachedConfig captures current cached config values before a respawn.
+func (c *ACPConn) snapshotCachedConfig() cachedConfigSnapshot {
+	var snap cachedConfigSnapshot
+	if c.cachedModeState != nil {
+		snap.mode = c.cachedModeState.CurrentModeID
+	}
+	if c.cachedModelListState != nil {
+		snap.model = c.cachedModelListState.CurrentModelID
+	}
+	if c.cachedThinkingEffortState != nil {
+		snap.effort = c.cachedThinkingEffortState.CurrentID
+	}
+	return snap
+}
+
+// recoverViaResumeSession recovers a session via ResumeSession and re-applies config.
+func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID string, prevConfig cachedConfigSnapshot) error {
+	resumeResp, err := c.conn.ResumeSession(ctx, acp.ResumeSessionRequest{
+		SessionId:  acp.SessionId(acpSID),
+		Cwd:        cwd,
+		McpServers: []acp.McpServer{},
+	})
+	if err != nil {
+		slog.Error("acp conn: ResumeSession failed",
+			"clawbench_sid", c.clawbenchSID,
+			"acp_sid", acpSID,
+			"error", err)
+		return fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
+	}
+	c.acpSID = acpSID
+	c.lastResumeSessionResp = &resumeResp
+	c.lastUsed = time.Now()
+	slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
+
+	// Re-apply previously cached config values to the respawned process.
+	// ResumeSession reports the agent's defaults, not the user's selections.
+	// Since spawnLocked already called resetLastSetConfig(), shouldSetConfig
+	// will return true for these values — they won't be dedup-skipped.
+	c.reapplyConfigAfterResume(ctx, acpSID, prevConfig)
+
+	return nil // not new — recovered
+}
+
+// reapplyConfigAfterResume re-applies cached mode/model/thinking config after a ResumeSession.
+func (c *ACPConn) reapplyConfigAfterResume(ctx context.Context, acpSID string, prevConfig cachedConfigSnapshot) {
+	c.reapplyConfigOption(ctx, acpSID, "mode", prevConfig.mode)
+	c.reapplyConfigOption(ctx, acpSID, "model", prevConfig.model)
+	c.reapplyConfigOption(ctx, acpSID, "thinkingEffort", prevConfig.effort)
+}
+
+// reapplyConfigOption sets a config option on the resumed session if the value is non-empty
+// and the connection is still alive. Called with c.mu held; temporarily unlocks for the RPC.
+func (c *ACPConn) reapplyConfigOption(ctx context.Context, acpSID, configID, value string) {
+	if value == "" || !c.alive || !c.isAliveLocked() {
+		return
+	}
+	c.mu.Unlock()
+	c.setSessionConfigOption(ctx, acpSID, configID, value)
+	c.mu.Lock()
+	if c.alive {
+		c.markConfigSet(configID, value)
+		slog.Info("acp conn: re-applied config after resume", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
+	}
 }
 
 // isAliveLocked checks if the connection is still alive (must hold c.mu).
@@ -725,7 +765,7 @@ func (c *ACPConn) watchProcessDeath() {
 			"signal", diag.Signal,
 			"uptime", diag.Uptime.Round(time.Second),
 			"ppid", diag.ParentPID,
-			"rss_mb", diag.VmRSSKB/1024,
+			"rss_mb", diag.VMRSSKB/1024,
 			"fds", diag.FDCount,
 			"stderr_tail", diag.StderrTail,
 		)
@@ -755,6 +795,7 @@ func (c *ACPConn) GetAndClearResumeSessionResp() *acp.ResumeSessionResponse {
 }
 
 // GetAndClearSessionResp returns the last NewSessionResponse and clears it.
+//
 // Deprecated: use GetAndClearNewSessionResp.
 func (c *ACPConn) GetAndClearSessionResp() *acp.NewSessionResponse {
 	return c.GetAndClearNewSessionResp()
@@ -803,10 +844,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			slog.Error("acp conn: set_config_option(model) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model,
 				"exit_code", diag.ExitCode, "signal", diag.Signal,
-				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
 				"stderr_tail", diag.StderrTail)
-			err := errConfigKilledConnection("model", req.Model)
-			err.(*configKilledConnectionError).diag = diag
+			err := errConfigKilledConnectionWithDiag("model", req.Model, diag)
 			return err
 		}
 		c.markConfigSet("model", req.Model)
@@ -820,10 +860,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			slog.Error("acp conn: set_config_option(thinkingEffort) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort,
 				"exit_code", diag.ExitCode, "signal", diag.Signal,
-				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
 				"stderr_tail", diag.StderrTail)
-			err := errConfigKilledConnection("thinkingEffort", req.ThinkingEffort)
-			err.(*configKilledConnectionError).diag = diag
+			err := errConfigKilledConnectionWithDiag("thinkingEffort", req.ThinkingEffort, diag)
 			return err
 		}
 		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
@@ -837,10 +876,9 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			slog.Error("acp conn: set_config_option(mode) killed connection",
 				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode,
 				"exit_code", diag.ExitCode, "signal", diag.Signal,
-				"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+				"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
 				"stderr_tail", diag.StderrTail)
-			err := errConfigKilledConnection("mode", req.Mode)
-			err.(*configKilledConnectionError).diag = diag
+			err := errConfigKilledConnectionWithDiag("mode", req.Mode, diag)
 			return err
 		}
 		c.markConfigSet("mode", req.Mode)
@@ -871,7 +909,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		slog.Error("acp conn: prompt failed (peer disconnected)",
 			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID,
 			"exit_code", diag.ExitCode, "signal", diag.Signal,
-			"ppid", diag.ParentPID, "rss_mb", diag.VmRSSKB/1024, "fds", diag.FDCount,
+			"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
 			"stderr_tail", diag.StderrTail)
 
 		return fmt.Errorf("acp: prompt: %w%s", err, diag.String())
@@ -882,14 +920,14 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 
 // crashDiagnostics holds crash info collected after an agent process exits unexpectedly.
 type crashDiagnostics struct {
-	ExitCode    int
-	StderrTail  string // last ~2KB of stderr
-	WasAlive    bool   // was conn.Done() already closed?
-	Uptime      time.Duration
-	Signal      string // decoded signal name (e.g., "SIGKILL", "SIGSEGV") if killed by signal
-	ParentPID   int    // PPid of the crashed process (from /proc/<pid>/status)
-	VmRSSKB     int    // Resident memory at crash time (from /proc/<pid>/status)
-	FDCount     int    // Open file descriptors at crash time (from /proc/<pid>/fd)
+	ExitCode   int
+	StderrTail string // last ~2KB of stderr
+	WasAlive   bool   // was conn.Done() already closed?
+	Uptime     time.Duration
+	Signal     string // decoded signal name (e.g., "SIGKILL", "SIGSEGV") if killed by signal
+	ParentPID  int    // PPid of the crashed process (from /proc/<pid>/status)
+	VMRSSKB    int    // Resident memory at crash time (from /proc/<pid>/status)
+	FDCount    int    // Open file descriptors at crash time (from /proc/<pid>/fd)
 }
 
 func (d crashDiagnostics) String() string {
@@ -909,8 +947,8 @@ func (d crashDiagnostics) String() string {
 	if d.ParentPID > 0 {
 		parts = append(parts, fmt.Sprintf("ppid=%d", d.ParentPID))
 	}
-	if d.VmRSSKB > 0 {
-		parts = append(parts, fmt.Sprintf("rss=%dMB", d.VmRSSKB/1024))
+	if d.VMRSSKB > 0 {
+		parts = append(parts, fmt.Sprintf("rss=%dMB", d.VMRSSKB/1024))
 	}
 	if d.FDCount > 0 {
 		parts = append(parts, fmt.Sprintf("fds=%d", d.FDCount))
@@ -991,7 +1029,7 @@ func (c *ACPConn) collectCrashDiagnostics() crashDiagnostics {
 	// This data is only available between the signal and Wait() returning,
 	// so we read it before calling Wait() which reaps the process.
 	pid := cmd.Process.Pid
-	diag.ParentPID, diag.VmRSSKB, _ = readProcStatus(pid)
+	diag.ParentPID, diag.VMRSSKB, _ = readProcStatus(pid)
 	if fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid)); err == nil {
 		diag.FDCount = len(fds)
 	}
@@ -1040,9 +1078,9 @@ func readProcStatus(pid int) (ppid int, vmRSSKB int, err error) {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "PPid:") {
-			fmt.Sscanf(strings.TrimPrefix(line, "PPid:"), "%d", &ppid)
+			_, _ = fmt.Sscanf(strings.TrimPrefix(line, "PPid:"), "%d", &ppid)
 		} else if strings.HasPrefix(line, "VmRSS:") {
-			fmt.Sscanf(strings.TrimPrefix(line, "VmRSS:"), "%d", &vmRSSKB)
+			_, _ = fmt.Sscanf(strings.TrimPrefix(line, "VmRSS:"), "%d", &vmRSSKB)
 		}
 	}
 	return ppid, vmRSSKB, nil
@@ -1526,18 +1564,21 @@ func (c *ACPConn) SetAliveForTest() {
 }
 
 // SetEntryForTest injects a connection for testing. Alias for SetConnForTest on manager.
+//
 // Deprecated: use SetConnForTest.
 func (m *ACPConnManager) SetEntryForTest(agentID string, entry *ACPConn) {
 	m.SetConnForTest(agentID, entry)
 }
 
 // CloseConnection closes and removes the connection for the given key.
+//
 // Deprecated: use CloseConn.
 func (m *ACPConnManager) CloseConnection(key string) {
 	m.CloseConn(key)
 }
 
 // GetACPSessionID resolves a ClawBench session ID to an ACP session ID.
+//
 // Deprecated: use conn.AcpSID() directly.
 func (m *ACPConnManager) GetACPSessionID(_ string, clawbenchSID string) string {
 	m.mu.Lock()
@@ -1552,6 +1593,7 @@ func (m *ACPConnManager) GetACPSessionID(_ string, clawbenchSID string) string {
 
 // GetClientByACPSession returns the ClawBenchACPClient for the connection
 // that owns the given ACP session ID.
+//
 // Deprecated: not needed in one-to-one model.
 func (m *ACPConnManager) GetClientByACPSession(acpSessionID string) *ClawBenchACPClient {
 	m.mu.Lock()
@@ -1570,6 +1612,7 @@ func (m *ACPConnManager) GetClientByACPSession(acpSessionID string) *ClawBenchAC
 }
 
 // GetOrCreateSession returns the ACP session ID for a ClawBench session.
+//
 // Deprecated: use ensureAliveWithSession or AcpSID() instead.
 func (c *ACPConn) GetOrCreateSession(ctx context.Context, clawbenchSID string, cwd string) (string, bool, error) {
 	isNew, err := c.ensureAliveWithSession(ctx, cwd)
@@ -1580,6 +1623,7 @@ func (c *ACPConn) GetOrCreateSession(ctx context.Context, clawbenchSID string, c
 }
 
 // GetClient returns the ClawBenchACPClient for the given agent ID.
+//
 // Deprecated: use GetClientByAgentID instead.
 func (m *ACPConnManager) GetClient(agentID string) *ClawBenchACPClient {
 	return m.GetClientByAgentID(agentID)

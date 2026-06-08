@@ -87,29 +87,29 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 	// When the frontend reconnects (page reload, session switch), the previous
 	// SSE handler already consumed mode_update events. Re-emit from cache so
 	// the new SSE client receives state without waiting for a new prompt.
-	if modeState, configState, effortState, cmds, modelListState, planState := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); modeState != nil || configState != nil || effortState != nil || len(cmds) > 0 || modelListState != nil || planState != nil {
-		if modeState != nil {
-			data, _ := json.Marshal(modeState)
+	if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Config != nil || s.Effort != nil || len(s.Commands) > 0 || s.ModelList != nil || s.Plan != nil {
+		if s.Mode != nil {
+			data, _ := json.Marshal(s.Mode)
 			fmt.Fprintf(w, "event: mode_update\ndata: %s\n\n", data)
 		}
-		if configState != nil {
-			data, _ := json.Marshal(configState)
+		if s.Config != nil {
+			data, _ := json.Marshal(s.Config)
 			fmt.Fprintf(w, "event: config_update\ndata: %s\n\n", data)
 		}
-		if effortState != nil {
-			data, _ := json.Marshal(effortState)
+		if s.Effort != nil {
+			data, _ := json.Marshal(s.Effort)
 			fmt.Fprintf(w, "event: thinking_effort_update\ndata: %s\n\n", data)
 		}
-		if len(cmds) > 0 {
-			data, _ := json.Marshal(map[string]any{"commands": cmds})
+		if len(s.Commands) > 0 {
+			data, _ := json.Marshal(map[string]any{"commands": s.Commands})
 			fmt.Fprintf(w, "event: commands_update\ndata: %s\n\n", data)
 		}
-		if modelListState != nil {
-			data, _ := json.Marshal(modelListState)
+		if s.ModelList != nil {
+			data, _ := json.Marshal(s.ModelList)
 			fmt.Fprintf(w, "event: model_list_update\ndata: %s\n\n", data)
 		}
-		if planState != nil {
-			data, _ := json.Marshal(planState)
+		if s.Plan != nil {
+			data, _ := json.Marshal(s.Plan)
 			fmt.Fprintf(w, "event: plan_update\ndata: %s\n\n", data)
 		}
 		if canFlush {

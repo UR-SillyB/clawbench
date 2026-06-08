@@ -66,11 +66,11 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		var ps *ai.PlanState
 
 		// Try connection manager cache first
-		if pms, _, pes, pml, pps := mgr.GetCachedStateByAgentID(a.ID); pms != nil || pes != nil || pml != nil || pps != nil {
-			ms = pms
-			es = pes
-			ml = pml
-			ps = pps
+		if s := mgr.GetCachedStateByAgentID(a.ID); s.Mode != nil || s.Effort != nil || s.ModelList != nil || s.Plan != nil {
+			ms = s.Mode
+			es = s.Effort
+			ml = s.ModelList
+			ps = s.Plan
 		}
 		if pcmds := mgr.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
 			cmds = pcmds

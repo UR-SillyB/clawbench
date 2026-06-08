@@ -336,7 +336,7 @@ func extractInputFromContentUpdate(tcu acp.SessionToolCallUpdate) map[string]any
 //   - kind=search + toolCallId prefix "glob-" → {"pattern": title}
 //   - kind=search + toolCallId prefix "list_directory-" → {"path": title}
 //   - kind=search + other → {"path": title} (generic search)
-func extractInputFromLocationsAndTitle(locations []acp.ToolCallLocation, title string, kind acp.ToolKind, toolCallId string) map[string]any {
+func extractInputFromLocationsAndTitle(locations []acp.ToolCallLocation, title string, kind acp.ToolKind, toolCallID string) map[string]any {
 	input := make(map[string]any)
 
 	switch kind {
@@ -349,10 +349,10 @@ func extractInputFromLocationsAndTitle(locations []acp.ToolCallLocation, title s
 			input["file_path"] = title
 		}
 	case acp.ToolKindSearch:
-		// Search tools: determine glob vs list_directory from toolCallId prefix
+		// Search tools: determine glob vs list_directory from toolCallID prefix
 		prefix := ""
-		if dashIdx := strings.Index(toolCallId, "-"); dashIdx > 0 {
-			prefix = toolCallId[:dashIdx]
+		if dashIdx := strings.Index(toolCallID, "-"); dashIdx > 0 {
+			prefix = toolCallID[:dashIdx]
 		}
 		switch prefix {
 		case "glob":
@@ -388,29 +388,43 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 		ID: string(tcu.ToolCallId),
 	}
 
-	// Map status
-	if tcu.Status != nil {
-		switch *tcu.Status {
-		case acp.ToolCallStatusCompleted:
-			tool.Done = true
-			tool.Status = "success"
-		case acp.ToolCallStatusFailed:
-			tool.Done = true
-			tool.Status = "error"
-		case acp.ToolCallStatusPending, acp.ToolCallStatusInProgress:
-			tool.Done = false
-		}
+	mapToolCallStatus(tcu.Status, tool)
+	mapToolCallInput(tcu, tool)
+	mapToolCallName(tcu, tool)
+	mapToolCallOutput(tcu, tool)
+
+	// Determine event type: if tool is done, emit tool_result; otherwise update tool_use
+	eventType := "tool_use"
+	if tool.Done {
+		eventType = "tool_result"
 	}
 
-	// Extract input from RawInput or Content.
-	// Claude ACP agent sends command info in tool_call_update (not in the initial tool_call),
-	// e.g. raw_input={"command":"ls /tmp","description":"List /tmp contents"}.
-	// We update the tool input so the frontend can display the command.
-	//
-	// IMPORTANT: Only extract input from updates that carry RawInput (with actual values)
-	// or Title. Skip updates that only have Content text — these carry output text
-	// (e.g. command results), not input. Extracting description from output text
-	// would overwrite the command from a prior RawInput update.
+	slog.Debug("acp: tool_call_update", "tool_call_id", tool.ID, "done", tool.Done, "event_type", eventType, "has_output", tool.Output != "",
+		"status", fmt.Sprintf("%v", tcu.Status), "content_count", len(tcu.Content), "title", tcu.Title,
+		"raw_input", fmt.Sprintf("%v", tcu.RawInput))
+
+	return StreamEvent{Type: eventType, Tool: tool}
+}
+
+// mapToolCallStatus sets the tool's Done and Status fields based on ACP status.
+func mapToolCallStatus(status *acp.ToolCallStatus, tool *ToolCall) {
+	if status == nil {
+		return
+	}
+	switch *status {
+	case acp.ToolCallStatusCompleted:
+		tool.Done = true
+		tool.Status = "success"
+	case acp.ToolCallStatusFailed:
+		tool.Done = true
+		tool.Status = "error"
+	case acp.ToolCallStatusPending, acp.ToolCallStatusInProgress:
+		tool.Done = false
+	}
+}
+
+// mapToolCallInput extracts tool input from RawInput, Content, or Locations/Title.
+func mapToolCallInput(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
 	if tcu.RawInput != nil {
 		if inputBytes, err := json.Marshal(tcu.RawInput); err == nil && string(inputBytes) != "{}" {
 			normalized, normErr := normalizeToolInput(inputBytes, map[string]string{
@@ -427,88 +441,84 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 				tool.Input = string(inputBytes)
 			}
 		}
-	} else if tcu.Kind != nil && *tcu.Kind == acp.ToolKindExecute {
-		// For execute-kind tools without RawInput, try title as command (Gemini CLI)
-		// or Content terminal blocks. Do NOT extract text Content as description —
-		// that carries output, not input.
-		if tcu.Title != nil && *tcu.Title != "" {
-			input := map[string]any{"command": *tcu.Title}
-			if inputBytes, err := json.Marshal(input); err == nil {
-				tool.Input = string(inputBytes)
-			}
-		} else {
-			// Check for terminal content blocks (rare, but some agents may use them)
-			for _, c := range tcu.Content {
-				if c.Terminal != nil {
-					input := make(map[string]any)
-					if tcu.Title != nil && *tcu.Title != "" {
-						input["command"] = *tcu.Title
-					}
-					if inputBytes, err := json.Marshal(input); err == nil && len(input) > 0 {
-						tool.Input = string(inputBytes)
-					}
-					break
-				}
-			}
-		}
+		return
 	}
 
-	// Update the title/name if provided — but only for non-completed updates.
-	// Open Code ACP changes the title to a descriptive string (e.g. file path
-	// like "cmd/server", "go.mod") when a tool call completes, which would
-	// overwrite the correct tool name from earlier updates.
-	// Claude sends the tool name in in_progress updates, so we keep those.
-	if tcu.Title != nil && *tcu.Title != "" && !tool.Done {
-		kind := acp.ToolKindExecute // default kind for title-based name extraction
-		if tcu.Kind != nil {
-			kind = *tcu.Kind
-		}
-		tool.Name = extractToolName(*tcu.Title, kind, string(tcu.ToolCallId))
+	// For execute-kind tools without RawInput, try title as command (Gemini CLI)
+	// or Content terminal blocks. Do NOT extract text Content as description —
+	// that carries output, not input.
+	if tcu.Kind != nil && *tcu.Kind == acp.ToolKindExecute {
+		mapToolCallInputFromExecute(tcu, tool)
+		return
 	}
 
 	// Gemini ACP: extract input from locations for read/search tools.
-	// When rawInput is absent, Gemini sends file paths in `locations` and
-	// search targets in `title`. Extract these so the frontend shows proper
-	// tool input (file_path, path, pattern) even in update events.
-	if tool.Input == "" {
-		title := ""
-		if tcu.Title != nil {
-			title = *tcu.Title
+	mapToolCallInputFromLocations(tcu, tool)
+}
+
+// mapToolCallInputFromExecute handles input extraction for execute-kind tools.
+func mapToolCallInputFromExecute(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
+	if tcu.Title != nil && *tcu.Title != "" {
+		input := map[string]any{"command": *tcu.Title}
+		if inputBytes, err := json.Marshal(input); err == nil {
+			tool.Input = string(inputBytes)
 		}
-		kind := acp.ToolKindOther
-		if tcu.Kind != nil {
-			kind = *tcu.Kind
-		}
-		if input := extractInputFromLocationsAndTitle(tcu.Locations, title, kind, string(tcu.ToolCallId)); input != nil {
-			if inputBytes, err := json.Marshal(input); err == nil {
+		return
+	}
+	// Check for terminal content blocks (rare, but some agents may use them)
+	for _, c := range tcu.Content {
+		if c.Terminal != nil {
+			input := make(map[string]any)
+			if tcu.Title != nil && *tcu.Title != "" {
+				input["command"] = *tcu.Title
+			}
+			if inputBytes, err := json.Marshal(input); err == nil && len(input) > 0 {
 				tool.Input = string(inputBytes)
 			}
+			break
 		}
 	}
+}
 
-	// Extract human-readable output from RawOutput.
-	// ACP agents return structured output (map[string]any), but the frontend
-	// expects plain text like CLI mode produces. We extract the text content
-	// from known keys and fall back to pretty-printed JSON.
+// mapToolCallInputFromLocations extracts input from locations/title for read/search tools.
+func mapToolCallInputFromLocations(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
+	if tool.Input != "" {
+		return
+	}
+	title := ""
+	if tcu.Title != nil {
+		title = *tcu.Title
+	}
+	kind := acp.ToolKindOther
+	if tcu.Kind != nil {
+		kind = *tcu.Kind
+	}
+	if input := extractInputFromLocationsAndTitle(tcu.Locations, title, kind, string(tcu.ToolCallId)); input != nil {
+		if inputBytes, err := json.Marshal(input); err == nil {
+			tool.Input = string(inputBytes)
+		}
+	}
+}
+
+// mapToolCallName sets the tool name from title when the tool is not yet done.
+func mapToolCallName(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
+	if tcu.Title == nil || *tcu.Title == "" || tool.Done {
+		return
+	}
+	kind := acp.ToolKindExecute // default kind for title-based name extraction
+	if tcu.Kind != nil {
+		kind = *tcu.Kind
+	}
+	tool.Name = extractToolName(*tcu.Title, kind, string(tcu.ToolCallId))
+}
+
+// mapToolCallOutput extracts human-readable output from RawOutput or Content blocks.
+func mapToolCallOutput(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
 	if tcu.RawOutput != nil {
 		tool.Output = truncateToolOutput(extractACPToolOutput(tcu.RawOutput))
 	} else if len(tcu.Content) > 0 {
-		// Gemini ACP sends tool output in Content blocks instead of RawOutput.
-		// Extract text from content blocks for the tool detail overlay.
 		tool.Output = truncateToolOutput(extractACPToolOutputFromContent(tcu.Content))
 	}
-
-	// Determine event type: if tool is done, emit tool_result; otherwise update tool_use
-	eventType := "tool_use"
-	if tool.Done {
-		eventType = "tool_result"
-	}
-
-	slog.Debug("acp: tool_call_update", "tool_call_id", tool.ID, "done", tool.Done, "event_type", eventType, "has_output", tool.Output != "",
-		"status", fmt.Sprintf("%v", tcu.Status), "content_count", len(tcu.Content), "title", tcu.Title,
-		"raw_input", fmt.Sprintf("%v", tcu.RawInput))
-
-	return StreamEvent{Type: eventType, Tool: tool}
 }
 
 // extractACPToolOutputFromContent extracts human-readable output text from ACP
@@ -524,10 +534,7 @@ func extractACPToolOutputFromContent(contents []acp.ToolCallContent) string {
 				parts = append(parts, cb.Text.Text)
 			}
 		}
-		if c.Terminal != nil {
-			// Terminal content — output was already streamed to the terminal widget
-			// No text to extract here
-		}
+		// Terminal content is streamed to the terminal widget — no text to extract
 	}
 	return strings.Join(parts, "\n")
 }
@@ -656,15 +663,15 @@ func extractArrayOutput(arr []any) string {
 // and input formatting. We try toolCallId prefix first (Gemini pattern),
 // then title prefix/alias matching, then kind-to-canonical,
 // then fall back to the title itself.
-func extractToolName(title string, kind acp.ToolKind, toolCallId ...string) string {
+func extractToolName(title string, kind acp.ToolKind, toolCallID ...string) string {
 	// Gemini ACP uses descriptive toolCallId prefixes that encode the tool type:
 	// "read_file-<ts>-<n>", "list_directory-<ts>-<n>", "glob-<ts>-<n>",
 	// "run_shell_command-<ts>-<n>", "ask-<uuid>". Extract the prefix for mapping.
-	if len(toolCallId) > 0 && toolCallId[0] != "" {
-		tid := toolCallId[0]
+	if len(toolCallID) > 0 && toolCallID[0] != "" {
+		tid := toolCallID[0]
 		if dashIdx := strings.Index(tid, "-"); dashIdx > 0 {
 			prefix := tid[:dashIdx]
-			if canonical, ok := acpToolCallIdPrefix[prefix]; ok {
+			if canonical, ok := acpToolCallIDPrefix[prefix]; ok {
 				return canonical
 			}
 		}
@@ -703,38 +710,38 @@ func extractToolName(title string, kind acp.ToolKind, toolCallId ...string) stri
 	return string(kind)
 }
 
-// acpToolCallIdPrefix maps Gemini-style toolCallId prefixes to canonical tool names.
-// Gemini ACP uses toolCallId formats like "read_file-<ts>-<n>", "list_directory-<ts>-<n>",
+// acpToolCallIDPrefix maps Gemini-style toolCallID prefixes to canonical tool names.
+// Gemini ACP uses toolCallID formats like "read_file-<ts>-<n>", "list_directory-<ts>-<n>",
 // "glob-<ts>-<n>", "run_shell_command-<ts>-<n>", "ask-<uuid>".
 // The prefix before the first dash encodes the tool type.
-var acpToolCallIdPrefix = map[string]string{
-	"read_file":          "Read",
-	"list_directory":     "LS",
-	"glob":               "Glob",
-	"run_shell_command":  "Bash",
-	"ask":                "AskUserQuestion",
-	"write_file":         "Write",
-	"edit_file":          "Edit",
-	"replace":            "Edit",
-	"search_file":        "Grep",
-	"search_directory":   "Grep",
+var acpToolCallIDPrefix = map[string]string{
+	"read_file":         "Read",
+	"list_directory":    "LS",
+	"glob":              "Glob",
+	"run_shell_command": "Bash",
+	"ask":               "AskUserQuestion",
+	"write_file":        "Write",
+	"edit_file":         "Edit",
+	"replace":           "Edit",
+	"search_file":       "Grep",
+	"search_directory":  "Grep",
 }
 
 // acpLowerAlias maps lowercase single-word tool titles to canonical PascalCase names.
 // Used for case-insensitive matching of titles like "bash" → "Bash", "terminal" → "Bash".
 var acpLowerAlias = map[string]string{
-	"bash":      "Bash",
-	"terminal":  "Bash",
-	"shell":     "Bash",
-	"read":      "Read",
-	"write":     "Write",
-	"edit":      "Edit",
-	"glob":      "Glob",
-	"grep":      "Grep",
-	"ls":        "LS",
-	"list":      "LS",
-	"agent":     "Agent",
-	"skill":     "Skill",
+	"bash":     "Bash",
+	"terminal": "Bash",
+	"shell":    "Bash",
+	"read":     "Read",
+	"write":    "Write",
+	"edit":     "Edit",
+	"glob":     "Glob",
+	"grep":     "Grep",
+	"ls":       "LS",
+	"list":     "LS",
+	"agent":    "Agent",
+	"skill":    "Skill",
 }
 
 // acpToolNamePatterns maps ACP tool title prefixes to canonical tool names.
@@ -889,8 +896,7 @@ func buildThinkingEffortStateFromSelect(sel *acp.SessionConfigOptionSelect) *Thi
 // Returns nil if the update doesn't contain mode-relevant information.
 //
 // Deprecated: Use the per-category extraction in mapACPSessionUpdate instead.
-//
-//nolint:unused // kept as reference for future config option mapping
+// Kept as reference for future config option mapping.
 func mapACPConfigOptionUpdate(cu *acp.SessionConfigOptionUpdate) *ConfigOptionState {
 	if cu == nil || len(cu.ConfigOptions) == 0 {
 		return nil
@@ -1056,7 +1062,7 @@ func modeStateFromConfigState(cs *ConfigOptionState) *ModeState {
 			CurrentModeID: cs.CurrentID,
 		}
 		for _, v := range opt.Values {
-			ms.AvailableModes = append(ms.AvailableModes, ModeDef{ID: v.ID, Name: v.Name})
+			ms.AvailableModes = append(ms.AvailableModes, ModeDef(v))
 		}
 		if len(ms.AvailableModes) == 0 && ms.CurrentModeID == "" {
 			return nil

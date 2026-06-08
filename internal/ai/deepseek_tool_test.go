@@ -19,6 +19,7 @@ func TestDeepSeekTool_EditFileInputRemap(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Edit" {
 		t.Errorf("expected name 'Edit', got '%s'", tc.Name)
@@ -60,6 +61,7 @@ func TestDeepSeekTool_ReadFileInputRemap(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Read" {
 		t.Errorf("expected name 'Read', got '%s'", tc.Name)
@@ -83,6 +85,7 @@ func TestDeepSeekTool_WriteFileInputRemap(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Write" {
 		t.Errorf("expected name 'Write', got '%s'", tc.Name)
@@ -103,6 +106,7 @@ func TestDeepSeekTool_ListDirInputRemap(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "LS" {
 		t.Errorf("expected name 'LS', got '%s'", tc.Name)
@@ -124,6 +128,7 @@ func TestDeepSeekTool_GrepFilesPathNotRemapped(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Grep" {
 		t.Errorf("expected name 'Grep', got '%s'", tc.Name)
@@ -156,6 +161,7 @@ func TestDeepSeekTool_FileSearchNameNormalized(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Glob" {
 		t.Errorf("expected name 'Glob', got '%s'", tc.Name)
@@ -173,6 +179,7 @@ func TestDeepSeekTool_ExecShellNameNormalized(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Bash" {
 		t.Errorf("expected name 'Bash', got '%s'", tc.Name)
@@ -193,6 +200,7 @@ func TestDeepSeekTool_EmptyInput(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Bash" {
 		t.Errorf("expected name 'Bash', got '%s'", tc.Name)
@@ -213,6 +221,7 @@ func TestDeepSeekTool_InvalidJSONInput(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Input != "{invalid}" {
 		t.Errorf("expected raw input on parse error, got '%s'", tc.Input)
@@ -239,6 +248,7 @@ func TestDeepSeekTool_CamelCaseFieldRemap(t *testing.T) {
 	tc := parseDeepSeekToolUse(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// filePaths→file_paths (unambiguous)
 	if !strings.Contains(tc.Input, `"file_paths"`) {
@@ -291,6 +301,7 @@ func TestDeepSeekTool_ToolNameNormalization(t *testing.T) {
 		tc := parseDeepSeekToolUse(msg)
 		if tc == nil {
 			t.Fatalf("expected non-nil ToolCall for tool name '%s'", input)
+			return
 		}
 		if tc.Name != expected {
 			t.Errorf("normalizeToolName(%q) = %q, want %q", input, tc.Name, expected)
@@ -310,6 +321,7 @@ func TestDeepSeekTool_ToolResultWithID(t *testing.T) {
 	tc := parseDeepSeekToolResult(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.ID != "call_001" {
 		t.Errorf("expected ID 'call_001', got '%s'", tc.ID)
@@ -345,6 +357,7 @@ func TestDeepSeekTool_ToolResultErrorStatus(t *testing.T) {
 	tc := parseDeepSeekToolResult(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Status != "error" {
 		t.Errorf("expected status 'error', got '%s'", tc.Status)
@@ -363,6 +376,7 @@ func TestDeepSeekTool_ToolResultOutputTruncation(t *testing.T) {
 	tc := parseDeepSeekToolResult(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if len(tc.Output) > maxToolOutputBytes+200 {
 		t.Errorf("expected output to be truncated, got length %d", len(tc.Output))
@@ -382,6 +396,7 @@ func TestDeepSeekTool_ToolResultSmallOutputNotTruncated(t *testing.T) {
 	tc := parseDeepSeekToolResult(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Output != "small output" {
 		t.Errorf("expected 'small output', got '%s'", tc.Output)

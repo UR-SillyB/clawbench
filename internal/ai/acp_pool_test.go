@@ -124,13 +124,13 @@ func TestACPConn_CancelTurn_DoesNotBlockOnDeadConn(t *testing.T) {
 
 func TestGetCachedStateByClawbenchSID_NilConn(t *testing.T) {
 	mgr := GetACPConnManager()
-	mode, config, effort, cmds, modelList, plan := mgr.GetCachedStateByClawbenchSID("nonexistent-session")
-	assert.Nil(t, mode)
-	assert.Nil(t, config)
-	assert.Nil(t, effort)
-	assert.Nil(t, cmds)
-	assert.Nil(t, modelList)
-	assert.Nil(t, plan)
+	s := mgr.GetCachedStateByClawbenchSID("nonexistent-session")
+	assert.Nil(t, s.Mode)
+	assert.Nil(t, s.Config)
+	assert.Nil(t, s.Effort)
+	assert.Nil(t, s.Commands)
+	assert.Nil(t, s.ModelList)
+	assert.Nil(t, s.Plan)
 }
 
 func TestGetCachedStateByClawbenchSID_NilClient(t *testing.T) {
@@ -144,13 +144,13 @@ func TestGetCachedStateByClawbenchSID_NilClient(t *testing.T) {
 	assert.NotPanics(t, func() {
 		mgr.GetCachedStateByClawbenchSID("session-nil-client")
 	})
-	mode, config, effort, cmds, modelList, plan := mgr.GetCachedStateByClawbenchSID("session-nil-client")
-	assert.Nil(t, mode)
-	assert.Nil(t, config)
-	assert.Nil(t, effort)
-	assert.Nil(t, cmds)
-	assert.Nil(t, modelList)
-	assert.Nil(t, plan)
+	s := mgr.GetCachedStateByClawbenchSID("session-nil-client")
+	assert.Nil(t, s.Mode)
+	assert.Nil(t, s.Config)
+	assert.Nil(t, s.Effort)
+	assert.Nil(t, s.Commands)
+	assert.Nil(t, s.ModelList)
+	assert.Nil(t, s.Plan)
 }
 
 func TestGetCachedStateByClawbenchSID_WithCachedState(t *testing.T) {
@@ -162,11 +162,11 @@ func TestGetCachedStateByClawbenchSID_WithCachedState(t *testing.T) {
 	mgr.SetConnForTest("session-cached-state", conn)
 	defer mgr.CloseConn("session-cached-state")
 
-	mode, _, _, _, _, plan := mgr.GetCachedStateByClawbenchSID("session-cached-state")
-	assert.NotNil(t, mode)
-	assert.Equal(t, "code", mode.CurrentModeID)
-	assert.NotNil(t, plan)
-	assert.Len(t, plan.Entries, 1)
+	s := mgr.GetCachedStateByClawbenchSID("session-cached-state")
+	assert.NotNil(t, s.Mode)
+	assert.Equal(t, "code", s.Mode.CurrentModeID)
+	assert.NotNil(t, s.Plan)
+	assert.Len(t, s.Plan.Entries, 1)
 }
 
 // --- ACPConn.shouldSetConfig / markConfigSet ---
@@ -355,7 +355,7 @@ func TestACPConn_SetCachedConfigState_DerivesModeState(t *testing.T) {
 
 	// Set config state with mode category — should derive modeState
 	conn.SetCachedConfigState(&ConfigOptionState{
-		ConfigID: "mode",
+		ConfigID:  "mode",
 		CurrentID: "code",
 		Options: []ConfigOptionDef{
 			{
@@ -387,7 +387,7 @@ func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testin
 
 	// Now set config state — should NOT override existing modeState
 	conn.SetCachedConfigState(&ConfigOptionState{
-		ConfigID: "mode",
+		ConfigID:  "mode",
 		CurrentID: "code",
 		Options: []ConfigOptionDef{
 			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{{ID: "code", Name: "Code"}}},

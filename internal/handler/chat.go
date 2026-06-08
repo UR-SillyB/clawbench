@@ -190,21 +190,21 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		var modeState, thinkingEffortState, modelListState, planState any
 		var commands []ai.AvailableCommandInfo
 		if sessionID != "" {
-			if ms, _, es, cmds, ml, ps := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil || len(cmds) > 0 || ml != nil || ps != nil {
-				modeState = ms
-				thinkingEffortState = es
-				commands = cmds
-				modelListState = ml
-				planState = ps
+			if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Effort != nil || len(s.Commands) > 0 || s.ModelList != nil || s.Plan != nil {
+				modeState = s.Mode
+				thinkingEffortState = s.Effort
+				commands = s.Commands
+				modelListState = s.ModelList
+				planState = s.Plan
 			} else if sessionAgentID != "" {
 				// No session-level mapping yet (new session, never sent a message).
 				// Fall back to agent-level cache so mode/thinking/command chips
 				// appear immediately without requiring the first message.
-				if ms, _, es, ml, ps := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); ms != nil || es != nil || ml != nil || ps != nil {
-					modeState = ms
-					thinkingEffortState = es
-					modelListState = ml
-					planState = ps
+				if s := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); s.Mode != nil || s.Effort != nil || s.ModelList != nil || s.Plan != nil {
+					modeState = s.Mode
+					thinkingEffortState = s.Effort
+					modelListState = s.ModelList
+					planState = s.Plan
 				}
 				if cmds := ai.GetACPConnManager().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
 					commands = cmds
@@ -830,16 +830,16 @@ func finalizeStreamRun(
 	responseMetadata.WallMs = wallMs
 
 	// Inject ACP mode and thinking effort into metadata (if available)
-	if ms, _, es, _, _, _ := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); ms != nil || es != nil {
-		if ms != nil && ms.CurrentModeID != "" {
-			responseMetadata.Mode = ms.CurrentModeID
+	if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Effort != nil {
+		if s.Mode != nil && s.Mode.CurrentModeID != "" {
+			responseMetadata.Mode = s.Mode.CurrentModeID
 			// Do NOT overwrite the user's mode selection in DB with the agent's
 			// runtime mode switch. The agent may auto-switch modes (e.g. code→ask)
 			// during execution, but that should not persist over the user's choice.
 			// User-selected mode is already persisted at POST time (line ~422-423).
 		}
-		if es != nil && es.CurrentID != "" {
-			responseMetadata.ThinkingEffort = es.CurrentID
+		if s.Effort != nil && s.Effort.CurrentID != "" {
+			responseMetadata.ThinkingEffort = s.Effort.CurrentID
 		}
 	}
 	// Also inject thinking effort from session DB if not already set from ACP cache

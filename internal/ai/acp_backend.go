@@ -170,65 +170,9 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 	if isNew {
 		// New session — emit session_capture for handler to persist ACP session ID
 		forwardACPEvent(ch, StreamEvent{Type: "session_capture", Content: acpSessionID})
-
-		// Extract and cache mode/config/thinking effort state from NewSessionResponse
-		if sessResp := conn.GetAndClearNewSessionResp(); sessResp != nil {
-			if modeState := extractACPModeState(sessResp); modeState != nil {
-				conn.SetCachedModeState(modeState)
-			}
-			if configState := extractACPConfigOptions(sessResp); configState != nil {
-				conn.SetCachedConfigState(configState)
-			}
-			if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-				conn.SetCachedThinkingEffortState(effortState)
-			}
-			if modelList := extractACPModelList(sessResp); modelList != nil {
-				conn.SetCachedModelListState(modelList)
-			}
-		}
+		b.cacheNewSessionState(conn)
 	} else {
-		// Recovered session (via ResumeSession) — merge state from response.
-		// ResumeSession reports the agent's DEFAULT config, not the user's
-		// previous selections. Since ensureAliveWithSession already re-applied
-		// the cached mode/model/thinking via SetSessionConfigOption, we must
-		// preserve the current* values in cache and only update the "available
-		// options" lists from the response (which may have changed after restart).
-		if resumeResp := conn.GetAndClearResumeSessionResp(); resumeResp != nil {
-			if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
-				// Preserve current mode (re-applied by ensureAliveWithSession),
-				// but update available modes list from the resumed agent.
-				existing := conn.GetCachedModeState()
-				if existing != nil && existing.CurrentModeID != "" {
-					modeState.CurrentModeID = existing.CurrentModeID
-				}
-				conn.SetCachedModeState(modeState)
-			}
-			if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
-				// Preserve current config value (re-applied by ensureAliveWithSession),
-				// but update available options list from the resumed agent.
-				existing := conn.GetCachedConfigState()
-				if existing != nil && existing.CurrentID != "" {
-					configState.CurrentID = existing.CurrentID
-				}
-				conn.SetCachedConfigState(configState)
-			}
-			if effortState := extractACPThinkingEffortFromResume(resumeResp); effortState != nil {
-				existing := conn.GetCachedThinkingEffortState()
-				if existing != nil && existing.CurrentID != "" {
-					effortState.CurrentID = existing.CurrentID
-				}
-				conn.SetCachedThinkingEffortState(effortState)
-			}
-			if modelList := extractACPModelListFromResume(resumeResp); modelList != nil {
-				// Preserve current model (re-applied by ensureAliveWithSession),
-				// but update available models list from the resumed agent.
-				existing := conn.GetCachedModelListState()
-				if existing != nil && existing.CurrentModelID != "" {
-					modelList.CurrentModelID = existing.CurrentModelID
-				}
-				conn.SetCachedModelListState(modelList)
-			}
-		}
+		b.mergeResumedSessionState(conn)
 	}
 
 	// Only emit mode_update/thinking_effort_update/model_list_update on first
@@ -236,18 +180,7 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 	// and only updates via user action. ACP agent notifications are diff-checked
 	// in forwardACPUpdate before being forwarded.
 	if isNew {
-		if modeState := conn.GetCachedModeState(); modeState != nil {
-			slog.Info("acp: emitting mode_update for new session", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
-			forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
-		}
-		if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
-			slog.Debug("acp: emitting thinking_effort_update for new session", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
-			forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
-		}
-		if modelListState := conn.GetCachedModelListState(); modelListState != nil {
-			slog.Debug("acp: emitting model_list_update for new session", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
-			forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
-		}
+		b.emitNewSessionEvents(conn, ch)
 	}
 	// config_update is still re-emitted every stream because the frontend
 	// resets config state on session switch and config covers more than just mode.
@@ -258,29 +191,110 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 
 	// Emit commands_update if cached from available_commands_update.
 	// Also re-emitted for every stream to repopulate frontend state.
-	if client := conn.GetClient(); client != nil {
-		if cmds := client.GetCommands(); len(cmds) > 0 {
-			infos := make([]AvailableCommandInfo, 0, len(cmds))
-			for _, c := range cmds {
-				info := AvailableCommandInfo{
-					Name:        c.Name,
-					Description: c.Description,
-				}
-				if c.Input != nil && c.Input.Unstructured != nil {
-					info.InputHint = c.Input.Unstructured.Hint
-				}
-				infos = append(infos, info)
-			}
-			slog.Info("acp: re-emitting cached commands_update", "count", len(infos))
-			forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
-		}
-	}
+	b.emitCommandsUpdate(conn, ch)
 
 	// Re-emit cached plan state so the frontend populates the plan panel
 	// on reconnect/respawn without waiting for a new plan_update event.
 	if planState := conn.GetCachedPlanState(); planState != nil {
 		forwardACPEvent(ch, StreamEvent{Type: "plan_update", Plan: planState})
 	}
+}
+
+// cacheNewSessionState extracts and caches mode/config/thinking/model state from
+// a NewSessionResponse after creating a new ACP session.
+func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
+	sessResp := conn.GetAndClearNewSessionResp()
+	if sessResp == nil {
+		return
+	}
+	if modeState := extractACPModeState(sessResp); modeState != nil {
+		conn.SetCachedModeState(modeState)
+	}
+	if configState := extractACPConfigOptions(sessResp); configState != nil {
+		conn.SetCachedConfigState(configState)
+	}
+	if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
+		conn.SetCachedThinkingEffortState(effortState)
+	}
+	if modelList := extractACPModelList(sessResp); modelList != nil {
+		conn.SetCachedModelListState(modelList)
+	}
+}
+
+// mergeResumedSessionState merges state from a ResumeSessionResponse, preserving
+// the user's current selections (re-applied by ensureAliveWithSession) while
+// updating available options lists from the resumed agent.
+func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
+	resumeResp := conn.GetAndClearResumeSessionResp()
+	if resumeResp == nil {
+		return
+	}
+	if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
+		if existing := conn.GetCachedModeState(); existing != nil && existing.CurrentModeID != "" {
+			modeState.CurrentModeID = existing.CurrentModeID
+		}
+		conn.SetCachedModeState(modeState)
+	}
+	if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
+		if existing := conn.GetCachedConfigState(); existing != nil && existing.CurrentID != "" {
+			configState.CurrentID = existing.CurrentID
+		}
+		conn.SetCachedConfigState(configState)
+	}
+	if effortState := extractACPThinkingEffortFromResume(resumeResp); effortState != nil {
+		if existing := conn.GetCachedThinkingEffortState(); existing != nil && existing.CurrentID != "" {
+			effortState.CurrentID = existing.CurrentID
+		}
+		conn.SetCachedThinkingEffortState(effortState)
+	}
+	if modelList := extractACPModelListFromResume(resumeResp); modelList != nil {
+		if existing := conn.GetCachedModelListState(); existing != nil && existing.CurrentModelID != "" {
+			modelList.CurrentModelID = existing.CurrentModelID
+		}
+		conn.SetCachedModelListState(modelList)
+	}
+}
+
+// emitNewSessionEvents emits mode_update, thinking_effort_update, and model_list_update
+// SSE events for a newly created session (not for resumed sessions).
+func (b *ACPBackend) emitNewSessionEvents(conn *ACPConn, ch chan<- StreamEvent) {
+	if modeState := conn.GetCachedModeState(); modeState != nil {
+		slog.Info("acp: emitting mode_update for new session", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
+	}
+	if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
+		slog.Debug("acp: emitting thinking_effort_update for new session", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
+		forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
+	}
+	if modelListState := conn.GetCachedModelListState(); modelListState != nil {
+		slog.Debug("acp: emitting model_list_update for new session", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
+		forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
+	}
+}
+
+// emitCommandsUpdate re-emits cached slash commands as an SSE event.
+func (b *ACPBackend) emitCommandsUpdate(conn *ACPConn, ch chan<- StreamEvent) {
+	client := conn.GetClient()
+	if client == nil {
+		return
+	}
+	cmds := client.GetCommands()
+	if len(cmds) == 0 {
+		return
+	}
+	infos := make([]AvailableCommandInfo, 0, len(cmds))
+	for _, c := range cmds {
+		info := AvailableCommandInfo{
+			Name:        c.Name,
+			Description: c.Description,
+		}
+		if c.Input != nil && c.Input.Unstructured != nil {
+			info.InputHint = c.Input.Unstructured.Hint
+		}
+		infos = append(infos, info)
+	}
+	slog.Info("acp: re-emitting cached commands_update", "count", len(infos))
+	forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
 }
 
 // isACPPeerDisconnected checks whether the error is an ACP peer-disconnect error

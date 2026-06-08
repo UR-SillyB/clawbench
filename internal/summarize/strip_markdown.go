@@ -13,7 +13,7 @@ var (
 	// reAskQuestion matches <ask-question>...</ask-question> blocks.
 	// The inner content is XML with <item>, <question>, <option> etc. that must be
 	// preserved for TTS summarization.
-	reAskQuestion = regexp.MustCompile("(?s)<ask-question>\\s*(.*?)\\s*</ask-question>")
+	reAskQuestion    = regexp.MustCompile(`(?s)<ask-question>\s*(.*?)\s*</ask-question>`)
 	reInlineCode     = regexp.MustCompile("`[^`]+`")
 	reBoldAsterisk   = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 	reBoldUnderscore = regexp.MustCompile(`__([^_]+)__`)
@@ -182,25 +182,30 @@ func preserveAskQuestionXML(items [][]string) string {
 		opts := reOption.FindAllStringSubmatch(itemContent, -1)
 		if len(opts) > 0 {
 			b.WriteString(": ")
-			for j, opt := range opts {
-				if j > 0 {
-					b.WriteString(", ")
-				}
-				labelMatch := reLabel.FindStringSubmatch(opt[1])
-				descMatch := reDesc.FindStringSubmatch(opt[1])
-				if len(labelMatch) >= 2 {
-					b.WriteString(strings.TrimSpace(labelMatch[1]))
-				}
-				if len(descMatch) >= 2 {
-					desc := strings.TrimSpace(descMatch[1])
-					if desc != "" && (len(labelMatch) < 2 || desc != strings.TrimSpace(labelMatch[1])) {
-						fmt.Fprintf(&b, " — %s", desc)
-					}
-				}
-			}
+			formatXMLOptions(&b, opts)
 		}
 	}
 	return b.String()
+}
+
+// formatXMLOptions writes XML option labels and descriptions to the builder.
+func formatXMLOptions(b *strings.Builder, opts [][]string) {
+	for j, opt := range opts {
+		if j > 0 {
+			b.WriteString(", ")
+		}
+		labelMatch := reLabel.FindStringSubmatch(opt[1])
+		descMatch := reDesc.FindStringSubmatch(opt[1])
+		if len(labelMatch) >= 2 {
+			b.WriteString(strings.TrimSpace(labelMatch[1]))
+		}
+		if len(descMatch) >= 2 {
+			desc := strings.TrimSpace(descMatch[1])
+			if desc != "" && (len(labelMatch) < 2 || desc != strings.TrimSpace(labelMatch[1])) {
+				fmt.Fprintf(b, " — %s", desc)
+			}
+		}
+	}
 }
 
 // preserveAskQuestionJSON converts JSON-format ask-question content into plain text for TTS.

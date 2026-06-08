@@ -57,65 +57,77 @@ func CleanupOrphans() {
 
 	var killed int
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		pid, ok := parseDirEntryAsPID(entry)
+		if !ok {
 			continue
 		}
 
-		pid := 0
-		if _, err := parsePID(entry.Name(), &pid); err != nil {
-			continue
-		}
-		if pid <= 1 {
-			continue // skip kernel/init
-		}
-
-		// Check environment markers
-		environPath := "/proc/" + entry.Name() + "/environ"
-		data, err := os.ReadFile(environPath)
-		if err != nil {
-			continue // permission denied or process exited
-		}
-
-		isOrphan := hasClawBenchChildMarker(data) || hasClawBenchSupervisorMarker(data)
-
-		// Fallback: check cmdline for known ACP agent patterns
-		if !isOrphan {
-			cmdlinePath := "/proc/" + entry.Name() + "/cmdline"
-			cmdData, err := os.ReadFile(cmdlinePath)
-			if err != nil {
-				continue
-			}
-			isOrphan = hasOrphanCmdlinePattern(cmdData)
-		}
-
-		if !isOrphan {
-			continue
-		}
-
-		// Found an orphan — kill it
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			continue
-		}
-
-		// Verify process is still alive before killing
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			continue
-		}
-
-		slog.Info("orphan_cleanup: killing orphan AI process", "pid", pid)
-		if err := proc.Kill(); err != nil {
-			slog.Warn("orphan_cleanup: failed to kill orphan", "pid", pid, "error", err)
-		} else {
-			// Reap the process to avoid zombies
-			_, _ = proc.Wait()
-			killed++
+		if isOrphanProcess(entry.Name()) {
+			killed += killOrphan(pid)
 		}
 	}
 
 	if killed > 0 {
 		slog.Info("orphan_cleanup: complete", "killed", killed)
 	}
+}
+
+// parseDirEntryAsPID returns the PID if the directory entry is a numeric directory.
+func parseDirEntryAsPID(entry os.DirEntry) (int, bool) {
+	if !entry.IsDir() {
+		return 0, false
+	}
+	pid := 0
+	if _, err := parsePID(entry.Name(), &pid); err != nil {
+		return 0, false
+	}
+	if pid <= 1 {
+		return 0, false // skip kernel/init
+	}
+	return pid, true
+}
+
+// isOrphanProcess checks if a process is a ClawBench orphan by environment markers or cmdline patterns.
+func isOrphanProcess(entryName string) bool {
+	environPath := "/proc/" + entryName + "/environ"
+	data, err := os.ReadFile(environPath)
+	if err != nil {
+		return false // permission denied or process exited
+	}
+
+	if hasClawBenchChildMarker(data) || hasClawBenchSupervisorMarker(data) {
+		return true
+	}
+
+	// Fallback: check cmdline for known ACP agent patterns
+	cmdlinePath := "/proc/" + entryName + "/cmdline"
+	cmdData, cmdErr := os.ReadFile(cmdlinePath)
+	if cmdErr != nil {
+		return false
+	}
+	return hasOrphanCmdlinePattern(cmdData)
+}
+
+// killOrphan kills an orphan process and returns 1 if successful, 0 otherwise.
+func killOrphan(pid int) int {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return 0
+	}
+
+	// Verify process is still alive before killing
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return 0
+	}
+
+	slog.Info("orphan_cleanup: killing orphan AI process", "pid", pid)
+	if err := proc.Kill(); err != nil {
+		slog.Warn("orphan_cleanup: failed to kill orphan", "pid", pid, "error", err)
+		return 0
+	}
+	// Reap the process to avoid zombies
+	_, _ = proc.Wait()
+	return 1
 }
 
 // hasClawBenchChildMarker checks if the /proc/<pid>/environ data

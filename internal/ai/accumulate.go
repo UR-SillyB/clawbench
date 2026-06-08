@@ -74,24 +74,24 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 				if (*blocks)[i].Type != "tool_use" || (*blocks)[i].ID != event.Tool.ID {
 					continue
 				}
-			// Merge input: preserve existing fields that the update doesn't provide.
-			// ACP tool_call_update may carry only content-based description (overwriting
-			// the command from the initial tool_call's rawInput), so we merge instead
-			// of replace to keep both command and description.
-			if input != nil && len(input) > 0 {
-				if (*blocks)[i].Input != nil {
-					merged := make(map[string]any)
-					for k, v := range (*blocks)[i].Input {
-						merged[k] = v
+				// Merge input: preserve existing fields that the update doesn't provide.
+				// ACP tool_call_update may carry only content-based description (overwriting
+				// the command from the initial tool_call's rawInput), so we merge instead
+				// of replace to keep both command and description.
+				if len(input) > 0 {
+					if (*blocks)[i].Input != nil {
+						merged := make(map[string]any)
+						for k, v := range (*blocks)[i].Input {
+							merged[k] = v
+						}
+						for k, v := range input {
+							merged[k] = v
+						}
+						(*blocks)[i].Input = merged
+					} else {
+						(*blocks)[i].Input = input
 					}
-					for k, v := range input {
-						merged[k] = v
-					}
-					(*blocks)[i].Input = merged
-				} else {
-					(*blocks)[i].Input = input
 				}
-			}
 				// Update name if provided (ACP agents may send name in updates)
 				if event.Tool.Name != "" {
 					(*blocks)[i].Name = event.Tool.Name
@@ -135,7 +135,7 @@ func AccumulateBlock(blocks *[]model.ContentBlock, event StreamEvent) {
 				if (*blocks)[i].Type == "tool_use" && (*blocks)[i].ID == event.Tool.ID {
 					// Update input if provided (ACP tool_call_update completed events
 					// may carry rawInput that was missing from earlier tool_use events)
-					if input != nil && len(input) > 0 {
+					if len(input) > 0 {
 						(*blocks)[i].Input = input
 					}
 					// Update name if provided (ACP agents may send name in updates)

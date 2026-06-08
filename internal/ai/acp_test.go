@@ -206,8 +206,8 @@ func TestMapACPToolCallUpdate_InProgressWithRawInput(t *testing.T) {
 	title := "Explore project structure"
 	tcu := acp.SessionToolCallUpdate{
 		ToolCallId: acp.ToolCallId("call_function_bla436bgujiz_1"),
-		Status:    &inProgress,
-		Title:     &title,
+		Status:     &inProgress,
+		Title:      &title,
 		RawInput: map[string]any{
 			"description":   "Explore project structure",
 			"prompt":        "Explore the codebase thoroughly",
@@ -236,8 +236,8 @@ func TestMapACPToolCallUpdate_CompletedWithRawInput(t *testing.T) {
 	title := "Explore project structure"
 	tcu := acp.SessionToolCallUpdate{
 		ToolCallId: acp.ToolCallId("call_function_bla436bgujiz_1"),
-		Status:    &completed,
-		Title:     &title,
+		Status:     &completed,
+		Title:      &title,
 		RawInput: map[string]any{
 			"description":   "Explore project structure",
 			"prompt":        "Explore the codebase thoroughly",
@@ -796,7 +796,7 @@ func TestMapACPSessionUpdate_PlanUpdate(t *testing.T) {
 	// Verify each entry's fields
 	assert.Equal(t, "Read project files", events[0].Plan.Entries[0].Content)
 	assert.Equal(t, "high", events[0].Plan.Entries[0].Priority)
-		assert.Equal(t, "completed", events[0].Plan.Entries[0].Status)
+	assert.Equal(t, "completed", events[0].Plan.Entries[0].Status)
 
 	assert.Equal(t, "Implement feature", events[0].Plan.Entries[1].Content)
 	assert.Equal(t, "high", events[0].Plan.Entries[1].Priority)
@@ -1733,10 +1733,7 @@ func TestExtractACPToolOutput_Array_MixedTypes(t *testing.T) {
 	assert.Contains(t, result, "text")
 }
 
-func TestExtractACPToolOutput_Array_Empty(t *testing.T) {
-	result := extractACPToolOutput([]any{})
-	assert.Equal(t, "[]", result)
-}
+// Duplicate removed: TestExtractACPToolOutput_Array_Empty is in acp_events_test.go
 
 func TestExtractACPToolOutput_NilValue(t *testing.T) {
 	// nil interface → json.MarshalIndent produces "null"
@@ -1888,7 +1885,7 @@ func TestModeStateFromConfigState_Nil(t *testing.T) {
 
 func TestModeStateFromConfigState_NoModeCategory(t *testing.T) {
 	cs := &ConfigOptionState{
-		ConfigID: "thinking_effort",
+		ConfigID:  "thinking_effort",
 		CurrentID: "high",
 		Options: []ConfigOptionDef{
 			{ID: "thinking_effort", Category: "thought_level", Values: []ConfigOptionValue{{ID: "high", Name: "High"}}},
@@ -1899,7 +1896,7 @@ func TestModeStateFromConfigState_NoModeCategory(t *testing.T) {
 
 func TestModeStateFromConfigState_ValidModeOptions(t *testing.T) {
 	cs := &ConfigOptionState{
-		ConfigID: "mode",
+		ConfigID:  "mode",
 		CurrentID: "code",
 		Options: []ConfigOptionDef{
 			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{
@@ -1919,7 +1916,7 @@ func TestModeStateFromConfigState_ValidModeOptions(t *testing.T) {
 
 func TestModeStateFromConfigState_EmptyValuesNoCurrentID(t *testing.T) {
 	cs := &ConfigOptionState{
-		ConfigID: "mode",
+		ConfigID:  "mode",
 		CurrentID: "",
 		Options: []ConfigOptionDef{
 			{ID: "mode", Category: "mode", Values: []ConfigOptionValue{}},

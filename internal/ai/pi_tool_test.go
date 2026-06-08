@@ -22,6 +22,7 @@ func TestParsePiToolCallEnd_ReadTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Read" {
 		t.Errorf("expected name 'Read', got '%s'", tc.Name)
@@ -55,6 +56,7 @@ func TestParsePiToolCallEnd_WriteTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Write" {
 		t.Errorf("expected name 'Write', got '%s'", tc.Name)
@@ -78,6 +80,7 @@ func TestParsePiToolCallEnd_EditTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Edit" {
 		t.Errorf("expected name 'Edit', got '%s'", tc.Name)
@@ -115,6 +118,7 @@ func TestParsePiToolCallEnd_BashTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Bash" {
 		t.Errorf("expected name 'Bash', got '%s'", tc.Name)
@@ -139,6 +143,7 @@ func TestParsePiToolCallEnd_GrepTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Name != "Grep" {
 		t.Errorf("expected name 'Grep', got '%s'", tc.Name)
@@ -175,6 +180,7 @@ func TestParsePiToolCallEnd_EmptyArguments(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Input != `{}` {
 		t.Errorf("expected '{}', got '%s'", tc.Input)
@@ -195,6 +201,7 @@ func TestParsePiToolCallEnd_NilArguments(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// nil arguments should produce "{}"
 	if tc.Input != `{}` {
@@ -216,6 +223,7 @@ func TestParsePiToolCallEnd_EditToolMultipleEdits(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// All edits should have oldText/newText remapped
 	if strings.Count(tc.Input, `"old_string"`) != 2 {
@@ -240,6 +248,7 @@ func TestParsePiToolCallEnd_UnknownTool(t *testing.T) {
 	tc := parsePiToolCallEnd(evt)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// Unknown tool name is passed through as-is
 	if tc.Name != "custom_tool" {
@@ -280,6 +289,7 @@ func TestParsePiToolExecutionEnd_BashSuccess(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.ID != "call_bash1" {
 		t.Errorf("expected ID 'call_bash1', got '%s'", tc.ID)
@@ -308,6 +318,7 @@ func TestParsePiToolExecutionEnd_ErrorResult(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Status != "error" {
 		t.Errorf("expected status 'error', got '%s'", tc.Status)
@@ -331,6 +342,7 @@ func TestParsePiToolExecutionEnd_MultiContent(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// Multiple text content items should be joined with newline
 	if tc.Output != "line1\nline2" {
@@ -369,6 +381,7 @@ func TestParsePiToolExecutionEnd_NilResult(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Output != "" {
 		t.Errorf("expected empty output, got '%s'", tc.Output)
@@ -392,6 +405,7 @@ func TestParsePiToolExecutionEnd_EmptyContentArray(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Output != "" {
 		t.Errorf("expected empty output, got '%s'", tc.Output)
@@ -415,6 +429,7 @@ func TestParsePiToolExecutionEnd_NonTextContentIgnored(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Output != "actual text" {
 		t.Errorf("expected 'actual text', got '%s'", tc.Output)
@@ -438,6 +453,7 @@ func TestParsePiToolExecutionEnd_EmptyTextIgnored(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	// Empty text items should be skipped; only non-empty text is joined
 	if tc.Output != "visible" {
@@ -457,6 +473,7 @@ func TestParsePiToolExecutionEnd_ErrorWithNilResult(t *testing.T) {
 	tc := parsePiToolExecutionEnd(msg)
 	if tc == nil {
 		t.Fatal("expected non-nil ToolCall")
+		return
 	}
 	if tc.Status != "error" {
 		t.Errorf("expected status 'error', got '%s'", tc.Status)

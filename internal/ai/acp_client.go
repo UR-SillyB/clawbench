@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -235,12 +236,12 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 	// original tool_use block (e.g. ExitPlanMode) and never show the approval card.
 	permissionBlockID := "perm_" + toolCallID
 	approvalInput := map[string]any{
-		"session_id":    sessionID,
-		"toolCallId":    toolCallID,
-		"permissionId":  permissionBlockID,
-		"toolName":      toolName,
-		"toolInput":     toolInput,
-		"options":       p.Options,
+		"session_id":   sessionID,
+		"toolCallId":   toolCallID,
+		"permissionId": permissionBlockID,
+		"toolName":     toolName,
+		"toolInput":    toolInput,
+		"options":      p.Options,
 	}
 	inputJSON, _ := json.Marshal(approvalInput)
 
@@ -454,7 +455,8 @@ func (c *ClawBenchACPClient) CreateTerminal(ctx context.Context, req acp.CreateT
 		defer ts.mu.Unlock()
 
 		if waitErr != nil {
-			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
 				code := exitErr.ExitCode()
 				ts.exitCode = &code
 			} else {

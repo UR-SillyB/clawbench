@@ -10,9 +10,9 @@ import (
 
 func TestParseGeminiToolUse_Basic(t *testing.T) {
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "read_file",
-		ToolID:    "call_123",
+		Type:       "tool_use",
+		ToolName:   "read_file",
+		ToolID:     "call_123",
 		Parameters: json.RawMessage(`{"filePath":"/tmp/test.go"}`),
 	}
 
@@ -25,9 +25,9 @@ func TestParseGeminiToolUse_Basic(t *testing.T) {
 
 func TestParseGeminiToolUse_InputNormalization(t *testing.T) {
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "list_directory",
-		ToolID:    "call_ls",
+		Type:       "tool_use",
+		ToolName:   "list_directory",
+		ToolID:     "call_ls",
 		Parameters: json.RawMessage(`{"dirPath":"./src"}`),
 	}
 
@@ -46,9 +46,9 @@ func TestParseGeminiToolUse_InputNormalization(t *testing.T) {
 func TestParseGeminiToolUse_FilePathNormalization(t *testing.T) {
 	// filePath → file_path is in defaultMappings, but gemini_cli remaps are also merged
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "read_file",
-		ToolID:    "call_read",
+		Type:       "tool_use",
+		ToolName:   "read_file",
+		ToolID:     "call_read",
 		Parameters: json.RawMessage(`{"filePath":"/tmp/main.go"}`),
 	}
 
@@ -66,9 +66,9 @@ func TestParseGeminiToolUse_FilePathNormalization(t *testing.T) {
 func TestParseGeminiToolUse_CombinedNormalization(t *testing.T) {
 	// Both filePath and dirPath in same input
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "some_tool",
-		ToolID:    "call_combo",
+		Type:       "tool_use",
+		ToolName:   "some_tool",
+		ToolID:     "call_combo",
 		Parameters: json.RawMessage(`{"filePath":"main.go","dirPath":"./src"}`),
 	}
 
@@ -112,9 +112,9 @@ func TestParseGeminiToolUse_NonObjectParameters(t *testing.T) {
 	// When parameters is valid JSON but not an object, normalizeToolInput fails
 	// and should fall back to raw string
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "some_tool",
-		ToolID:    "call_arr",
+		Type:       "tool_use",
+		ToolName:   "some_tool",
+		ToolID:     "call_arr",
 		Parameters: json.RawMessage(`[1,2,3]`),
 	}
 
@@ -145,9 +145,9 @@ func TestParseGeminiToolUse_ToolNameNormalization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			msg := &GeminiStreamMessage{
-				Type:      "tool_use",
-				ToolName:  tt.toolName,
-				ToolID:    "call_test",
+				Type:       "tool_use",
+				ToolName:   tt.toolName,
+				ToolID:     "call_test",
 				Parameters: json.RawMessage(`{}`),
 			}
 			tc := parseGeminiToolUse(msg)
@@ -160,9 +160,9 @@ func TestParseGeminiToolUse_ToolNameNormalization(t *testing.T) {
 func TestParseGeminiToolUse_AlwaysDone(t *testing.T) {
 	// Gemini sends full tool input in one event, so Done is always true
 	msg := &GeminiStreamMessage{
-		Type:      "tool_use",
-		ToolName:  "read_file",
-		ToolID:    "call_done",
+		Type:       "tool_use",
+		ToolName:   "read_file",
+		ToolID:     "call_done",
 		Parameters: json.RawMessage(`{"filePath":"/tmp/test.go"}`),
 	}
 
