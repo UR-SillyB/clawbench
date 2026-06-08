@@ -34,8 +34,8 @@ type Agent struct {
 	SystemPrompt            string       `yaml:"system_prompt,omitempty" json:"systemPrompt"`
 
 	// ACP configuration (only used when Transport != "cli")
-	Transport  string `yaml:"transport,omitempty" json:"transport,omitempty"`    // "cli"(default) | "acp-stdio"
-	AcpCommand string `yaml:"acp_command,omitempty" json:"acpCommand,omitempty"` // stdio: spawn command, e.g. "gemini --acp"
+	Transport  string `yaml:"transport,omitempty" json:"transport"`              // "cli"(default) | "acp-stdio"
+	AcpCommand string `yaml:"acp_command,omitempty" json:"acpCommand,omitempty"` // acp-stdio: spawn command, e.g. "gemini --acp"
 
 	// ACP cached state persisted to DB — populated from ACP agent at runtime,
 	// used as fallback when the connection pool is empty (before first message

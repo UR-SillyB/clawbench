@@ -206,14 +206,17 @@ func DeleteAgent(db *sql.DB, id string) error {
 	return nil
 }
 
-// PatchAgent updates only the user-editable fields (preferred_model, preferred_thinking_effort).
+// PatchAgent updates only the user-editable fields (preferred_model, preferred_thinking_effort, transport).
 // Returns nil even if the agent doesn't exist (no rows affected).
-func PatchAgent(db *sql.DB, id, preferredModel, preferredThinkingEffort string) error {
+func PatchAgent(db *sql.DB, id, preferredModel, preferredThinkingEffort, transport string) error {
+	if transport == "" {
+		transport = "cli"
+	}
 	_, err := db.Exec(`
 		UPDATE agents
-		SET preferred_model = ?, preferred_thinking_effort = ?, updated_at = CURRENT_TIMESTAMP
+		SET preferred_model = ?, preferred_thinking_effort = ?, transport = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
-		preferredModel, preferredThinkingEffort, id)
+		preferredModel, preferredThinkingEffort, transport, id)
 	if err != nil {
 		return fmt.Errorf("patch agent %s: %w", id, err)
 	}

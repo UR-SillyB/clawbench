@@ -159,6 +159,13 @@ func DeleteSession(w http.ResponseWriter, r *http.Request) {
 		backend = "codebuddy"
 	}
 
+	// Cancel the running session before deleting to kill the CLI process.
+	// This ensures no orphan CLI processes remain after soft-delete.
+	if service.IsSessionRunning(sessionID) {
+		slog.Info("cancelling running session before delete", "session_id", sessionID)
+		service.CancelSession(sessionID)
+	}
+
 	// Close the ACP connection for this session before soft-delete
 	// (GetSessionAgentID queries WHERE deleted=0, so we must read it first)
 	agentID := service.GetSessionAgentID(sessionID)

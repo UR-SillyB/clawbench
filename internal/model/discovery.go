@@ -35,7 +35,7 @@ type BackendSpec struct {
 	ParseModels          func(string) []AgentModel // optional: parse command stdout into AgentModel list; nil = not supported
 	DiscoverModelsFunc   func() []AgentModel       // optional: custom model discovery function (e.g. binary strings scan); takes priority over ListModelsCmd
 	ThinkingEffortLevels []string                  // supported thinking effort levels, e.g. ["low","medium","high"]; nil = not supported
-	AcpCommand           string                    // ACP spawn command for stdio transport, e.g. "gemini --acp"; empty = no ACP support
+	AcpCommand           string                    // ACP spawn command for acp-stdio transport, e.g. "gemini --acp"; empty = no ACP support
 }
 
 // BackendRegistry lists all known AI backends for auto-discovery.

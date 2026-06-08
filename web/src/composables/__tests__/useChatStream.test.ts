@@ -619,6 +619,31 @@ describe('useChatStream', () => {
       expect(options.onQueueConsume).toHaveBeenCalled()
     })
 
+    it('should deduplicate user message when local copy already exists (no id)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Simulate a local user message pushed by sendMessageNow (no id)
+      options.messages.value.push({
+        role: 'user',
+        content: 'Hello AI',
+        blocks: [{ type: 'text', text: 'Hello AI' }],
+        createdAt: new Date().toISOString(),
+      })
+
+      const userCountBefore = options.messages.value.filter((m: any) => m.role === 'user').length
+
+      // queue_consume with the same content should NOT push another user message
+      es.simulate('queue_consume', { text: 'Hello AI' })
+
+      const userCountAfter = options.messages.value.filter((m: any) => m.role === 'user').length
+      expect(userCountAfter).toBe(userCountBefore)
+    })
+
     it('should call onRenderNeeded and onScrollBottom(true)', () => {
       const options = createOptions()
       const { connectStream } = useChatStream(options)

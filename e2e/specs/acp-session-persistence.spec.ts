@@ -159,8 +159,8 @@ test.describe.serial('ACP Session State Persistence', () => {
     await chat.sendAndAwaitACPReply('hi')
     await page.waitForTimeout(2000)
 
-    // Open ModelModal → thinking tab → select "High"
-    await chat.openModelModal()
+    // Open SessionSettingModal → thinking tab → select "High"
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
     await chat.selectThinkingEffort('High')
 
@@ -176,8 +176,8 @@ test.describe.serial('ACP Session State Persistence', () => {
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
 
-    // Open ModelModal → thinking tab — "High" should be the active selection
-    await chat.openModelModal()
+    // Open SessionSettingModal → thinking tab — "High" should be the active selection
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
 
     // The "High" item should have the active/selected class

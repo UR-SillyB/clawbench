@@ -16,7 +16,7 @@ import (
 // ACPBackend implements the AIBackend interface using the Agent Client Protocol.
 // Each ClawBench session gets its own dedicated agent process (one-to-one model).
 //
-//   - Each ClawBench session = one agent subprocess (stdio)
+//   - Each ClawBench session = one agent subprocess (acp-stdio)
 //   - Agent processes are never idle-reaped
 //   - If the process dies, it is respawned and the session is recovered via ResumeSession
 //   - Cancel marks the connection as dead; next prompt triggers respawn + ResumeSession

@@ -12,7 +12,7 @@ import { ChatPage } from '../pages/chat.page'
  * The existing slash-commands.spec.ts covers basic visibility and selection
  * of thinking effort levels. This suite focuses on:
  * 1. Persistence of thinking effort selection across sessions and page reloads
- * 2. Model list display in ModelModal (agent-configured models)
+ * 2. Model list display in SessionSettingModal (agent-configured models)
  * 3. Backend API correctness for thinking effort persistence
  *
  * SERIAL: Tests must run serially because the ACP mock agent is a single
@@ -37,8 +37,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     // Wait for thinking_effort_update SSE event to be processed
     await page.waitForTimeout(2000)
 
-    // Open ModelModal → thinking tab → select "High"
-    await chat.openModelModal()
+    // Open SessionSettingModal → thinking tab → select "High"
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
     await chat.selectThinkingEffort('High')
 
@@ -54,8 +54,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
 
-    // Open ModelModal → thinking tab — "High" should be the active selection
-    await chat.openModelModal()
+    // Open SessionSettingModal → thinking tab — "High" should be the active selection
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
 
     // The "High" item should have the active/selected class
@@ -67,7 +67,7 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
   test('should persist thinking effort selection across sessions', async ({ page }) => {
     // Previous test already established ACP connection and set thinking to "High"
     // Verify by opening the modal
-    await chat.openModelModal()
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
 
     // Change to "Low" for this test
@@ -83,8 +83,8 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     // Wait for the new session to be ready and ACP state to populate
     await page.waitForTimeout(2000)
 
-    // Open ModelModal → thinking tab
-    await chat.openModelModal()
+    // Open SessionSettingModal → thinking tab
+    await chat.openSessionSettingModal()
     await chat.openThinkingTab()
 
     // For a new session, thinking effort comes from the agent's
@@ -116,13 +116,13 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
   // Model list display
   // ───────────────────────────────────────────────────────
 
-  test('should show agent models in ModelModal for ACP session', async ({ page }) => {
+  test('should show agent models in SessionSettingModal for ACP session', async ({ page }) => {
     // Warm up ACP connection (may still be warm from previous test)
     await chat.sendAndAwaitACPReply('hi')
     await page.waitForTimeout(1000)
 
-    // Open ModelModal
-    await chat.openModelModal()
+    // Open SessionSettingModal
+    await chat.openSessionSettingModal()
 
     // Model items should be visible (from agent's configured model list)
     const modelItems = page.locator('.model-item')

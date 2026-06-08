@@ -158,7 +158,7 @@
         </button>
       </PopupMenu>
       <!-- Session settings modal -->
-      <ModelModal
+      <SessionSettingModal
         :show="showSettingsModal"
         :agent-id="currentAgentId"
         :initial-tab="settingsModalInitialTab"
@@ -166,6 +166,7 @@
         @switch-model="handleSwitchModel"
         @switch-thinking-effort="handleSwitchThinkingEffort"
         @switch-mode="handleSwitchMode"
+        @switch-transport="handleSwitchTransport"
       />
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
       <!-- @ command autocomplete menu (ClawBench built-in) -->
@@ -196,7 +197,7 @@ import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import QuickSendDialog from '@/components/chat/QuickSendDialog.vue'
-import ModelModal from '@/components/chat/ModelModal.vue'
+import SessionSettingModal from '@/components/chat/SessionSettingModal.vue'
 import { createStopButtonMachine } from '@/utils/stopButtonMachine.ts'
 import { useDialog } from '@/composables/useDialog.ts'
 import { useQuickSend } from '@/composables/useQuickSend'
@@ -292,6 +293,7 @@ const emit = defineEmits([
   'switch-model',
   'switch-thinking-effort',
   'switch-mode',
+  'switch-transport',
 ])
 
 const inputText = ref('')
@@ -666,6 +668,10 @@ function handleSwitchThinkingEffort(level) {
 
 function handleSwitchMode(mode) {
   emit('switch-mode', mode)
+}
+
+function handleSwitchTransport(transport) {
+  emit('switch-transport', transport)
 }
 
 // Menu mutual exclusion: opening one closes the others

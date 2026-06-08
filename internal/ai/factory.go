@@ -47,18 +47,24 @@ func NewBackend(backendType string) (AIBackend, error) {
 //
 // This is the preferred entry point when the agent ID is known (all handler paths).
 func NewBackendForAgent(backendType, agentID string) (AIBackend, error) {
-	// Check if the agent has ACP transport configured
+	return NewBackendForAgentWithTransport(backendType, agentID, "")
+}
+
+// NewBackendForAgentWithTransport creates a backend with an optional per-session
+// transport override. If transportOverride is non-empty, it takes precedence over
+// the agent's configured transport. Otherwise, falls back to the agent's Transport.
+func NewBackendForAgentWithTransport(backendType, agentID, transportOverride string) (AIBackend, error) {
 	if agentID != "" {
 		if agent, ok := model.Agents[agentID]; ok {
-			if agent.Transport == "acp-stdio" {
+			effectiveTransport := transportOverride
+			if effectiveTransport == "" {
+				effectiveTransport = agent.Transport
+			}
+			if effectiveTransport == "acp-stdio" {
 				acpBackend, err := NewACPBackend(agent)
 				if err != nil {
 					return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)
 				}
-				// ACP does NOT need AutoResumeBackend:
-				// - session/cancel can cancel a stuck turn without killing the process
-				// - RequestPermission auto-approves (no ExitPlanMode hang)
-				// - session/set_mode can switch plan/code mode without restart
 				return acpBackend, nil
 			}
 		}

@@ -278,6 +278,15 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 	}
 
+	// Migrate: add transport column for per-session transport type ("acp-stdio" or "cli")
+	var hasTransport int
+	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='transport'").Scan(&hasTransport)
+	if hasTransport == 0 {
+		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN transport TEXT DEFAULT ''"); err != nil {
+			return fmt.Errorf("failed to add transport column: %w", err)
+		}
+	}
+
 	// Migrate: add host column to forwarded_ports for custom target host
 	var hasForwardedPortHost int
 	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('forwarded_ports') WHERE name='host'").Scan(&hasForwardedPortHost)

@@ -187,31 +187,31 @@ export class ChatPage {
   }
 
   // ───────────────────────────────────────────────────────
-  // ModelModal helpers
+  // SessionSettingModal helpers
   // ───────────────────────────────────────────────────────
 
-  /** Open ModelModal by clicking the model chip */
-  async openModelModal(): Promise<void> {
+  /** Open SessionSettingModal by clicking the model chip */
+  async openSessionSettingModal(): Promise<void> {
     await this.settingsChip.click()
     // Wait for modal to appear
     await expect(this.page.locator('.model-tab').first()).toBeVisible({ timeout: 5000 })
   }
 
-  /** Switch to a model by name in ModelModal */
+  /** Switch to a model by name in SessionSettingModal */
   async switchModel(modelName: string): Promise<void> {
     const item = this.page.locator('.model-item').filter({ hasText: modelName })
     await expect(item).toBeVisible({ timeout: 5000 })
     await item.click()
   }
 
-  /** Search models in ModelModal */
+  /** Search models in SessionSettingModal */
   async searchModel(query: string): Promise<void> {
     const input = this.page.locator('.model-search-input')
     await expect(input).toBeVisible({ timeout: 5000 })
     await input.fill(query)
   }
 
-  /** Switch to the thinking effort tab in ModelModal */
+  /** Switch to the thinking effort tab in SessionSettingModal */
   async openThinkingTab(): Promise<void> {
     const thinkingTab = this.page.locator('.model-tab').filter({ hasText: /thinking|思考/i })
     await expect(thinkingTab).toBeVisible({ timeout: 5000 })
@@ -243,7 +243,7 @@ export class ChatPage {
   // ACP Mode helpers
   // ───────────────────────────────────────────────────────
 
-  /** Open the ACP mode tab in ModelModal by clicking the settings chip then switching to mode tab */
+  /** Open the ACP mode tab in SessionSettingModal by clicking the settings chip then switching to mode tab */
   async openModeMenu(): Promise<void> {
     // Open settings modal
     await this.settingsChip.click()

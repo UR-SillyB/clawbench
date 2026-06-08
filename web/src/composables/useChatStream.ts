@@ -237,11 +237,21 @@ export function useChatStream(options: UseChatStreamOptions) {
           }
         }
 
-        // Add any new non-streaming messages that appeared (e.g., queued user messages)
+        // Add any new non-streaming messages that appeared (e.g., queued user messages).
+        // Deduplicate against both DB id and local messages without id (optimistic pushes).
         const existingIds = new Set(messages.value.map((m: any) => m.id).filter(Boolean))
+        const existingLocalUserContent = new Set(
+          messages.value.filter((m: any) => m.role === 'user' && !m.id).map((m: any) => m.content)
+        )
         for (const msg of latestMsgs) {
-          if (msg.id && !existingIds.has(msg.id) && msg !== lastAssistant) {
-            messages.value.push(msg)
+          if (msg !== lastAssistant) {
+            // Skip if DB id already exists, or if this is a user message whose content
+            // matches an existing local-only user message (no id — optimistic push).
+            const idDup = msg.id && existingIds.has(msg.id)
+            const contentDup = msg.role === 'user' && existingLocalUserContent.has(msg.content)
+            if (!idDup && !contentDup) {
+              messages.value.push(msg)
+            }
           }
         }
 
@@ -665,15 +675,25 @@ export function useChatStream(options: UseChatStreamOptions) {
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE queue_consume: invalid JSON, skipping'); return }
 
-      // Add user message bubble (DB message already persisted by backend)
+      // Add user message bubble (DB message already persisted by backend).
+      // Deduplicate: if a local user message with the same content already exists
+      // (e.g. from sendMessageNow's optimistic push when data.running was true),
+      // skip pushing a duplicate. The existing local message will be replaced by
+      // the DB version when onLoadHistory runs after the final 'done' event.
       const userContent = data.text || ''
-      messages.value.push({
-        role: 'user',
-        content: userContent,
-        blocks: userContent ? [{ type: 'text', text: userContent }] : [],
-        files: (data.files || []).map(p => ({ path: p })),
-        createdAt: new Date().toISOString(),
-      })
+      const userFiles = (data.files || []).map(p => ({ path: p }))
+      const existingUserMsg = messages.value.find(
+        (m: any) => m.role === 'user' && m.content === userContent && !m.id
+      )
+      if (!existingUserMsg) {
+        messages.value.push({
+          role: 'user',
+          content: userContent,
+          blocks: userContent ? [{ type: 'text', text: userContent }] : [],
+          files: userFiles,
+          createdAt: new Date().toISOString(),
+        })
+      }
 
       // Create new streaming assistant placeholder
       messages.value.push({

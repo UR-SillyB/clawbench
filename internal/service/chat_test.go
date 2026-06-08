@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 	source_session_id TEXT DEFAULT NULL,
 	thinking_effort TEXT DEFAULT '',
 	mode TEXT DEFAULT '',
+	transport TEXT DEFAULT '',
 	deleted INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1984,6 +1985,7 @@ func TestGetSessionFullInfo(t *testing.T) {
 	assert.Equal(t, "my-agent", info.AgentID)
 	assert.Equal(t, "gpt-4o", info.Model)
 	assert.Equal(t, "", info.ThinkingEffort)
+	assert.Equal(t, "", info.Transport)
 }
 
 func TestGetSessionFullInfo_WithThinkingEffort(t *testing.T) {
@@ -2031,6 +2033,7 @@ func TestGetSessionInfo(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-6", info.Model)
 	assert.Equal(t, "", info.ThinkingEffort)
 	assert.Equal(t, "", info.Mode)
+	assert.Equal(t, "", info.Transport)
 }
 
 // ---------- SaveMetadata ----------
@@ -2046,7 +2049,7 @@ func TestSaveMetadata(t *testing.T) {
 	meta := &ai.Metadata{
 		Mode:           "code",
 		ThinkingEffort: "high",
-		Transport:      "acp",
+		Transport:      "acp-stdio",
 		Model:          "gpt-4",
 		InputTokens:    100,
 		OutputTokens:   50,
@@ -2066,7 +2069,7 @@ func TestSaveMetadata(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "code", mode)
 	assert.Equal(t, "gpt-4", model)
-	assert.Equal(t, "acp", transport)
+	assert.Equal(t, "acp-stdio", transport)
 	assert.Equal(t, 100, inputTokens)
 	assert.Equal(t, 50, outputTokens)
 	assert.Equal(t, 3200, wallMs)

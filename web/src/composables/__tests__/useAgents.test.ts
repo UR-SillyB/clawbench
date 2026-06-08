@@ -16,11 +16,15 @@ vi.mock('@/composables/useLocale', () => ({
 const mockUpdateModeState = vi.fn()
 const mockUpdateThinkingEffortState = vi.fn()
 const mockUpdateCommandState = vi.fn()
+const mockUpdateAvailableModes = vi.fn()
+const mockUpdateAvailableThinkingEfforts = vi.fn()
 const _currentAgentId = { value: '' }
 vi.mock('@/composables/useSessionIdentity.ts', () => ({
   updateModeState: (...args: any[]) => mockUpdateModeState(...args),
   updateThinkingEffortState: (...args: any[]) => mockUpdateThinkingEffortState(...args),
   updateCommandState: (...args: any[]) => mockUpdateCommandState(...args),
+  updateAvailableModes: (...args: any[]) => mockUpdateAvailableModes(...args),
+  updateAvailableThinkingEfforts: (...args: any[]) => mockUpdateAvailableThinkingEfforts(...args),
   get currentAgentId() { return _currentAgentId },
 }))
 
@@ -613,8 +617,8 @@ describe('useAgents', () => {
     }
 
     beforeEach(() => {
-      mockUpdateModeState.mockReset()
-      mockUpdateThinkingEffortState.mockReset()
+      mockUpdateAvailableModes.mockReset()
+      mockUpdateAvailableThinkingEfforts.mockReset()
       mockUpdateCommandState.mockReset()
     })
 
@@ -626,8 +630,8 @@ describe('useAgents', () => {
 
       await populateACPStateFromCache('claude')
 
-      expect(mockUpdateModeState).toHaveBeenCalledWith('code', acpState.claude.modeState.availableModes)
-      expect(mockUpdateThinkingEffortState).toHaveBeenCalledWith('high', acpState.claude.thinkingEffortState.availableLevels)
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith(acpState.claude.modeState.availableModes)
+      expect(mockUpdateAvailableThinkingEfforts).toHaveBeenCalledWith(acpState.claude.thinkingEffortState.availableLevels)
       expect(mockUpdateCommandState).toHaveBeenCalledWith(acpState.claude.commands)
       expect(getAgentModels('claude')[0].id).toBe('acp-claude-1')
     })
@@ -645,8 +649,8 @@ describe('useAgents', () => {
 
       await populateACPStateFromCache('claude')
 
-      expect(mockUpdateModeState).not.toHaveBeenCalled()
-      expect(mockUpdateThinkingEffortState).toHaveBeenCalled()
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
+      expect(mockUpdateAvailableThinkingEfforts).toHaveBeenCalled()
     })
 
     it('does nothing for agent with no cached ACP state and no server state', async () => {
@@ -656,8 +660,8 @@ describe('useAgents', () => {
 
       await populateACPStateFromCache('nonexistent')
 
-      expect(mockUpdateModeState).not.toHaveBeenCalled()
-      expect(mockUpdateThinkingEffortState).not.toHaveBeenCalled()
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
+      expect(mockUpdateAvailableThinkingEfforts).not.toHaveBeenCalled()
       expect(mockUpdateCommandState).not.toHaveBeenCalled()
     })
 
@@ -675,7 +679,7 @@ describe('useAgents', () => {
 
       // Should have force-reloaded
       expect(mockApiGet).toHaveBeenCalledTimes(2)
-      expect(mockUpdateModeState).toHaveBeenCalledWith('code', acpState.claude.modeState.availableModes)
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith(acpState.claude.modeState.availableModes)
     })
   })
 
@@ -697,8 +701,8 @@ describe('useAgents', () => {
     }
 
     beforeEach(() => {
-      mockUpdateModeState.mockReset()
-      mockUpdateThinkingEffortState.mockReset()
+      mockUpdateAvailableModes.mockReset()
+      mockUpdateAvailableThinkingEfforts.mockReset()
       mockUpdateCommandState.mockReset()
       _currentAgentId.value = ''
     })
@@ -713,7 +717,7 @@ describe('useAgents', () => {
       await populateACPStateFromCache('claude')
       // Only 1 API call — the initial loadAgents (populateACPStateFromCache uses cache)
       expect(mockApiGet).toHaveBeenCalledTimes(1)
-      expect(mockUpdateModeState).toHaveBeenCalledWith('architect', acpState.claude.modeState.availableModes)
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith(acpState.claude.modeState.availableModes)
     })
 
     it('populates ACP state for the current agent during load', async () => {
@@ -722,8 +726,8 @@ describe('useAgents', () => {
       mockApiGet.mockResolvedValue({ agents: testAgents, defaultAgent: 'claude', acpStates: acpState })
       await loadAgents()
 
-      expect(mockUpdateModeState).toHaveBeenCalledWith('architect', acpState.claude.modeState.availableModes)
-      expect(mockUpdateThinkingEffortState).toHaveBeenCalledWith('max', acpState.claude.thinkingEffortState.availableLevels)
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith(acpState.claude.modeState.availableModes)
+      expect(mockUpdateAvailableThinkingEfforts).toHaveBeenCalledWith(acpState.claude.thinkingEffortState.availableLevels)
       expect(mockUpdateCommandState).toHaveBeenCalledWith(acpState.claude.commands)
     })
 
@@ -733,7 +737,7 @@ describe('useAgents', () => {
       mockApiGet.mockResolvedValue({ agents: testAgents, defaultAgent: 'claude', acpStates: acpState })
       await loadAgents()
 
-      expect(mockUpdateModeState).not.toHaveBeenCalled()
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
     })
 
     it('does not populate ACP state when currentAgentId is empty', async () => {
@@ -742,7 +746,7 @@ describe('useAgents', () => {
       mockApiGet.mockResolvedValue({ agents: testAgents, defaultAgent: 'claude', acpStates: acpState })
       await loadAgents()
 
-      expect(mockUpdateModeState).not.toHaveBeenCalled()
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
     })
 
     it('overrides models from modelListState during load for current agent', async () => {

@@ -19,10 +19,11 @@ const currentModelName = ref('')
 const currentThinkingEffort = ref('')
 const currentModeId = ref('')
 const currentModeName = ref('')
+const currentTransport = ref('') // 'acp-stdio' or 'cli'
 const availableModes = ref<Array<{ id: string; name: string }>>([])
 const availableCommands = ref<Array<{ name: string; description: string; inputHint?: string }>>([])
 const availableThinkingEfforts = ref<Array<{ id: string; name: string }>>([])
-const runningSessions = ref(new Set<string>())
+export const runningSessions = ref(new Set<string>())
 // Bumped on every mutation to runningSessions so computed properties
 // that depend on the set's contents re-evaluate correctly.
 const runningSessionsVersion = ref(0)
@@ -48,6 +49,7 @@ export function resetIdentity(): void {
   currentThinkingEffort.value = ''
   currentModeId.value = ''
   currentModeName.value = ''
+  currentTransport.value = ''
   availableModes.value = []
   availableCommands.value = []
   availableThinkingEfforts.value = []
@@ -99,7 +101,7 @@ async function saveThinkingPref(agentId: string, level: string) {
   if (!agentId) return
   // No-op: thinking effort selection in chat is session-scoped and does NOT update
   // the agent's default. The agent's preferredThinkingEffort is configured exclusively
-  // via the settings panel or ModelModal star button (which calls patchAgentPref directly).
+  // via the settings panel or SessionSettingModal star button (which calls patchAgentPref directly).
 }
 
 function loadThinkingPref(agentId: string): string | null {
@@ -304,6 +306,14 @@ export async function initSessionFromAPI() {
         } else {
           currentThinkingEffort.value = loadThinkingPref(data.agentId || '') || ''
         }
+        // Initialize transport from agent's transport field
+        if (data.transport) {
+          currentTransport.value = data.transport
+        } else {
+          // Fall back to agent's stored transport
+          const agent = agentsApi.getAgent(data.agentId || '')
+          currentTransport.value = agent?.transport || 'cli'
+        }
         // Populate slash commands from chat response (cached ACP state)
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
           availableCommands.value = data.commands
@@ -456,7 +466,7 @@ export function useSessionIdentity() {
       await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, filePaths: filePaths || [], modelId: currentModelId.value || undefined, thinkingEffort: currentThinkingEffort.value || undefined }),
+        body: JSON.stringify({ message: text, filePaths: filePaths || [], modelId: currentModelId.value || undefined, thinkingEffort: currentThinkingEffort.value || undefined, transport: currentTransport.value || undefined }),
       })
     } catch (err) {
       console.error('Failed to send message:', err)
@@ -516,6 +526,7 @@ export function useSessionIdentity() {
     currentThinkingEffort,
     currentModeId,
     currentModeName,
+    currentTransport,
     availableModes,
     availableCommands,
     availableThinkingEfforts,

@@ -68,7 +68,7 @@ async function loadAgents(force = false): Promise<void> {
                         updateCommandState(activeState.commands)
                     }
                     // When ACP provides a model list, override agent.models
-                    // so the frontend ModelModal shows ACP models.
+                    // so the frontend SessionSettingModal shows ACP models.
                     if (activeState.modelListState?.models?.length > 0) {
                         updateACPModelList(activeAgentId, activeState.modelListState.models, activeState.modelListState.currentModelId)
                     }
@@ -219,6 +219,23 @@ function canRefreshModels(agentId: string): boolean {
     return !!agent?.canRefreshModels
 }
 
+/** Check if an agent supports both ACP and CLI transport modes (has acpCommand set). */
+function supportsDualTransport(agentId: string): boolean {
+    const agent = agents.value.find(a => a.id === agentId)
+    return !!agent?.acpCommand
+}
+
+/** Get the current transport mode for an agent. Returns 'acp-stdio' or 'cli'. */
+function getAgentTransport(agentId: string): string {
+    const agent = agents.value.find(a => a.id === agentId)
+    return agent?.transport || 'cli'
+}
+
+/** Invalidate the ACP state cache for an agent so next access force-refreshes. */
+export function invalidateACPStateCache(agentId: string): void {
+    delete acpStatesCache[agentId]
+}
+
 /**
  * Populate ACP state (mode, thinking, commands, model list) for the given
  * agent from the cached acpStates. Used by createSession after clearing
@@ -274,6 +291,9 @@ export function useAgents() {
         getEffectiveThinkingEffort,
         updateAgentField,
         canRefreshModels,
+        supportsDualTransport,
+        getAgentTransport,
+        invalidateACPStateCache,
         updateACPModelList,
         restoreOriginalModels,
         populateACPStateFromCache,

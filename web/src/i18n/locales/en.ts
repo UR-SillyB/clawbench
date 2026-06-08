@@ -123,6 +123,13 @@ export default {
     modeSwitcher: {
       title: 'Session mode',
     },
+    transportSwitcher: {
+      title: 'Interface Type',
+      acp: 'ACP Mode',
+      acpDesc: 'Structured protocol communication with mode switching and permission management',
+      cli: 'CLI Mode',
+      cliDesc: 'Command-line text interaction with better compatibility',
+    },
     plan: {
       title: 'Execution Plan',
       completedCount: '{completed}/{total} done',
@@ -130,7 +137,7 @@ export default {
       priorityMedium: 'Med',
       priorityLow: 'Low',
     },
-    modelModal: {
+    sessionSetting: {
       searchPlaceholder: 'Search models...',
       refresh: 'Refresh models',
       refreshSuccess: 'Models refreshed',
@@ -323,6 +330,7 @@ export default {
     running: 'Running',
     fromTask: 'Task',
     confirmDelete: 'Delete this session and all chat history?',
+    confirmDeleteRunning: 'This session is running. Deleting will terminate it and clear the history. Continue?',
     unnamed: 'Unnamed session',
     queueFailed: 'Failed to enqueue',
     removeFailed: 'Failed to remove',

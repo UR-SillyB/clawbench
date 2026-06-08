@@ -245,7 +245,9 @@ function createSession(agentId) {
 }
 
 async function deleteSession(sessionId) {
-  if (!await dialog.confirm(t('session.confirmDelete'), { dangerous: true })) return
+  const isRunning = props.runningSessionIds.has(sessionId)
+  const confirmMsg = isRunning ? t('session.confirmDeleteRunning') : t('session.confirmDelete')
+  if (!await dialog.confirm(confirmMsg, { dangerous: true })) return
   const session = sessions.value.find(s => s.id === sessionId)
   emit('delete', sessionId, session?.backend)
   // Optimistic local removal — no API reload needed while drawer is open.

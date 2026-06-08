@@ -172,7 +172,7 @@ func TestNewBackendForAgent_UnknownAgentID_FallsBackToCLI(t *testing.T) {
 }
 
 func TestNewBackendForAgent_ACPStdioTransport(t *testing.T) {
-	// Set up a test agent with ACP stdio transport
+	// Set up a test agent with ACP acp-stdio transport
 	origAgents := model.Agents
 	t.Cleanup(func() { model.Agents = origAgents })
 

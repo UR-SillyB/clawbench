@@ -520,6 +520,22 @@ func GetSessionMode(sessionID string) string {
 	return mode
 }
 
+// UpdateSessionTransport updates the transport field for a session.
+func UpdateSessionTransport(sessionID, transport string) error {
+	_, err := DB.Exec("UPDATE chat_sessions SET transport = ? WHERE id = ?", transport, sessionID)
+	return err
+}
+
+// GetSessionTransport returns the transport for a session, or empty string if not set.
+func GetSessionTransport(sessionID string) string {
+	var transport string
+	err := DBRead.QueryRow("SELECT COALESCE(transport, '') FROM chat_sessions WHERE id = ? AND deleted = 0", sessionID).Scan(&transport)
+	if err != nil {
+		return ""
+	}
+	return transport
+}
+
 // SaveMetadata persists message metadata to the chat_metadata table.
 // This enables SQL-based analytical queries (token usage, cost, model stats)
 // while the same metadata remains embedded in chat_history.content JSON for
@@ -695,6 +711,7 @@ type SessionInfo struct {
 	Model          string
 	ThinkingEffort string
 	Mode           string
+	Transport      string
 	ProjectPath    string // populated by GetSessionFullInfo only
 }
 
@@ -703,10 +720,10 @@ type SessionInfo struct {
 func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 	info := &SessionInfo{}
 	err := DBRead.QueryRow(
-		`SELECT title, backend, agent_id, model, thinking_effort, COALESCE(mode, '')
+		`SELECT title, backend, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, '')
 		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
 		sessionID,
-	).Scan(&info.Title, &info.Backend, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode)
+	).Scan(&info.Title, &info.Backend, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport)
 	if err != nil {
 		return nil, err
 	}
@@ -720,10 +737,10 @@ func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 func GetSessionFullInfo(sessionID string) *SessionInfo {
 	info := &SessionInfo{}
 	err := DBRead.QueryRow(
-		`SELECT backend, project_path, title, agent_id, model, thinking_effort, COALESCE(mode, '')
+		`SELECT backend, project_path, title, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, '')
 		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
 		sessionID,
-	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode)
+	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport)
 	if err != nil {
 		return nil
 	}

@@ -1,5 +1,6 @@
 import { ref, watch, type Ref } from 'vue'
-import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
+import { useSessionIdentity, runningSessions } from '@/composables/useSessionIdentity.ts'
+import { cancelChat } from '@/utils/api'
 import { useToast } from '@/composables/useToast.ts'
 import { gt } from '@/composables/useLocale'
 
@@ -166,6 +167,10 @@ export function useSessionManager(options: UseSessionManagerOptions) {
 
   async function deleteSession(sessionId: string, backend?: string) {
     cleanupActiveStream()
+    // Cancel running session before deleting to kill the CLI process
+    if (runningSessions.value.has(sessionId)) {
+      try { await cancelChat(sessionId) } catch (_) {}
+    }
     // Clear backend queue for deleted session
     try {
       await fetch(`/api/ai/queue?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
@@ -178,6 +183,10 @@ export function useSessionManager(options: UseSessionManagerOptions) {
     const deletedId = identity.currentSessionId.value
     if (!deletedId) return
     cleanupActiveStream()
+    // Cancel running session before deleting to kill the CLI process
+    if (runningSessions.value.has(deletedId)) {
+      try { await cancelChat(deletedId) } catch (_) {}
+    }
     try {
       await fetch(`/api/ai/queue?session_id=${encodeURIComponent(deletedId)}`, { method: 'DELETE' })
     } catch (_) {}

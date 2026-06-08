@@ -686,6 +686,90 @@ func TestAgentPatch_PatchAgentDBError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+// ---------- Transport switching ----------
+
+func TestAgentPatch_TransportSwitchToCLI(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	// Start with ACP transport
+	model.Agents["claude"].Transport = "acp-stdio"
+
+	body := map[string]any{
+		"id":        "claude",
+		"transport": "cli",
+	}
+	req := newRequest(t, http.MethodPatch, "/api/agents", body)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeAgents, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "cli", model.Agents["claude"].Transport)
+
+	// Verify DB updated
+	var transport string
+	err := service.DB.QueryRow("SELECT transport FROM agents WHERE id = ?", "claude").Scan(&transport)
+	require.NoError(t, err)
+	assert.Equal(t, "cli", transport)
+}
+
+func TestAgentPatch_TransportSwitchToACP(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	// claude has AcpCommand in BackendRegistry
+	body := map[string]any{
+		"id":        "claude",
+		"transport": "acp-stdio",
+	}
+	req := newRequest(t, http.MethodPatch, "/api/agents", body)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeAgents, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "acp-stdio", model.Agents["claude"].Transport)
+}
+
+func TestAgentPatch_TransportACPNotAllowedForNoACPAgent(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	// Create an agent whose backend has no ACP support in BackendRegistry
+	model.Agents["noacp"] = &model.Agent{
+		ID:      "noacp",
+		Name:    "NoACP",
+		Backend: "nonexistent-backend",
+		Models:  []model.AgentModel{{ID: "m1", Name: "M1", Default: true}},
+	}
+	model.AgentList = append(model.AgentList, model.Agents["noacp"])
+	require.NoError(t, service.SaveAgent(service.DB, model.Agents["noacp"]))
+
+	body := map[string]any{
+		"id":        "noacp",
+		"transport": "acp-stdio",
+	}
+	req := newRequest(t, http.MethodPatch, "/api/agents", body)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeAgents, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAgentPatch_TransportInvalid(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	body := map[string]any{
+		"id":        "claude",
+		"transport": "invalid",
+	}
+	req := newRequest(t, http.MethodPatch, "/api/agents", body)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeAgents, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 // ---------- ServeAgents method not allowed ----------
 
 func TestServeAgents_MethodNotAllowed(t *testing.T) {

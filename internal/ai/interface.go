@@ -45,7 +45,7 @@ func (r ChatRequest) ShouldInjectSystemPrompt() bool {
 type Metadata struct {
 	Mode           string  `json:"mode,omitempty"`           // ACP mode (e.g., "code", "ask", "architect")
 	ThinkingEffort string  `json:"thinkingEffort,omitempty"` // Thinking effort level (e.g., "low", "medium", "high")
-	Transport      string  `json:"transport,omitempty"`      // Backend transport type: "acp" or "cli"
+	Transport      string  `json:"transport,omitempty"`      // Backend transport type: "acp-stdio" or "cli"
 	Model          string  `json:"model,omitempty"`
 	InputTokens    int     `json:"inputTokens,omitempty"`
 	OutputTokens   int     `json:"outputTokens,omitempty"`

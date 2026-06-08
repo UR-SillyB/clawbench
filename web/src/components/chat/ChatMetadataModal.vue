@@ -24,7 +24,7 @@
       </div>
       <div v-if="data.transport" class="metadata-item">
         <span class="metadata-label">{{ t('chat.metadata.transport') }}</span>
-        <span class="metadata-value">{{ data.transport === 'acp' ? 'ACP' : 'CLI' }}</span>
+        <span class="metadata-value">{{ data.transport === 'cli' ? 'CLI' : 'ACP' }}</span>
       </div>
       <div v-if="data.mode" class="metadata-item">
         <span class="metadata-label">{{ t('chat.metadata.mode') }}</span>

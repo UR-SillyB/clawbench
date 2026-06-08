@@ -123,6 +123,13 @@ export default {
     modeSwitcher: {
       title: '会话模式',
     },
+    transportSwitcher: {
+      title: '接口类型',
+      acp: 'ACP 模式',
+      acpDesc: '结构化协议通信，支持模式切换与权限管理',
+      cli: 'CLI 模式',
+      cliDesc: '命令行文本交互，兼容性更好',
+    },
     plan: {
       title: '执行计划',
       completedCount: '{completed}/{total} 完成',
@@ -130,7 +137,7 @@ export default {
       priorityMedium: '中',
       priorityLow: '低',
     },
-    modelModal: {
+    sessionSetting: {
       searchPlaceholder: '搜索模型...',
       refresh: '刷新模型',
       refreshSuccess: '模型列表已刷新',
@@ -323,6 +330,7 @@ export default {
     running: '运行中',
     fromTask: '定时',
     confirmDelete: '确定删除此会话及其所有聊天记录?',
+    confirmDeleteRunning: '此会话正在运行中，删除将终止运行并清除记录，确定删除?',
     unnamed: '未命名会话',
     queueFailed: '加入队列失败',
     removeFailed: '移除失败',

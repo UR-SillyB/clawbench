@@ -45,7 +45,7 @@ export function getServerURL(): string {
  *
  * Creates an isolated temp directory with:
  * - config/config.yaml (test configuration with known password)
- * - config/agents/acp-mock.yaml (ACP mock agent using real ACP stdio protocol)
+ * - config/agents/acp-mock.yaml (ACP mock agent using real ACP acp-stdio protocol)
  * - .clawbench/ (database directory)
  *
  * The server is started from the temp directory so it picks up our config.
@@ -84,7 +84,7 @@ rag:
   const agentsDir = join(tempDir, 'config', 'agents')
   mkdirSync(agentsDir, { recursive: true })
 
-  // ACP mock agent (uses real ACP stdio protocol with slash commands, modes)
+  // ACP mock agent (uses real ACP acp-stdio protocol with slash commands, modes)
   // acp_command points to the acp-mock binary we'll copy to the temp dir
   writeFileSync(join(agentsDir, 'acp-mock.yaml'), `backend: acp-mock
 icon: "\\U0001F916"
@@ -140,7 +140,7 @@ system_prompt: |
       // the system PATH. This ensures test isolation.
       PATH: `${tempDir}:${process.env.PATH}`,
     },
-    stdio: ['pipe', 'pipe', 'pipe'],
+    acp-stdio: ['pipe', 'pipe', 'pipe'],
   })
 
   // Log server output for debugging

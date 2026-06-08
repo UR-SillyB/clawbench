@@ -218,7 +218,7 @@ func TestPatchAgent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Patch preferred model and thinking
-	err = service.PatchAgent(db, "pi", "openai/gpt-5.5", "high")
+	err = service.PatchAgent(db, "pi", "openai/gpt-5.5", "high", "cli")
 	require.NoError(t, err)
 
 	// Verify
@@ -245,7 +245,7 @@ func TestPatchAgent_ClearPreferences(t *testing.T) {
 	require.NoError(t, err)
 
 	// Patch to clear preferences
-	err = service.PatchAgent(db, "pi", "", "")
+	err = service.PatchAgent(db, "pi", "", "", "cli")
 	require.NoError(t, err)
 
 	// Verify preferences are cleared
@@ -260,7 +260,7 @@ func TestPatchAgent_NotFound(t *testing.T) {
 	db := setupTestDBForAgents(t)
 
 	// Patching non-existent agent should not error (no rows affected)
-	err := service.PatchAgent(db, "nonexistent", "model", "high")
+	err := service.PatchAgent(db, "nonexistent", "model", "high", "cli")
 	assert.NoError(t, err)
 }
 

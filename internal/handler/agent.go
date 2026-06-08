@@ -104,7 +104,7 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		}
 
 		// When ACP provides a model list, override the agent's Models
-		// so the frontend ModelModal shows ACP models instead of CLI-discovered ones.
+		// so the frontend SessionSettingModal shows ACP models instead of CLI-discovered ones.
 		if ml != nil && len(ml.Models) > 0 {
 			a.Models = ml.Models
 		}
@@ -184,8 +184,31 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 		agent.PreferredThinkingEffort = level
 	}
 
+	// Validate and apply transport (only for agents that support ACP)
+	if v, exists := patch["transport"]; exists {
+		transport, _ := v.(string)
+		spec := model.FindSpecByBackend(agent.Backend)
+		hasACP := spec != nil && spec.AcpCommand != ""
+		oldTransport := agent.Transport
+		switch {
+		case transport == "cli":
+			agent.Transport = "cli"
+		case transport == "acp-stdio" && hasACP:
+			agent.Transport = "acp-stdio"
+		default:
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidTransport")
+			return
+		}
+		// When switching from ACP to CLI, close all ACP connections for this agent
+		if oldTransport == "acp-stdio" && agent.Transport == "cli" {
+			mgr := ai.GetACPConnManager()
+			mgr.CloseConnsByAgentID(agentID)
+			slog.Info("closed ACP connections after transport switch to CLI", "agent", agentID)
+		}
+	}
+
 	// Persist to database
-	if err := service.PatchAgent(service.DB, agentID, agent.PreferredModel, agent.PreferredThinkingEffort); err != nil {
+	if err := service.PatchAgent(service.DB, agentID, agent.PreferredModel, agent.PreferredThinkingEffort, agent.Transport); err != nil {
 		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 		return
 	}

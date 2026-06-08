@@ -104,6 +104,7 @@
       @switch-model="handleSwitchModel"
       @switch-thinking-effort="handleSwitchThinkingEffort"
       @switch-mode="handleSwitchMode"
+      @switch-transport="handleSwitchTransport"
     />
 
   </div>
@@ -496,6 +497,17 @@ function handleSwitchMode(mode) {
   // No immediate API call. modeId is sent in POST /api/ai/chat body.
 }
 
+function handleSwitchTransport(transport) {
+  identity.currentTransport.value = transport
+  // Transport switch is session-scoped — takes effect on next chat message.
+  // When switching from ACP to CLI for this session, clear ACP-specific state.
+  if (transport === 'cli') {
+    identity.clearModeState()
+    identity.clearCommandState()
+    identity.clearThinkingEffortState()
+  }
+}
+
 async function sendMessage(text, extraFilePaths) {
     const inputText = text !== undefined ? text : (inputBarRef.value?.inputText?.trim() || '')
     const hasFiles = pendingFiles.value.length > 0 || attachedFiles.value.length > 0
@@ -560,7 +572,7 @@ async function sendMessageNow(text, filePaths, files) {
         const resp = await fetch(safeUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, filePaths, files: files || [], agentId: effectiveAgentId, modelId: identity.currentModelId.value || undefined, thinkingEffort: identity.currentThinkingEffort.value || undefined, modeId: identity.currentModeId.value || undefined }),
+            body: JSON.stringify({ message: text, filePaths, files: files || [], agentId: effectiveAgentId, modelId: identity.currentModelId.value || undefined, thinkingEffort: identity.currentThinkingEffort.value || undefined, modeId: identity.currentModeId.value || undefined, transport: identity.currentTransport.value || undefined }),
         })
         const data = await resp.json()
         if (!resp.ok) {
@@ -574,6 +586,16 @@ async function sendMessageNow(text, filePaths, files) {
         }
         // Session already running — another request is in progress
         if (data.running) {
+            // Remove the optimistically pushed local user message — the backend
+            // has queued it and will emit it via queue_consume SSE event or
+            // it will appear in the next loadHistory refresh. Keeping it causes
+            // a duplicate (the local version has no id, so dedup by id fails).
+            const localIdx = messages.value.findLastIndex(
+                (m) => m.role === 'user' && m.content === (text || '') && !m.id
+            )
+            if (localIdx !== -1) {
+                messages.value.splice(localIdx, 1)
+            }
             if (data.queued && data.queue) {
                 manager.setPendingMessages(data.queue)
             }
@@ -582,6 +604,13 @@ async function sendMessageNow(text, filePaths, files) {
         }
         stream.connectStream(identity.currentSessionId.value)
     } catch (err) {
+        // Remove the optimistically pushed local user message on failure
+        const localIdx = messages.value.findLastIndex(
+            (m) => m.role === 'user' && m.content === (text || '') && !m.id
+        )
+        if (localIdx !== -1) {
+            messages.value.splice(localIdx, 1)
+        }
         stream.stopPolling()
         stream.disconnectStream()
         loading.value = false

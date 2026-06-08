@@ -207,7 +207,7 @@ test.describe.serial('ACP Slash Commands', () => {
     await expect(modeChip).toBeVisible({ timeout: 15000 })
   })
 
-  test('should show thinking effort levels in ModelModal for ACP session', async ({ page }) => {
+  test('should show thinking effort levels in SessionSettingModal for ACP session', async ({ page }) => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
@@ -220,7 +220,7 @@ test.describe.serial('ACP Slash Commands', () => {
     await expect(settingsChip).toBeVisible({ timeout: 10000 })
     await settingsChip.click()
 
-    // ModelModal should appear
+    // SessionSettingModal should appear
     const modal = page.locator('.modal-dialog, [class*="modal"]')
     await expect(modal.first()).toBeVisible({ timeout: 5000 })
 
@@ -240,7 +240,7 @@ test.describe.serial('ACP Slash Commands', () => {
     await expect(mediumItem).toBeVisible()
   })
 
-  test('should select a thinking effort level via ModelModal', async ({ page }) => {
+  test('should select a thinking effort level via SessionSettingModal', async ({ page }) => {
     // Establish ACP connection first
     await chat.sendAndAwaitACPReply('hi')
     await page.waitForTimeout(2000)
