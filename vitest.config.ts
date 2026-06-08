@@ -30,6 +30,7 @@ export default defineConfig({
     css: true,
     exclude: [
       '**/.worktrees/**',
+      '**/.codebuddy/worktrees/**',
       '**/node_modules/**',
       '**/dist/**',
       '**/cypress/**',

@@ -689,7 +689,7 @@ describe('useChatStream', () => {
       expect(options.onQueueUpdate).toHaveBeenCalledWith([{ id: 'q1' }, { id: 'q2' }])
     })
 
-    it('should NOT call onQueueUpdate when guard fails (ISS-304: guard check first)', () => {
+    it('still calls onQueueUpdate even when guard fails (ISS-304: guard check after queue update)', () => {
       const options = createOptions()
       const { connectStream } = useChatStream(options)
 
@@ -702,8 +702,9 @@ describe('useChatStream', () => {
 
       es.simulate('queue_update', { queue: [{ id: 'q1' }] })
 
-      // onQueueUpdate is NOT called because guard() now runs first (ISS-304)
-      expect(options.onQueueUpdate).not.toHaveBeenCalled()
+      // onQueueUpdate IS still called because queue update is independent of streaming session (ISS-304)
+      // The guard() check happens after onQueueUpdate to prevent stale events corrupting new session
+      expect(options.onQueueUpdate).toHaveBeenCalledWith([{ id: 'q1' }])
     })
   })
 

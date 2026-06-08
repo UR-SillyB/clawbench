@@ -627,7 +627,9 @@ describe('SessionSettingModal', () => {
   it('hides thinking tab for agents without thinking effort levels', () => {
     const wrapper = mountModal({ agentId: 'gemini' })
     const tabs = wrapper.findAll('.model-tab')
-    // Only model tab should be visible
-    expect(tabs.length).toBe(1)
+    // Model tab + mode tab (gemini has no thinking levels but availableModes + isACP shows mode tab)
+    expect(tabs.length).toBe(2)
+    // No thinking tab
+    expect(tabs.every(t => !t.text().includes('chat.thinkingEffortSwitcher.title'))).toBe(true)
   })
 })
