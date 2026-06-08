@@ -187,11 +187,11 @@
       <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
       <template v-if="showModeInfo">
         <span class="session-info-divider"></span>
-        <span class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ modeDisplayText }}</span>
+        <span class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
       </template>
       <template v-if="showThinkingInfo">
         <span class="session-info-divider"></span>
-        <span class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ thinkingDisplayText }}</span>
+        <span class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ currentThinkingEffort }}</span>
       </template>
       <template v-if="showTransportInfo">
         <span class="session-info-divider"></span>
@@ -226,11 +226,9 @@ const isACP = computed(() => {
   return props.currentTransport === 'acp-stdio'
 })
 
-const showModeInfo = computed(() => availableModes.value.length > 0)
-const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0)
+const showModeInfo = computed(() => availableModes.value.length > 0 && !!props.currentModeName)
+const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0 && !!props.currentThinkingEffort)
 const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
-const modeDisplayText = computed(() => props.currentModeName || t('chat.sessionInfo.default'))
-const thinkingDisplayText = computed(() => props.currentThinkingEffort || t('chat.sessionInfo.default'))
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
