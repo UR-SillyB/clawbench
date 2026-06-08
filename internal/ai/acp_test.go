@@ -187,6 +187,23 @@ func TestMapACPToolCallUpdate_InProgress(t *testing.T) {
 	assert.Equal(t, "", event.Tool.Status)
 }
 
+func TestMapACPToolCallUpdate_InProgressIgnoresRawOutput(t *testing.T) {
+	// In-progress updates should NOT extract output — intermediate RawOutput
+	// may contain partial/garbage data (e.g., a lone "}") that would be
+	// persisted to the DB if the session is cancelled before completion.
+	inProgress := acp.ToolCallStatusInProgress
+	tcu := acp.SessionToolCallUpdate{
+		ToolCallId: acp.ToolCallId("tc-wip"),
+		Status:     &inProgress,
+		RawOutput:  "}",
+	}
+	event := mapACPToolCallUpdate(tcu)
+
+	assert.Equal(t, "tool_use", event.Type)
+	assert.False(t, event.Tool.Done)
+	assert.Equal(t, "", event.Tool.Output, "in-progress updates must not extract output")
+}
+
 func TestMapACPToolCallUpdate_Pending(t *testing.T) {
 	pending := acp.ToolCallStatusPending
 	tcu := acp.SessionToolCallUpdate{
@@ -1248,9 +1265,12 @@ func TestMapACPSessionUpdate_CurrentModeUpdate(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, nil, nil)
 
-	// CurrentModeUpdate no longer forwards mode_update SSE —
-	// currentModeId is managed by frontend user action + DB, not by agent notifications.
-	assertNoMoreACPEvents(ch, t)
+	// CurrentModeUpdate now forwards mode_update SSE —
+	// agent mode changes take priority over user manual selection.
+	events := drainACPEvents(ch, 1)
+	assert.Equal(t, "mode_update", events[0].Type)
+	require.NotNil(t, events[0].Mode)
+	assert.Equal(t, "code", events[0].Mode.CurrentModeID)
 }
 
 func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
@@ -1269,11 +1289,14 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
-	// CurrentModeUpdate no longer forwards mode_update SSE —
-	// but cache should still be updated for DB persistence and REST responses.
+	// Cache should be updated
 	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
 
-	assertNoMoreACPEvents(ch, t)
+	// mode_update SSE should be forwarded because currentModeId changed
+	events := drainACPEvents(ch, 1)
+	assert.Equal(t, "mode_update", events[0].Type)
+	require.NotNil(t, events[0].Mode)
+	assert.Equal(t, "code", events[0].Mode.CurrentModeID)
 }
 
 // --- mapACPSessionUpdate ConfigOptionUpdate tests ---
@@ -1362,10 +1385,58 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testi
 
 	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
-	// Same available modes → no config_update SSE forwarded
-	assertNoMoreACPEvents(ch, t)
+	// Same available modes but currentModeId changed (ask → code) → config_update SSE forwarded
+	events := drainACPEvents(ch, 1)
+	assert.Equal(t, "config_update", events[0].Type)
+	require.NotNil(t, events[0].Config)
+	assert.Equal(t, "code", events[0].Config.CurrentID)
 
 	// Cache should still be updated
+	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+}
+
+func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesSameCurrentNoForward(t *testing.T) {
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	entry := &ACPConnEntry{}
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "code",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
+		[]acp.SessionConfigSelectOption{
+			{Name: "Ask", Value: acp.SessionConfigValueId("ask")},
+			{Name: "Code", Value: acp.SessionConfigValueId("code")},
+		},
+	)
+
+	update := acp.SessionUpdate{
+		ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Id:           acp.SessionConfigId("mode"),
+						Name:         "Mode",
+						Category:     &modeCategory,
+						CurrentValue: acp.SessionConfigValueId("code"),
+						Options:      acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
+					},
+				},
+			},
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
+
+	// Same available modes AND same currentModeId → no SSE forwarded
+	assertNoMoreACPEvents(ch, t)
+
 	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
 }
 

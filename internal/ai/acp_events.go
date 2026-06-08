@@ -134,12 +134,24 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 
 	case update.CurrentModeUpdate != nil:
 		// v1 mode update: only currentModeId; available modes were sent in session/new.
-		// Update cache for DB persistence and REST responses, but do NOT forward
-		// mode_update SSE — currentModeId is managed by frontend user action + DB,
-		// not by agent notifications mid-chat.
+		// Update cache and forward mode_update SSE so the frontend can reflect
+		// agent-initiated mode changes. Agent mode takes priority over user selection.
 		mu := update.CurrentModeUpdate
+		modeID := string(mu.CurrentModeId)
 		if conn != nil {
-			conn.UpdateCachedCurrentMode(string(mu.CurrentModeId))
+			if conn.HasCurrentModeChanged(modeID) {
+				conn.UpdateCachedCurrentMode(modeID)
+				if ms := conn.GetCachedModeState(); ms != nil {
+					forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: ms})
+				}
+			} else {
+				conn.UpdateCachedCurrentMode(modeID)
+			}
+		} else {
+			forwardACPEvent(ch, StreamEvent{
+				Type: "mode_update",
+				Mode: &ModeState{CurrentModeID: modeID},
+			})
 		}
 
 	case update.ConfigOptionUpdate != nil:
@@ -157,17 +169,24 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			switch *sel.Category {
 			case acp.SessionConfigOptionCategoryMode:
 				configState := buildConfigOptionStateFromSelect(sel, "mode")
-				// Diff-check: only forward config_update SSE if available modes
-				// actually changed (new modes appeared). currentModeId is managed
-				// by frontend user action + DB, not by agent notifications mid-chat.
 				if conn != nil {
 					derived := modeStateFromConfigState(configState)
-					if derived != nil && conn.HasNewAvailableModes(derived.AvailableModes) {
+					newModes := derived != nil && conn.HasNewAvailableModes(derived.AvailableModes)
+					modeChanged := derived != nil && conn.HasCurrentModeChanged(derived.CurrentModeID)
+					// Forward config_update SSE if available modes or currentModeId changed.
+					// Agent mode change takes priority over user manual selection.
+					if newModes || modeChanged {
 						forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 					}
 					conn.SetCachedConfigState(configState)
 					if derived != nil {
-						conn.SetCachedModeState(derived)
+						if newModes {
+							// Available modes changed — full update + persist
+							conn.SetCachedModeState(derived)
+						} else {
+							// Only currentModeId changed — update cache without triggering persist
+							conn.UpdateCachedCurrentMode(derived.CurrentModeID)
+						}
 					}
 				} else {
 					forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
@@ -391,7 +410,14 @@ func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
 	mapToolCallStatus(tcu.Status, tool)
 	mapToolCallInput(tcu, tool)
 	mapToolCallName(tcu, tool)
-	mapToolCallOutput(tcu, tool)
+	// Only extract output for completed/failed tools.
+	// Intermediate updates (in_progress/pending) may carry partial RawOutput
+	// (e.g., a lone "}" from a streaming JSON object) that is not meaningful
+	// and would be persisted to the DB as garbage output if the session is
+	// cancelled before the tool finishes.
+	if tool.Done {
+		mapToolCallOutput(tcu, tool)
+	}
 
 	// Determine event type: if tool is done, emit tool_result; otherwise update tool_use
 	eventType := "tool_use"
