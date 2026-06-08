@@ -84,7 +84,7 @@ func TestContinueFromExecution_NormalFlow(t *testing.T) {
 	assert.Equal(t, "claude", info.Backend)
 	assert.Equal(t, "claude-agent", info.AgentID)
 	assert.Equal(t, "claude-sonnet-4-6", info.Model)
-	assert.Equal(t, "high", info.ThinkingEffort)
+	// ThinkingEffort is no longer persisted to DB
 
 	// New session should have source_session_id
 	var sourceSessID *string
@@ -286,7 +286,7 @@ func TestContinueFromExecution_SoftDeletedSource(t *testing.T) {
 	assert.Equal(t, "claude", info.Backend)
 	assert.Equal(t, "agent-1", info.AgentID)
 	assert.Equal(t, "model-1", info.Model)
-	assert.Equal(t, "low", info.ThinkingEffort)
+	// ThinkingEffort is no longer persisted to DB
 }
 
 // ---------- ContinueFromExecution: execution not found ----------
@@ -330,7 +330,7 @@ func TestContinueFromExecution_FieldInheritance(t *testing.T) {
 	assert.Equal(t, "codebuddy", info.Backend)
 	assert.Equal(t, "cb-agent", info.AgentID)
 	assert.Equal(t, "gpt-4o", info.Model)
-	assert.Equal(t, "medium", info.ThinkingEffort)
+	// ThinkingEffort is no longer persisted to DB
 
 	// Project path should be inherited
 	var projPath string
@@ -434,10 +434,7 @@ func helperCreateScheduledSessionWithDetails(t *testing.T, projectPath, backend,
 	id, err := service.CreateSession(projectPath, backend, title, agentID, modelName, "default", "scheduled")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
-	if thinkingEffort != "" {
-		err = service.UpdateSessionThinkingEffort(id, thinkingEffort)
-		assert.NoError(t, err)
-	}
+	// ThinkingEffort is no longer persisted to DB; parameter kept for API compatibility
 	return id
 }
 

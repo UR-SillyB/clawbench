@@ -169,8 +169,8 @@ func ContinueFromExecution(execID int64, projectPath string) (sessionID string, 
 	// The continued session inherits the CLI backend's session context, allowing the
 	// same resume flow as a normal session (no special-casing needed).
 	_, err = DB.Exec(
-		"INSERT INTO chat_sessions (id, project_path, backend, title, agent_id, agent_source, model, session_type, source_session_id, thinking_effort, external_session_id, last_read_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'chat', ?, ?, ?, CURRENT_TIMESTAMP)",
-		newSessionID, sessProjectPath, backend, displayTitle, agentID, agentSource, modelName, sourceSessionID, thinkingEffort, externalSessionID,
+		"INSERT INTO chat_sessions (id, project_path, backend, title, agent_id, agent_source, model, session_type, source_session_id, external_session_id, last_read_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'chat', ?, ?, CURRENT_TIMESTAMP)",
+		newSessionID, sessProjectPath, backend, displayTitle, agentID, agentSource, modelName, sourceSessionID, externalSessionID,
 	)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to create continued session: %w", err)
