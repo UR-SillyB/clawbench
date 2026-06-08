@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -35,7 +34,7 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
-func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,gocyclo // agent state assembly has many branches, each simple
+func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
 	configMutex.RLock()
 	agents := make([]*model.Agent, len(model.AgentList))
 	copy(agents, model.AgentList)
@@ -44,8 +43,7 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 
 	// Attach cached ACP mode/thinking/commands state to each agent.
 	// This lets the frontend populate mode chips and slash commands without
-	// extra API calls. If the ACP pool cache is empty (before first message
-	// or after idle timeout), fall back to DB-persisted state.
+	// extra API calls. State comes from the ACP connection manager cache only.
 	type acpState struct {
 		Mode      *ai.ModeState             `json:"modeState,omitempty"`
 		Effort    *ai.ThinkingEffortState   `json:"thinkingEffortState,omitempty"`
@@ -65,7 +63,6 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		var ml *ai.ModelListState
 		var ps *ai.PlanState
 
-		// Try connection manager cache first
 		if s := mgr.GetCachedStateByAgentID(a.ID); s.Mode != nil || s.Effort != nil || s.ModelList != nil || s.Plan != nil {
 			ms = s.Mode
 			es = s.Effort
@@ -74,33 +71,6 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) { //nolint:gocognit,
 		}
 		if pcmds := mgr.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
 			cmds = pcmds
-		}
-
-		// Fall back to DB-persisted state when cache is empty
-		if ms == nil && es == nil && len(cmds) == 0 && ml == nil {
-			if a.AcpModeState != "" {
-				var dbMs ai.ModeState
-				if json.Unmarshal([]byte(a.AcpModeState), &dbMs) == nil && len(dbMs.AvailableModes) > 0 {
-					ms = &dbMs
-				}
-			}
-			if a.AcpThinkingState != "" {
-				var dbEs ai.ThinkingEffortState
-				if json.Unmarshal([]byte(a.AcpThinkingState), &dbEs) == nil && len(dbEs.AvailableLevels) > 0 {
-					es = &dbEs
-				}
-			}
-			if a.AcpCommands != "" && a.AcpCommands != "[]" {
-				if err := json.Unmarshal([]byte(a.AcpCommands), &cmds); err != nil {
-					slog.Warn("failed to unmarshal ACP commands from DB", "agent", a.ID, "error", err)
-				}
-			}
-			if a.AcpModelListState != "" {
-				var dbMl ai.ModelListState
-				if json.Unmarshal([]byte(a.AcpModelListState), &dbMl) == nil && len(dbMl.Models) > 0 {
-					ml = &dbMl
-				}
-			}
 		}
 
 		// When ACP provides a model list, override the agent's Models

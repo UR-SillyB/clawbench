@@ -1872,9 +1872,9 @@ describe('useChatStream', () => {
   })
 
   describe('ACP SSE events', () => {
-    it('mode_update → should call updateAvailableModes with availableModes', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+    it('mode_update → should call updateModeState with currentModeId and availableModes', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -1891,15 +1891,15 @@ describe('useChatStream', () => {
         ],
       })
 
-      expect(updateAvailableModes).toHaveBeenCalledWith([
+      expect(updateModeState).toHaveBeenCalledWith('code', [
         { id: 'ask', name: 'Ask' },
         { id: 'code', name: 'Code' },
       ])
     })
 
-    it('mode_update → should skip when no availableModes', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+    it('mode_update → should call updateModeState with only currentModeId', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -1909,16 +1909,34 @@ describe('useChatStream', () => {
       es.simulateOpen()
 
       es.simulate('mode_update', {
-        currentModeId: 'code',
+        currentModeId: 'ask',
+      })
+
+      expect(updateModeState).toHaveBeenCalledWith('ask', [])
+    })
+
+    it('mode_update → should skip when no currentModeId and no availableModes', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
+
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('mode_update', {
+        currentModeId: '',
         availableModes: [],
       })
 
-      expect(updateAvailableModes).not.toHaveBeenCalled()
+      expect(updateModeState).not.toHaveBeenCalled()
     })
 
     it('mode_update → should skip when guard fails', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -1931,12 +1949,12 @@ describe('useChatStream', () => {
 
       es.simulate('mode_update', { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }] })
 
-      expect(updateAvailableModes).not.toHaveBeenCalled()
+      expect(updateModeState).not.toHaveBeenCalled()
     })
 
     it('mode_update → should skip invalid JSON without crashing', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -1951,12 +1969,12 @@ describe('useChatStream', () => {
       })
       consoleSpy.mockRestore()
 
-      expect(updateAvailableModes).not.toHaveBeenCalled()
+      expect(updateModeState).not.toHaveBeenCalled()
     })
 
-    it('config_update with category=mode → should call updateAvailableModes', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+    it('config_update with category=mode → should call updateModeState with currentValueId', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -1978,15 +1996,15 @@ describe('useChatStream', () => {
         ],
       })
 
-      expect(updateAvailableModes).toHaveBeenCalledWith([
+      expect(updateModeState).toHaveBeenCalledWith('architect', [
         { id: 'ask', name: 'Ask' },
         { id: 'architect', name: 'Architect' },
       ])
     })
 
-    it('config_update with id=mode → should call updateAvailableModes', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+    it('config_update with id=mode → should call updateModeState with currentValueId', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -2007,14 +2025,14 @@ describe('useChatStream', () => {
         ],
       })
 
-      expect(updateAvailableModes).toHaveBeenCalledWith([
+      expect(updateModeState).toHaveBeenCalledWith('code', [
         { id: 'code', name: 'Code' },
       ])
     })
 
-    it('config_update with non-mode category → should not call updateAvailableModes', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+    it('config_update with non-mode category → should not call updateModeState', async () => {
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -2029,12 +2047,12 @@ describe('useChatStream', () => {
         ],
       })
 
-      expect(updateAvailableModes).not.toHaveBeenCalled()
+      expect(updateModeState).not.toHaveBeenCalled()
     })
 
     it('config_update → should use value id as name fallback', async () => {
-      const { updateAvailableModes } = await import('@/composables/useSessionIdentity')
-      ;(updateAvailableModes as any).mockClear()
+      const { updateModeState } = await import('@/composables/useSessionIdentity')
+      ;(updateModeState as any).mockClear()
 
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -2053,7 +2071,7 @@ describe('useChatStream', () => {
         ],
       })
 
-      expect(updateAvailableModes).toHaveBeenCalledWith([{ id: 'ask', name: 'ask' }])
+      expect(updateModeState).toHaveBeenCalledWith('ask', [{ id: 'ask', name: 'ask' }])
     })
 
     it('thinking_effort_update → should call updateAvailableThinkingEfforts with levels', async () => {

@@ -140,10 +140,10 @@ export function useChatSession(options: UseChatSessionOptions) {
       identity.currentModeId.value = modeIdFromServer
       const mode = availableModes?.find(m => m.id === modeIdFromServer)
       identity.currentModeName.value = mode?.name || modeIdFromServer
-    } else {
-      // No server-persisted mode — clear stale value from previous session.
-      // Mode is ACP-only; CLI agents don't have modes.
-      identity.currentModeId.value = ''
+    } else if (!identity.currentModeId.value) {
+      // No server-persisted mode AND no agent-set mode via SSE — clear stale value.
+      // Agent-initiated mode changes (via SSE mode_update/config_update) take priority
+      // and should not be overwritten by an empty DB value (e.g. after stream completion).
       identity.currentModeName.value = ''
     }
   }

@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -498,10 +497,6 @@ type ACPConn struct {
 	// skip sending that config to avoid flooding the agent with errors on every
 	// prompt. Cleared on respawn — the new process might support it after an update.
 	unsupportedConfigs map[string]bool
-
-	// persistDebounce timer for batching ACP state DB writes
-	persistTimer *time.Timer
-	persistMu    sync.Mutex // separate mutex to avoid deadlock with mu
 }
 
 // getExternalSessionID is the global function for looking up the ACP session ID
@@ -538,18 +533,6 @@ var onPermissionStateChange = func(clawbenchSID string, pending bool) {}
 // the service layer (avoids circular import between ai and service/ws packages).
 func SetPermissionStateChangeCallback(fn func(clawbenchSID string, pending bool)) {
 	onPermissionStateChange = fn
-}
-
-// persistAgentACPStateToDB is the global function for persisting ACP state to the database.
-// Set by the application startup via SetACPStatePersister.
-var persistAgentACPStateToDB = func(agentID, modeState, commands, thinkingState, modelListState string) error {
-	return nil // no-op until SetACPStatePersister is called
-}
-
-// SetACPStatePersister sets the function used to persist ACP cached state
-// to the database. Must be called once during application startup.
-func SetACPStatePersister(fn func(agentID, modeState, commands, thinkingState, modelListState string) error) {
-	persistAgentACPStateToDB = fn
 }
 
 // newACPConn creates a new (uninitialized) ACPConn.
@@ -1365,7 +1348,7 @@ func (c *ACPConn) SetCachedPlanState(state *PlanState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedPlanState = state
-	// No debouncePersistACPState — plan is transient, not persisted to DB
+	// Plan is transient, not persisted
 }
 
 // GetCachedPlanState returns the cached plan state.
@@ -1426,7 +1409,6 @@ func (c *ACPConn) SetCachedModeState(state *ModeState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedModeState = state
-	c.debouncePersistACPState()
 }
 
 func (c *ACPConn) SetCachedConfigState(state *ConfigOptionState) {
@@ -1435,28 +1417,25 @@ func (c *ACPConn) SetCachedConfigState(state *ConfigOptionState) {
 	c.cachedConfigState = state
 	// ACP v2 agents (e.g., OpenCode) expose modes via ConfigOptions instead of
 	// the legacy Modes field. If cachedModeState is nil (no v1 Modes in response),
-	// derive it from the config so REST APIs and DB persistence can populate mode
-	// chips without requiring SSE events.
+	// derive it from the config so REST APIs can populate mode chips without
+	// requiring SSE events.
 	if c.cachedModeState == nil {
 		if derived := modeStateFromConfigState(state); derived != nil {
 			c.cachedModeState = derived
 		}
 	}
-	c.debouncePersistACPState()
 }
 
 func (c *ACPConn) SetCachedThinkingEffortState(state *ThinkingEffortState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedThinkingEffortState = state
-	c.debouncePersistACPState()
 }
 
 func (c *ACPConn) SetCachedModelListState(state *ModelListState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedModelListState = state
-	c.debouncePersistACPState()
 }
 
 // SetAutoApprove enables or disables hands-off mode for this connection.
@@ -1514,6 +1493,19 @@ func (c *ACPConn) HasNewAvailableModes(newModes []ModeDef) bool {
 	return false
 }
 
+// HasCurrentModeChanged returns true if the given modeId differs from the cached
+// currentModeId. Used to determine whether a mode_update SSE should be forwarded
+// when only the current mode changed (available modes unchanged).
+func (c *ACPConn) HasCurrentModeChanged(modeID string) bool {
+	c.mu.Lock()
+	existing := c.cachedModeState
+	c.mu.Unlock()
+	if existing == nil {
+		return modeID != ""
+	}
+	return existing.CurrentModeID != modeID
+}
+
 // HasNewAvailableThinkingEfforts returns true if the given levels list contains
 // IDs not present in the cached available levels.
 func (c *ACPConn) HasNewAvailableThinkingEfforts(newLevels []ThinkingEffortDef) bool {
@@ -1561,70 +1553,6 @@ func (c *ACPConn) UpdateCachedCurrentThinkingEffort(effortID string) {
 	defer c.mu.Unlock()
 	if c.cachedThinkingEffortState != nil {
 		c.cachedThinkingEffortState.CurrentID = effortID
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ACP state persistence
-// ---------------------------------------------------------------------------
-
-const acpPersistDebounce = 2 * time.Second
-
-func (c *ACPConn) debouncePersistACPState() {
-	c.persistMu.Lock()
-	defer c.persistMu.Unlock()
-
-	if c.persistTimer != nil {
-		c.persistTimer.Stop()
-	}
-	c.persistTimer = time.AfterFunc(acpPersistDebounce, func() {
-		c.persistACPState()
-	})
-}
-
-func (c *ACPConn) persistACPState() { //nolint:gocyclo // ACP state serialization has multiple optional fields
-	c.mu.Lock()
-	if c.agent == nil {
-		c.mu.Unlock()
-		return
-	}
-	agentID := c.agent.ID
-	var modeJSON, thinkingJSON, modelListJSON string
-	var cmdsJSON []byte
-
-	if c.cachedModeState != nil {
-		if b, err := json.Marshal(c.cachedModeState); err == nil {
-			modeJSON = string(b)
-		}
-	}
-	if c.cachedThinkingEffortState != nil {
-		if b, err := json.Marshal(c.cachedThinkingEffortState); err == nil {
-			thinkingJSON = string(b)
-		}
-	}
-	if c.cachedModelListState != nil {
-		if b, err := json.Marshal(c.cachedModelListState); err == nil {
-			modelListJSON = string(b)
-		}
-	}
-	if c.client != nil {
-		if cmds := c.client.GetCommandsAsInfo(); len(cmds) > 0 {
-			cmdsJSON, _ = json.Marshal(cmds)
-		}
-	}
-	c.mu.Unlock()
-
-	if modeJSON == "" && thinkingJSON == "" && len(cmdsJSON) == 0 && modelListJSON == "" {
-		return
-	}
-
-	cmdsStr := "[]"
-	if len(cmdsJSON) > 0 {
-		cmdsStr = string(cmdsJSON)
-	}
-
-	if err := persistAgentACPStateToDB(agentID, modeJSON, cmdsStr, thinkingJSON, modelListJSON); err != nil {
-		slog.Debug("acp: failed to persist ACP state to DB", "agent_id", agentID, "error", err)
 	}
 }
 

@@ -214,36 +214,6 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// DB fallback: when pool cache is empty (e.g. after server restart),
-		// use ACP state persisted in the agents table so mode/thinking/command
-		// chips appear immediately without waiting for a new ACP connection.
-		// Plan state is NOT persisted to DB — it's transient execution state
-		// that is meaningless after a server restart (the AI process is dead).
-		if modeState == nil && thinkingEffortState == nil && len(commands) == 0 && modelListState == nil && planState == nil && sessionAgentID != "" {
-			if a, ok := model.Agents[sessionAgentID]; ok && a.Transport == "acp-stdio" {
-				if a.AcpModeState != "" {
-					var dbMs ai.ModeState
-					if json.Unmarshal([]byte(a.AcpModeState), &dbMs) == nil && len(dbMs.AvailableModes) > 0 {
-						modeState = &dbMs
-					}
-				}
-				if a.AcpThinkingState != "" {
-					var dbEs ai.ThinkingEffortState
-					if json.Unmarshal([]byte(a.AcpThinkingState), &dbEs) == nil && len(dbEs.AvailableLevels) > 0 {
-						thinkingEffortState = &dbEs
-					}
-				}
-				if a.AcpCommands != "" && a.AcpCommands != "[]" {
-					json.Unmarshal([]byte(a.AcpCommands), &commands)
-				}
-				if a.AcpModelListState != "" {
-					var dbMl ai.ModelListState
-					if json.Unmarshal([]byte(a.AcpModelListState), &dbMl) == nil && len(dbMl.Models) > 0 {
-						modelListState = &dbMl
-					}
-				}
-			}
-		}
 
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
@@ -398,18 +368,6 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 	// user's choice after stream completion instead of resetting to agent default.
 	if req.ModelID != "" {
 		service.UpdateSessionModel(sessionID, req.ModelID)
-	}
-
-	// Persist thinking effort selection for this session so subsequent loads
-	// restore the user's choice instead of the agent default (auto/empty).
-	if req.ThinkingEffort != "" {
-		service.UpdateSessionThinkingEffort(sessionID, req.ThinkingEffort)
-	}
-
-	// Persist mode selection for this session so subsequent loads
-	// restore the user's choice instead of the agent default.
-	if req.ModeID != "" {
-		service.UpdateSessionMode(sessionID, req.ModeID)
 	}
 
 	// Persist transport selection for this session so subsequent loads
@@ -891,12 +849,6 @@ func finalizeStreamRun(
 			responseMetadata.ThinkingEffort = s.Effort.CurrentID
 		}
 	}
-	// Also inject thinking effort from session DB if not already set from ACP cache
-	if responseMetadata.ThinkingEffort == "" {
-		if effort := service.GetSessionThinkingEffort(sessionID); effort != "" {
-			responseMetadata.ThinkingEffort = effort
-		}
-	}
 	// Inject transport type based on session-level override or agent configuration
 	effectiveTransport := "cli"
 	if t := service.GetSessionTransport(sessionID); t != "" {
@@ -1185,9 +1137,8 @@ func buildChatRequestFromQueue(qMsg model.QueuedMessage, sessionID, projectPath,
 	// Use session-persisted model (if user explicitly chose one) as modelOverride
 	// so queued messages respect the user's model choice, not just the agent default.
 	sessionModel := service.GetSessionModel(sessionID)
-	sessionMode := service.GetSessionMode(sessionID)
 	sessionTransport := service.GetSessionTransport(sessionID)
-	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, service.GetSessionThinkingEffort(sessionID), sessionMode, sessionTransport, fileDir)
+	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, "", "", sessionTransport, fileDir)
 }
 
 // CancelChat handles POST to cancel an ongoing AI stream for a session.

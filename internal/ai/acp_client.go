@@ -130,10 +130,6 @@ func (c *ClawBenchACPClient) SetCommands(cmds []acp.AvailableCommand) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.commands = cmds
-	// Trigger persist so commands are saved to DB
-	if c.connRef != nil {
-		c.connRef.debouncePersistACPState()
-	}
 }
 
 // SessionUpdate converts ACP session update notifications to StreamEvents.

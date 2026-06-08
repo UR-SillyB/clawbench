@@ -115,9 +115,9 @@ function loadThinkingPref(agentId: string): string | null {
 
 // ───────────────────────────────────────────────────────────
 // Mode state — ACP session mode (ask/architect/code)
-// currentModeId is set by user action (local ref update) or DB restore
-// (initSessionFromAPI / loadHistory / switchSession). SSE events only
-// update the available modes list. Takes effect on next chat message.
+// currentModeId is set by agent SSE events (takes priority),
+// user action (local ref update), or DB restore (initSessionFromAPI).
+// Agent-initiated mode changes override user selection.
 // ───────────────────────────────────────────────────────────
 
 /** Update mode state from REST API or user action (full state). */
@@ -133,8 +133,8 @@ export function updateModeState(modeId: string, modes: Array<{ id: string; name:
 }
 
 /** Update available modes list without changing current selection.
- * Used by SSE mode_update/config_update handlers — currentModeId
- * is managed by user action + DB, not by agent notifications. */
+ * Used by acpStates cache population (useAgents) — currentModeId
+ * is managed by agent SSE events or user action, not by cache restore. */
 export function updateAvailableModes(modes: Array<{ id: string; name: string }>) {
   if (modes.length > 0) {
     availableModes.value = modes

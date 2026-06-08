@@ -1500,12 +1500,7 @@ func TestGetSessions_AllBackendsFiltersBySessionType(t *testing.T) {
 
 // ---------- GetSessionThinkingEffort / UpdateSessionThinkingEffort ----------
 
-func TestGetSessionThinkingEffort_DefaultEmpty(t *testing.T) {
-	setupDB(t)
-
-	sid := helperCreateSession(t, "/project", "claude", "Thinking Test")
-	// New session should have empty thinking effort (auto)
-	assert.Equal(t, "", service.GetSessionThinkingEffort(sid))
+// ---------- GetSessionsPaged ----------	assert.Equal(t, "", service.GetSessionThinkingEffort(sid))
 }
 
 func TestGetSessionThinkingEffort_NonExistent(t *testing.T) {

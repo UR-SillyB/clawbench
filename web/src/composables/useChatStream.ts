@@ -609,9 +609,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (!guard()) return
       let data: any
       try { data = JSON.parse(e.data) } catch { console.warn('SSE mode_update: invalid JSON, skipping'); return }
-      // Only update available modes list; currentModeId is managed by user action + DB
-      if (data.availableModes?.length > 0) {
-        updateAvailableModes(data.availableModes)
+      // Agent mode changes take priority over user manual selection.
+      // Update both currentModeId and availableModes from the SSE event.
+      if (data.currentModeId || data.availableModes?.length > 0) {
+        updateModeState(data.currentModeId || '', data.availableModes || [])
       }
     })
 
@@ -623,9 +624,11 @@ export function useChatStream(options: UseChatStreamOptions) {
       for (const opt of (data.options || [])) {
         if (opt.category === 'mode' || opt.id === 'mode') {
           const modes = (opt.values || []).map((v: any) => ({ id: v.id, name: v.name || v.id }))
-          // Only update available modes list; currentModeId is managed by user action + DB
-          if (modes.length > 0) {
-            updateAvailableModes(modes)
+          // Agent mode changes take priority over user manual selection.
+          // Update both currentModeId and availableModes from the SSE event.
+          const currentModeId = data.currentValueId || ''
+          if (currentModeId || modes.length > 0) {
+            updateModeState(currentModeId, modes)
           }
         }
       }

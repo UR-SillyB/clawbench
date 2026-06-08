@@ -488,38 +488,6 @@ func UpdateSessionModel(sessionID, modelID string) error {
 	return err
 }
 
-// GetSessionThinkingEffort returns the thinking effort level for a session, or empty string if not set.
-func GetSessionThinkingEffort(sessionID string) string {
-	var effort string
-	err := DBRead.QueryRow("SELECT thinking_effort FROM chat_sessions WHERE id = ? AND deleted = 0", sessionID).Scan(&effort)
-	if err != nil {
-		return ""
-	}
-	return effort
-}
-
-// UpdateSessionThinkingEffort updates the thinking_effort field for a session.
-func UpdateSessionThinkingEffort(sessionID, effort string) error {
-	_, err := DB.Exec("UPDATE chat_sessions SET thinking_effort = ? WHERE id = ?", effort, sessionID)
-	return err
-}
-
-// UpdateSessionMode updates the ACP mode field for a session.
-func UpdateSessionMode(sessionID, mode string) error {
-	_, err := DB.Exec("UPDATE chat_sessions SET mode = ? WHERE id = ?", mode, sessionID)
-	return err
-}
-
-// GetSessionMode returns the ACP mode for a session, or empty string if not set.
-func GetSessionMode(sessionID string) string {
-	var mode string
-	err := DBRead.QueryRow("SELECT mode FROM chat_sessions WHERE id = ? AND deleted = 0", sessionID).Scan(&mode)
-	if err != nil {
-		return ""
-	}
-	return mode
-}
-
 // UpdateSessionTransport updates the transport field for a session.
 func UpdateSessionTransport(sessionID, transport string) error {
 	_, err := DB.Exec("UPDATE chat_sessions SET transport = ? WHERE id = ?", transport, sessionID)

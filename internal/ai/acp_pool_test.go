@@ -433,3 +433,20 @@ func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testin
 	assert.NotNil(t, modeState)
 	assert.Equal(t, "architect", modeState.CurrentModeID) // Original preserved
 }
+
+func TestACPConn_HasCurrentModeChanged(t *testing.T) {
+	conn := newACPConn(&model.Agent{ID: "test-mode-changed", Backend: "acp-stdio", AcpCommand: "echo"}, "session-mode-changed")
+
+	// Nil cache — any non-empty modeID is a change
+	assert.True(t, conn.HasCurrentModeChanged("code"))
+	assert.False(t, conn.HasCurrentModeChanged(""))
+
+	// Set initial mode state
+	conn.SetCachedModeState(&ModeState{CurrentModeID: "code", AvailableModes: []ModeDef{{ID: "code", Name: "Code"}}})
+
+	// Same mode — no change
+	assert.False(t, conn.HasCurrentModeChanged("code"))
+
+	// Different mode — change
+	assert.True(t, conn.HasCurrentModeChanged("ask"))
+}

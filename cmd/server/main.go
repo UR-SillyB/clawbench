@@ -457,9 +457,6 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		return p, cu, ak, true
 	})
 
-	// Inject ACP state persister (avoids import cycle between ai and service packages)
-	ai.SetACPStatePersister(service.UpdateAgentACPState)
-
 	// Inject external session ID getter for ResumeSession recovery
 	ai.SetExternalSessionIDGetter(service.GetExternalSessionID)
 

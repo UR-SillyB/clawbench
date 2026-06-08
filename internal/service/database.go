@@ -260,24 +260,6 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		slog.Info("backfilled external_session_id for existing sessions", slog.Int64("rows", rowsAffected))
 	}
 
-	// Migrate: add thinking_effort column for per-session thinking effort selection
-	var hasThinkingEffort int
-	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='thinking_effort'").Scan(&hasThinkingEffort)
-	if hasThinkingEffort == 0 {
-		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN thinking_effort TEXT DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add thinking_effort column: %w", err)
-		}
-	}
-
-	// Migrate: add mode column for per-session ACP mode (e.g., "code", "ask", "architect")
-	var hasMode int
-	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='mode'").Scan(&hasMode)
-	if hasMode == 0 {
-		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN mode TEXT DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add mode column: %w", err)
-		}
-	}
-
 	// Migrate: add transport column for per-session transport type ("acp-stdio" or "cli")
 	var hasTransport int
 	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='transport'").Scan(&hasTransport)
@@ -459,30 +441,6 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_command TEXT NOT NULL DEFAULT ''"); err != nil {
 			return fmt.Errorf("failed to add acp_command column: %w", err)
-		}
-	}
-
-	// Migrate: add ACP cached state columns to agents table.
-	var hasAcpModeStateCol int
-	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='acp_mode_state'").Scan(&hasAcpModeStateCol)
-	if hasAcpModeStateCol == 0 {
-		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_mode_state TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add acp_mode_state column: %w", err)
-		}
-		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_commands TEXT NOT NULL DEFAULT '[]'"); err != nil {
-			return fmt.Errorf("failed to add acp_commands column: %w", err)
-		}
-		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_thinking_state TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add acp_thinking_state column: %w", err)
-		}
-	}
-
-	// Migrate: add ACP model list state column to agents table.
-	var hasAcpModelListStateCol int
-	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='acp_model_list_state'").Scan(&hasAcpModelListStateCol)
-	if hasAcpModelListStateCol == 0 {
-		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_model_list_state TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add acp_model_list_state column: %w", err)
 		}
 	}
 
