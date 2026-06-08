@@ -355,6 +355,7 @@ export function useChatSession(options: UseChatSessionOptions) {
     lastMessageSnapshot = ''  // Invalidate snapshot — new session may have different data
     expandedTools.value = {}
     // Clear stale blockAskQuestions from previous session
+    Object.keys(blockTasks).forEach(k => delete blockTasks[k])
     Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
     Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
     // Clear ACP state from previous session — will be repopulated by REST response
@@ -439,9 +440,11 @@ export function useChatSession(options: UseChatSessionOptions) {
   }
 
   async function createSession(agentId) {
+    // Stop msg count polling for the previous session to prevent race
+    // conditions — if the polling fires during creation, loadHistory could
+    // overwrite the new sessionId and revert to the old session.
+    stopMsgCountPolling()
     try {
-      // Load agents first so UI can resolve agent names
-      if (agents.value.length === 0) await loadAgents()
       const body = agentId ? { agentId } : {}
       const resp = await fetch('/api/ai/sessions', {
         method: 'POST',
@@ -452,34 +455,15 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (!resp.ok || !data.ok) {
         throw new Error(data.error || gt('chat.session.createFailed', { status: resp.status }))
       }
-      currentSessionId.value = data.sessionId
-      currentSessionTitle.value = data.title || ''
-      currentBackend.value = data.backend || ''
-      currentAgentId.value = data.agentId || agentId || ''
-      syncModelFromData(currentAgentId.value, '')
-      currentThinkingEffort.value = identity.loadThinkingPref(currentAgentId.value) || ''
-      // Clear ACP state for new session — then immediately restore from
-      // cached acpStates so mode/thinking/command chips appear without
-      // needing to send the first message first.
-      clearModeState()
-      clearCommandState()
-      clearThinkingEffortState()
-      // Clear plan progress from previous session — plan is session-bound,
-      // will be repopulated by SSE plan_update for the new session.
-      clearPlanState()
-      // Restore original CLI model list in case ACP had overridden it
-      restoreOriginalModels(currentAgentId.value)
-      // Re-populate ACP state from the agents cache (pool + DB persisted).
-      // This makes mode chips visible immediately on new sessions.
-      // May trigger a force-refresh of /api/agents if the cache is stale.
-      await populateACPStateFromCache(currentAgentId.value)
-      messages.value = []
-      totalMessages.value = 0
-      lastMessageSnapshot = ''  // New session — no messages yet
-      Object.keys(blockTasks).forEach(k => delete blockTasks[k])
-      Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
-      Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
-      loading.value = false
+      // Delegate full state transition to switchSession which properly:
+      // - Increments loadHistorySeq to invalidate in-flight loadHistory calls
+      // - Stops all polling (msg count + HTTP)
+      // - Disconnects the SSE stream
+      // - Loads history from the backend
+      // - Starts appropriate polling for the new session
+      // - Calls loadSessionsOnce() to update global state
+      await switchSession(data.sessionId)
+      // Update session count from creation response and show toast
       const maxCount = store.state.sessionMaxCount
       if (typeof data.sessionCount === 'number') store.state.sessionCount = data.sessionCount
       toast.show(gt('chat.session.created', { count: data.sessionCount ?? '', max: maxCount }), { icon: '✨', type: 'success', duration: 1500 })
