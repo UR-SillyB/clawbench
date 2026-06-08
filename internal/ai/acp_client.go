@@ -409,12 +409,18 @@ type terminalSession struct {
 
 // CreateTerminal creates a terminal session by executing the command via os/exec.
 func (c *ClawBenchACPClient) CreateTerminal(ctx context.Context, req acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	shell := platform.ResolveLoginShell()
-
 	// Use Background context — the command must outlive the JSON-RPC request context.
 	// Apply a generous timeout so commands don't run forever.
 	cmdCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	cmd := exec.CommandContext(cmdCtx, shell, "-c", req.Command)
+
+	var cmd *exec.Cmd
+	if shell := platform.ResolveLoginShell(); shell != "" {
+		cmd = exec.CommandContext(cmdCtx, shell, "-c", req.Command)
+	} else {
+		// Windows fallback: ResolveLoginShell() returns empty on Windows
+		// when $SHELL is not set — use cmd.exe instead.
+		cmd = exec.CommandContext(cmdCtx, "cmd", "/C", req.Command)
+	}
 	if req.Cwd != nil && *req.Cwd != "" {
 		cmd.Dir = *req.Cwd
 	}
