@@ -114,6 +114,9 @@ export default {
       switchThinkingEffort: 'Switch thinking effort',
       attachment: 'Attach',
     },
+    sessionInfo: {
+      default: 'Default',
+    },
     create: {
       selectAgentOrLongPress: 'Select agent (long press to create new)',
     },

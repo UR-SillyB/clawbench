@@ -1,15 +1,5 @@
 <template>
   <div class="chat-input-wrapper">
-    <!-- Session info bar (model + mode + thinking + transport) -->
-    <div class="chat-session-info" v-if="currentModelName || currentModeName || currentThinkingEffort || currentTransport">
-      <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
-      <span v-if="currentModeName" class="session-info-divider"></span>
-      <span v-if="currentModeName" class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
-      <span v-if="currentThinkingEffort" class="session-info-divider"></span>
-      <span v-if="currentThinkingEffort" class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ currentThinkingEffort }}</span>
-      <span v-if="currentTransport" class="session-info-divider"></span>
-      <span v-if="currentTransport" class="session-info-transport" @click.stop="openSettingsModal('transport')"><Cable :size="11" />{{ currentTransport }}</span>
-    </div>
     <!-- Top action bar (above input box) -->
     <div class="chat-top-actions">
       <div class="chat-action-group">
@@ -192,6 +182,22 @@
         </button>
       </PopupMenu>
     </div>
+    <!-- Session info bar (model + mode + thinking + transport) -->
+    <div class="chat-session-info" v-if="currentModelName || showModeInfo || showThinkingInfo || showTransportInfo">
+      <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
+      <template v-if="showModeInfo">
+        <span class="session-info-divider"></span>
+        <span class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ modeDisplayText }}</span>
+      </template>
+      <template v-if="showThinkingInfo">
+        <span class="session-info-divider"></span>
+        <span class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ thinkingDisplayText }}</span>
+      </template>
+      <template v-if="showTransportInfo">
+        <span class="session-info-divider"></span>
+        <span class="session-info-transport" @click.stop="openSettingsModal('transport')"><Cable :size="11" />{{ currentTransport }}</span>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -209,9 +215,22 @@ import { useDialog } from '@/composables/useDialog.ts'
 import { useQuickSend } from '@/composables/useQuickSend'
 import { useChatKeyboard } from '@/composables/useChatKeyboard'
 import { useSessionIdentity } from '@/composables/useSessionIdentity'
+import { useAgents } from '@/composables/useAgents'
 
 const { t } = useI18n()
-const { availableCommands } = useSessionIdentity()
+const { availableCommands, availableModes, availableThinkingEfforts, currentTransport: sessionTransport } = useSessionIdentity()
+const { supportsDualTransport } = useAgents()
+
+const isACP = computed(() => {
+  if (sessionTransport.value) return sessionTransport.value === 'acp-stdio'
+  return props.currentTransport === 'acp-stdio'
+})
+
+const showModeInfo = computed(() => availableModes.value.length > 0)
+const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0)
+const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
+const modeDisplayText = computed(() => props.currentModeName || t('chat.sessionInfo.default'))
+const thinkingDisplayText = computed(() => props.currentThinkingEffort || t('chat.sessionInfo.default'))
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
@@ -741,13 +760,13 @@ defineExpose({
   border-top: 1px solid var(--border-color, #e5e5e5);
 }
 
-/* Session info bar (model + mode + thinking, above action bar) */
+/* Session info bar (model + mode + thinking + transport, below input box) */
 .chat-session-info {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 4px;
-  padding: 2px 8px 0;
+  padding: 4px 8px 0;
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-muted, #999);

@@ -114,6 +114,9 @@ export default {
       switchThinkingEffort: '切换思考档位',
       attachment: '附件',
     },
+    sessionInfo: {
+      default: '默认',
+    },
     create: {
       selectAgentOrLongPress: '选择智能体（长按直接新建）',
     },
