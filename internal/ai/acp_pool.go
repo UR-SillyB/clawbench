@@ -574,16 +574,7 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
 	acpSID := getExternalSessionID(c.clawbenchSID)
 	if acpSID != "" {
-		err := c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
-		if err == nil {
-			return false, nil
-		}
-		// ResumeSession failed (e.g., agent doesn't know this session ID —
-		// common for Claude when the backfill migration set external_session_id
-		// to the ClawBench UUID which the ACP agent never saw).
-		// Fall through to create a new session instead of failing entirely.
-		slog.Warn("acp: ResumeSession failed, falling back to session/new",
-			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
+		return false, c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
 	}
 
 	// No prior session — first message ever, create new session
