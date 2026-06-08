@@ -226,8 +226,8 @@ const isACP = computed(() => {
   return props.currentTransport === 'acp-stdio'
 })
 
-const showModeInfo = computed(() => availableModes.value.length > 0 && !!props.currentModeName)
-const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0 && !!props.currentThinkingEffort)
+const showModeInfo = computed(() => availableModes.value.length > 0)
+const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0)
 const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
