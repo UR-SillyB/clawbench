@@ -137,7 +137,8 @@ export function useSessionManager(options: UseSessionManagerOptions) {
    *  while AI is still generating. */
   function cleanupActiveStream() {
     if (!loading.value) return
-    disconnectStream(true)    stopPolling()
+    disconnectStream(true)
+    stopPolling()
     const streamingMsg = messages.value.find(m => m.role === 'assistant' && m.streaming)
     if (streamingMsg) {
       delete streamingMsg.streaming

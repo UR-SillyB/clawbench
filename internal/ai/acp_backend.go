@@ -181,13 +181,12 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 		b.mergeResumedSessionState(conn)
 	}
 
-	// Only emit mode_update/thinking_effort_update/model_list_update on first
-	// session creation. After that, the frontend loads these from DB on startup
-	// and only updates via user action. ACP agent notifications are diff-checked
-	// in forwardACPUpdate before being forwarded.
-	if isNew {
-		b.emitNewSessionEvents(conn, ch)
-	}
+	// Emit mode/thinking/model state on every stream start so the frontend
+	// can populate chips regardless of whether the session is new or resumed.
+	// Previously this only fired for isNew sessions, which meant resumed
+	// sessions never received mode_update/thinking_effort_update events.
+	b.emitSessionStateEvents(conn, ch)
+
 	// config_update is still re-emitted every stream because the frontend
 	// resets config state on session switch and config covers more than just mode.
 	if configState := conn.GetCachedConfigState(); configState != nil {
@@ -250,13 +249,21 @@ func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 	resumeResp := conn.GetAndClearResumeSessionResp()
 	if resumeResp == nil {
+		slog.Warn("acp: mergeResumedSessionState called with nil resumeResp")
 		return
 	}
+	slog.Info("acp: merging resumed session state",
+		"has_modes", resumeResp.Modes != nil,
+		"config_options_count", len(resumeResp.ConfigOptions),
+	)
 	if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
 		if existing := conn.GetCachedModeState(); existing != nil && existing.CurrentModeID != "" {
 			modeState.CurrentModeID = existing.CurrentModeID
 		}
 		conn.SetCachedModeState(modeState)
+		slog.Info("acp: resumed mode state", "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+	} else {
+		slog.Info("acp: no mode from resumed v1 Modes field")
 	}
 	if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
 		if existing := conn.GetCachedConfigState(); existing != nil && existing.CurrentID != "" {
@@ -278,9 +285,10 @@ func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 	}
 }
 
-// emitNewSessionEvents emits mode_update, thinking_effort_update, and model_list_update
-// SSE events for a newly created session (not for resumed sessions).
-func (b *ACPBackend) emitNewSessionEvents(conn *ACPConn, ch chan<- StreamEvent) {
+// emitSessionStateEvents emits mode_update, thinking_effort_update, and model_list_update
+// SSE events. Called on every stream start (new and resumed sessions) so the frontend
+// always receives the current ACP state.
+func (b *ACPBackend) emitSessionStateEvents(conn *ACPConn, ch chan<- StreamEvent) {
 	if modeState := conn.GetCachedModeState(); modeState != nil {
 		slog.Info("acp: emitting mode_update for new session", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
