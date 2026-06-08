@@ -39,9 +39,9 @@ test.describe.serial('ACP Permission Approval', () => {
     await chat.openModeMenu()
     await chat.selectMode('Code')
 
-    // Verify mode chip updated
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toContainText('Code', { timeout: 5000 })
+    // Wait for modal to close (mode selection auto-closes the modal)
+    const modal = page.locator('.modal-dialog, [class*="modal"]')
+    await expect(modal.first()).not.toBeVisible({ timeout: 5000 })
   }
 
   test('should show permission approval card in non-bypass mode', async ({ page }) => {

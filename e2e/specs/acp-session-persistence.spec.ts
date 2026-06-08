@@ -43,18 +43,15 @@ test.describe.serial('ACP Session State Persistence', () => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Wait for mode_update SSE event and mode chip to appear
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
-
-    // Note the current mode text (should be "Code" — the default)
-    const modeTextBefore = await modeChip.textContent()
-    expect(modeTextBefore).toBeTruthy()
+    // Wait for mode_update SSE event — verify via settings chip + modal
+    await chat.openModeMenu()
 
     // Switch to a different mode to make the test meaningful
-    await chat.openModeMenu()
     await chat.selectMode('Plan')
-    await expect(modeChip).toContainText('Plan', { timeout: 5000 })
+
+    // Modal closes after selection
+    const modal = page.locator('.modal-dialog, [class*="modal"]')
+    await expect(modal.first()).not.toBeVisible({ timeout: 5000 })
 
     // Reload the page — mode should be restored from backend API
     await page.reload()
@@ -64,10 +61,13 @@ test.describe.serial('ACP Session State Persistence', () => {
     // Wait for the UI to be ready
     await expect(chat.textarea).toBeVisible({ timeout: 5000 })
 
-    // Mode chip should reappear with "Plan" (restored from API response)
-    const modeChipAfter = page.locator('.mode-chip')
-    await expect(modeChipAfter).toBeVisible({ timeout: 15000 })
-    await expect(modeChipAfter).toContainText('Plan', { timeout: 5000 })
+    // Open the mode menu again — "Plan" should be the current selection
+    await chat.openModeMenu()
+
+    // The "Plan" item should have the current class (active selection)
+    const planItem = page.locator('.thinking-item').filter({ hasText: /Plan/i })
+    await expect(planItem).toBeVisible({ timeout: 5000 })
+    await expect(planItem).toHaveClass(/current/, { timeout: 5000 })
   })
 
   // ───────────────────────────────────────────────────────
@@ -112,10 +112,17 @@ test.describe.serial('ACP Session State Persistence', () => {
 
   test('should restore ACP state when switching back to session', async ({ page }) => {
     // ACP connection is already warm. Current session has "Plan" mode.
-    // Wait for mode chip to confirm state
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
-    await expect(modeChip).toContainText('Plan', { timeout: 5000 })
+    // Open mode menu to verify state
+    await chat.openModeMenu()
+
+    // Verify "Plan" is selected
+    const planItem = page.locator('.thinking-item').filter({ hasText: /Plan/i })
+    await expect(planItem).toBeVisible({ timeout: 5000 })
+    await expect(planItem).toHaveClass(/current/, { timeout: 5000 })
+
+    // Close modal by pressing Escape
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(500)
 
     // Create a new session with the same agent
     await chat.createSessionWithAgent('acp-mock')
@@ -123,19 +130,15 @@ test.describe.serial('ACP Session State Persistence', () => {
     // Wait for the new session to be ready
     await page.waitForTimeout(1000)
 
-    // The new session should also show a mode chip (ACP state prefetched on switch)
-    const newSessionModeChip = page.locator('.mode-chip')
-    await expect(newSessionModeChip).toBeVisible({ timeout: 15000 })
-
     // Now switch back to the original session (first in the list)
     // Open session drawer, click the first session item
     await chat.openSessionList()
 
-    // Wait for session drawer to open
-    const sessionDrawer = page.locator('.session-drawer, .drawer-content')
-    await expect(sessionDrawer.first()).toBeVisible({ timeout: 5000 })
+    // Wait for session drawer (BottomSheet) to open
+    const sessionDrawer = page.locator('.bs-panel')
+    await expect(sessionDrawer).toBeVisible({ timeout: 5000 })
 
-    // Click the second session in the list (the original one with "Plan" mode)
+    // Click the second session in the list (the older one with Plan mode)
     const sessionItems = page.locator('.session-item')
     const sessionCount = await sessionItems.count()
     expect(sessionCount).toBeGreaterThanOrEqual(2)
@@ -144,10 +147,11 @@ test.describe.serial('ACP Session State Persistence', () => {
     await sessionItems.nth(1).click()
     await page.waitForTimeout(1000)
 
-    // Mode chip should still show "Plan" for the original session
-    const restoredModeChip = page.locator('.mode-chip')
-    await expect(restoredModeChip).toBeVisible({ timeout: 15000 })
-    await expect(restoredModeChip).toContainText('Plan', { timeout: 5000 })
+    // Open mode menu to verify "Plan" is still selected for the original session
+    await chat.openModeMenu()
+    const restoredPlanItem = page.locator('.thinking-item').filter({ hasText: /Plan/i })
+    await expect(restoredPlanItem).toBeVisible({ timeout: 5000 })
+    await expect(restoredPlanItem).toHaveClass(/current/, { timeout: 5000 })
   })
 
   // ───────────────────────────────────────────────────────
@@ -183,6 +187,6 @@ test.describe.serial('ACP Session State Persistence', () => {
     // The "High" item should have the active/selected class
     const highItem = page.locator('.thinking-item').filter({ hasText: /high/i })
     await expect(highItem).toBeVisible()
-    await expect(highItem).toHaveClass(/active|selected/, { timeout: 5000 })
+    await expect(highItem).toHaveClass(/current/, { timeout: 5000 })
   })
 })

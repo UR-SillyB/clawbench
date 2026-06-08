@@ -196,15 +196,23 @@ test.describe.serial('ACP Slash Commands', () => {
     }
   })
 
-  test('should show mode chip for ACP session', async ({ page }) => {
+  test('should show mode tab in SessionSettingModal for ACP session', async ({ page }) => {
     // Establish ACP connection first (default agent is acp-mock)
     await chat.sendAndAwaitACPReply('hi')
 
-    // Mode chip should be visible for ACP-backed agents
-    // The mode chip is in the chat input bar, shown when availableModes is populated
-    // Wait longer since mode_update SSE event propagation may be delayed
-    const modeChip = page.locator('.mode-chip')
-    await expect(modeChip).toBeVisible({ timeout: 15000 })
+    // Wait for mode_update SSE event to be processed
+    await page.waitForTimeout(2000)
+
+    // Open settings modal — mode tab should be visible
+    await chat.openModeMenu()
+
+    // Mode tab should be active and mode items visible
+    const modeItems = page.locator('.model-tab-content .thinking-item')
+    await expect(modeItems.first()).toBeVisible({ timeout: 5000 })
+
+    // acp-mock provides at least 2 modes
+    const count = await modeItems.count()
+    expect(count).toBeGreaterThanOrEqual(2)
   })
 
   test('should show thinking effort levels in SessionSettingModal for ACP session', async ({ page }) => {

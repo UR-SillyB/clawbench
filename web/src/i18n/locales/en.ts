@@ -234,6 +234,8 @@ export default {
       allMessagesLoaded: 'All messages loaded',
       startConversation: 'Send a message to start',
       startConversationAI: 'Send a message to start chatting with AI',
+      scrollToTop: 'Scroll to top',
+      scrollToPrev: 'Previous message',
     },
     pending: {
       uploadedAttachment: 'Upload',

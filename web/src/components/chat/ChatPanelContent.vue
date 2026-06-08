@@ -86,6 +86,7 @@
       :currentModelId="identity.currentModelId.value"
       :currentModelName="identity.currentModelName.value"
       :currentThinkingEffort="identity.currentThinkingEffort.value"
+      :currentModeName="identity.currentModeName.value"
       :currentAgentId="identity.currentAgentId.value"
       :active="props.active"
       @send="sendMessage"
@@ -479,33 +480,47 @@ async function handleShowAgentSelector() {
 function handleSwitchModel(model) {
   identity.currentModelId.value = model.id
   identity.currentModelName.value = model.name
-  // Note: model switch is session-scoped only — does NOT update agent's default model.
-  // Agent default model is configured exclusively via the settings panel.
+  // Persist model selection immediately so it survives page reload
+  persistSessionUpdate({ modelId: model.id })
 }
 
 function handleSwitchThinkingEffort(level) {
   identity.currentThinkingEffort.value = level
-  // Thinking effort switch is session-scoped — takes effect on next chat message.
-  // Agent default is configured exclusively via the settings panel.
+  // Persist thinking effort selection immediately so it survives page reload
+  persistSessionUpdate({ thinkingEffort: level })
 }
 
 function handleSwitchMode(mode) {
   if (!mode?.id || mode.id === identity.currentModeId.value) return
   identity.currentModeId.value = mode.id
   identity.currentModeName.value = mode.name || mode.id
-  // Mode switch is session-scoped — takes effect on next chat message.
-  // No immediate API call. modeId is sent in POST /api/ai/chat body.
+  // Persist mode selection immediately so it survives page reload
+  persistSessionUpdate({ modeId: mode.id })
 }
 
 function handleSwitchTransport(transport) {
   identity.currentTransport.value = transport
-  // Transport switch is session-scoped — takes effect on next chat message.
+  // Persist transport selection immediately so it survives page reload
+  persistSessionUpdate({ transport })
   // When switching from ACP to CLI for this session, clear ACP-specific state.
   if (transport === 'cli') {
     identity.clearModeState()
     identity.clearCommandState()
     identity.clearThinkingEffortState()
   }
+}
+
+/** Persist session-scoped settings (mode, thinkingEffort, model, transport)
+ *  immediately via PATCH so they survive page reload without sending a message. */
+function persistSessionUpdate(fields) {
+  const sid = identity.currentSessionId.value
+  if (!sid) return
+  const url = `/api/ai/session/update?session_id=${encodeURIComponent(sid)}`
+  fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  }).catch(() => { /* best effort — next POST /api/ai/chat will also persist */ })
 }
 
 async function sendMessage(text, extraFilePaths) {

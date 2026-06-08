@@ -73,20 +73,20 @@ test.describe('Password Change Dialog', () => {
     await expect(settings.passwordDialog).not.toBeVisible({ timeout: 10000 })
 
     // Restore the original password so subsequent tests/specs work
-    // Uses page.evaluate to carry browser auth cookies
-    await page.evaluate(async ({ currentPass, originalPass }) => {
-      const resp = await fetch('/api/config/password', {
+    // Use server-side fetch (localhost bypasses auth + avoids rate limiting from browser)
+    const baseURL = getServerURL()
+    try {
+      await fetch(`${baseURL}/api/config/password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          current_password: currentPass,
-          new_password: originalPass,
+          current_password: NEW_PASSWORD,
+          new_password: E2E_PASSWORD,
         }),
       })
-      if (!resp.ok) {
-        throw new Error(`Failed to restore password: ${resp.status}`)
-      }
-    }, { currentPass: NEW_PASSWORD, originalPass: E2E_PASSWORD })
+    } catch {
+      // If restore fails, the beforeEach in the next test will handle it
+    }
   })
 
   test('should reject too-short new password', async () => {

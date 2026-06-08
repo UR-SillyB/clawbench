@@ -66,7 +66,7 @@ func (a *mockACPAgent) Initialize(ctx context.Context, params acp.InitializeRequ
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentCapabilities: acp.AgentCapabilities{
-			LoadSession: false,
+			LoadSession: true,
 		},
 	}, nil
 }
@@ -144,7 +144,63 @@ func (a *mockACPAgent) ListSessions(ctx context.Context, params acp.ListSessions
 }
 
 func (a *mockACPAgent) ResumeSession(ctx context.Context, params acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
-	return acp.ResumeSessionResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionResume)
+	sid := string(params.SessionId)
+	a.mu.Lock()
+	s, ok := a.sessions[sid]
+	if !ok || s == nil {
+		// Session not found — treat as new session with the given ID
+		s = &mockSession{mode: modeBypass, thinkingEffort: effortMedium}
+		a.sessions[sid] = s
+	}
+	a.mu.Unlock()
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	thoughtLevelCategory := acp.SessionConfigOptionCategoryThoughtLevel
+
+	return acp.ResumeSessionResponse{
+		Modes: &acp.SessionModeState{
+			AvailableModes: []acp.SessionMode{
+				{Id: acp.SessionModeId(modeCode), Name: modeCodeName},
+				{Id: acp.SessionModeId(modePlan), Name: modePlanName},
+				{Id: acp.SessionModeId(modeBypass), Name: modeBypassName},
+			},
+			CurrentModeId: acp.SessionModeId(s.mode),
+		},
+		ConfigOptions: []acp.SessionConfigOption{
+			{
+				Select: &acp.SessionConfigOptionSelect{
+					Id:           acp.SessionConfigId("mode"),
+					Name:         "Mode",
+					Type:         "select",
+					Category:     &modeCategory,
+					CurrentValue: acp.SessionConfigValueId(s.mode),
+					Options: acp.SessionConfigSelectOptions{
+						Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+							acp.SessionConfigSelectOption{Name: modeCodeName, Value: acp.SessionConfigValueId(modeCode)},
+							acp.SessionConfigSelectOption{Name: modePlanName, Value: acp.SessionConfigValueId(modePlan)},
+							acp.SessionConfigSelectOption{Name: modeBypassName, Value: acp.SessionConfigValueId(modeBypass)},
+						},
+					},
+				},
+			},
+			{
+				Select: &acp.SessionConfigOptionSelect{
+					Id:           acp.SessionConfigId("thinkingEffort"),
+					Name:         "Thinking Effort",
+					Type:         "select",
+					Category:     &thoughtLevelCategory,
+					CurrentValue: acp.SessionConfigValueId(s.thinkingEffort),
+					Options: acp.SessionConfigSelectOptions{
+						Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+							acp.SessionConfigSelectOption{Name: effortLowName, Value: acp.SessionConfigValueId(effortLow)},
+							acp.SessionConfigSelectOption{Name: effortMediumName, Value: acp.SessionConfigValueId(effortMedium)},
+							acp.SessionConfigSelectOption{Name: effortHighName, Value: acp.SessionConfigValueId(effortHigh)},
+						},
+					},
+				},
+			},
+		},
+	}, nil
 }
 
 func (a *mockACPAgent) SetSessionMode(ctx context.Context, params acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {

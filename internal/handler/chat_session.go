@@ -197,6 +197,52 @@ func getSessionID(r *http.Request) string {
 	return cookie.Value
 }
 
+// ServeAISessionUpdate handles PATCH /api/ai/session — immediately persists
+// session-scoped settings (mode, thinkingEffort, model, transport) so they
+// survive page reload even without sending a chat message.
+func ServeAISessionUpdate(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPatch) {
+		return
+	}
+	sessionID, ok := requireSessionID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		ModeID         string `json:"modeId"`
+		ThinkingEffort string `json:"thinkingEffort"`
+		ModelID        string `json:"modelId"`
+		Transport      string `json:"transport"`
+		AutoApprove    *bool  `json:"autoApprove"` // pointer: distinguish "not sent" from false
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ModeID != "" {
+		service.UpdateSessionMode(sessionID, req.ModeID)
+	}
+	if req.ThinkingEffort != "" {
+		service.UpdateSessionThinkingEffort(sessionID, req.ThinkingEffort)
+	}
+	if req.ModelID != "" {
+		service.UpdateSessionModel(sessionID, req.ModelID)
+	}
+	if req.Transport != "" {
+		service.UpdateSessionTransport(sessionID, req.Transport)
+		if req.Transport == "cli" {
+			ai.GetACPConnManager().CloseConn(sessionID)
+		}
+	}
+	if req.AutoApprove != nil {
+		service.UpdateSessionAutoApprove(sessionID, *req.AutoApprove)
+		// Sync to ACPConn runtime state
+		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
+			conn.SetAutoApprove(*req.AutoApprove)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
 // setSessionID sets session ID in cookie.
 // HttpOnly: true prevents JavaScript access, mitigating XSS-based session hijack (ISS-123).
 func setSessionID(w http.ResponseWriter, sessionID string) {

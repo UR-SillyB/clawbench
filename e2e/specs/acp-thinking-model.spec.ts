@@ -61,7 +61,7 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
     // The "High" item should have the active/selected class
     const highItem = page.locator('.thinking-item').filter({ hasText: /high/i })
     await expect(highItem).toBeVisible()
-    await expect(highItem).toHaveClass(/active|selected/, { timeout: 5000 })
+    await expect(highItem).toHaveClass(/current/, { timeout: 5000 })
   })
 
   test('should persist thinking effort selection across sessions', async ({ page }) => {
@@ -152,11 +152,11 @@ test.describe.serial('ACP Thinking Effort & Model List', () => {
         agentIds: Object.keys(data.acpStates || {}),
         // Check if any agent has thinking effort state
         hasThinkingEffort: Object.values(data.acpStates || {}).some(
-          (s: any) => s?.effort?.availableLevels?.length > 0
+          (s: any) => s?.thinkingEffortState?.availableLevels?.length > 0
         ),
         // Check if any agent has model list state
         hasModelList: Object.values(data.acpStates || {}).some(
-          (s: any) => s?.modelList?.models?.length > 0
+          (s: any) => s?.modelListState?.models?.length > 0
         ),
       }
     })

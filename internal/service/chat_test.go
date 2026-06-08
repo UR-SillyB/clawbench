@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 	thinking_effort TEXT DEFAULT '',
 	mode TEXT DEFAULT '',
 	transport TEXT DEFAULT '',
+	auto_approve INTEGER NOT NULL DEFAULT 0,
 	deleted INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -2703,6 +2704,30 @@ func TestGetSessionMode_DeletedSession(t *testing.T) {
 	// GetSessionMode excludes deleted sessions
 	mode := service.GetSessionMode(sid)
 	assert.Equal(t, "", mode)
+}
+
+// ---------- GetSessionAutoApprove / UpdateSessionAutoApprove ----------
+
+func TestGetSessionAutoApprove_DefaultOff(t *testing.T) {
+	setupDB(t)
+	sid := helperCreateSession(t, "/project", "claude", "AutoApprove Test")
+	assert.False(t, service.GetSessionAutoApprove(sid))
+}
+
+func TestUpdateSessionAutoApprove_Enable(t *testing.T) {
+	setupDB(t)
+	sid := helperCreateSession(t, "/project", "claude", "AutoApprove Enable")
+	err := service.UpdateSessionAutoApprove(sid, true)
+	assert.NoError(t, err)
+	assert.True(t, service.GetSessionAutoApprove(sid))
+}
+
+func TestUpdateSessionAutoApprove_Disable(t *testing.T) {
+	setupDB(t)
+	sid := helperCreateSession(t, "/project", "claude", "AutoApprove Disable")
+	service.UpdateSessionAutoApprove(sid, true)
+	service.UpdateSessionAutoApprove(sid, false)
+	assert.False(t, service.GetSessionAutoApprove(sid))
 }
 
 // ---------- GetStreamingMessageID ----------

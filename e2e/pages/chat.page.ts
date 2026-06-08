@@ -249,12 +249,12 @@ export class ChatPage {
     await this.settingsChip.click()
     // Wait for modal to appear
     await expect(this.page.locator('.model-tab').first()).toBeVisible({ timeout: 5000 })
-    // Switch to mode tab
-    const modeTab = this.page.locator('.model-tab').filter({ hasText: /mode|模式/i })
+    // Switch to mode tab — use exact match to avoid matching "Model" tab
+    const modeTab = this.page.locator('.model-tab').filter({ hasText: /^Mode$|^模式$/ })
     await expect(modeTab).toBeVisible({ timeout: 5000 })
     await modeTab.click()
     // Wait for mode tab to be active
-    await expect(this.page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })).toBeVisible({ timeout: 5000 })
+    await expect(this.page.locator('.model-tab.active').filter({ hasText: /^Mode$|^模式$/ })).toBeVisible({ timeout: 5000 })
   }
 
   /** Select an ACP mode by name */

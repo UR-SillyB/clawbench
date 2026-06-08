@@ -68,6 +68,8 @@ default_agent: acp-mock
 chat:
   initial_messages: 20
   page_size: 20
+session:
+  max_count: 0
 terminal:
   enabled: true
   idle_timeout: 1h
@@ -140,7 +142,7 @@ system_prompt: |
       // the system PATH. This ensures test isolation.
       PATH: `${tempDir}:${process.env.PATH}`,
     },
-    acp-stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
 
   // Log server output for debugging

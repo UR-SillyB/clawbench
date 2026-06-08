@@ -536,6 +536,26 @@ func GetSessionTransport(sessionID string) string {
 	return transport
 }
 
+// GetSessionAutoApprove returns whether auto-approve mode is enabled for a session.
+func GetSessionAutoApprove(sessionID string) bool {
+	var val int
+	err := DBRead.QueryRow("SELECT auto_approve FROM chat_sessions WHERE id = ? AND deleted = 0", sessionID).Scan(&val)
+	if err != nil {
+		return false
+	}
+	return val == 1
+}
+
+// UpdateSessionAutoApprove updates the auto_approve flag for a session.
+func UpdateSessionAutoApprove(sessionID string, enabled bool) error {
+	val := 0
+	if enabled {
+		val = 1
+	}
+	_, err := DB.Exec("UPDATE chat_sessions SET auto_approve = ? WHERE id = ?", val, sessionID)
+	return err
+}
+
 // SaveMetadata persists message metadata to the chat_metadata table.
 // This enables SQL-based analytical queries (token usage, cost, model stats)
 // while the same metadata remains embedded in chat_history.content JSON for
@@ -712,6 +732,7 @@ type SessionInfo struct {
 	ThinkingEffort string
 	Mode           string
 	Transport      string
+	AutoApprove    bool
 	ProjectPath    string // populated by GetSessionFullInfo only
 }
 
@@ -737,10 +758,10 @@ func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 func GetSessionFullInfo(sessionID string) *SessionInfo {
 	info := &SessionInfo{}
 	err := DBRead.QueryRow(
-		`SELECT backend, project_path, title, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, '')
+		`SELECT backend, project_path, title, agent_id, model, thinking_effort, COALESCE(mode, ''), COALESCE(transport, ''), auto_approve
 		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
 		sessionID,
-	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport)
+	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort, &info.Mode, &info.Transport, &info.AutoApprove)
 	if err != nil {
 		return nil
 	}

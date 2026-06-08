@@ -168,6 +168,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
 		}
 		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort, sessionMode, sessionTransport string
+		var sessionAutoApprove bool
 		var sessionInfoBackend string
 		if cachedSessionInfo != nil {
 			sessionTitle = cachedSessionInfo.Title
@@ -177,6 +178,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			sessionThinkingEffort = cachedSessionInfo.ThinkingEffort
 			sessionMode = cachedSessionInfo.Mode
 			sessionTransport = cachedSessionInfo.Transport
+			sessionAutoApprove = cachedSessionInfo.AutoApprove
 		}
 		if sessionInfoBackend != "" {
 			sessionBackend = sessionInfoBackend
@@ -244,10 +246,10 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "modeId": sessionMode, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
 		return
 	}
 
@@ -419,6 +421,11 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		if req.Transport == "cli" {
 			ai.GetACPConnManager().CloseConn(sessionID)
 		}
+	}
+
+	// Sync auto-approve mode from DB to ACPConn on prompt
+	if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
+		conn.SetAutoApprove(service.GetSessionAutoApprove(sessionID))
 	}
 
 	// Prevent concurrent sessions for the same session ID

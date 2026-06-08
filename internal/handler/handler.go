@@ -227,6 +227,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 	register("/api/ai/queue", middleware.Auth(QueueHandler))
 	register("/api/ai/history", middleware.Auth(ServeChatHistory))
 	register("/api/ai/session", middleware.Auth(ServeAISession))
+	register("/api/ai/session/update", middleware.Auth(ServeAISessionUpdate))
 	register("/api/ai/sessions", middleware.Auth(ServeSessions))
 	register("/api/ai/session/delete", middleware.Auth(DeleteSession))
 	register("/api/ai/session/resume", middleware.Auth(ServeSessionResume))

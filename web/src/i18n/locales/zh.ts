@@ -234,6 +234,8 @@ export default {
       allMessagesLoaded: '已加载全部消息',
       startConversation: '发送消息开始对话',
       startConversationAI: '发送消息开始与 AI 对话',
+      scrollToTop: '回到顶部',
+      scrollToPrev: '上一条消息',
     },
     pending: {
       uploadedAttachment: '上传附件',

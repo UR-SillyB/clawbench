@@ -36,7 +36,7 @@ test.describe.serial('ACP Mode Switching', () => {
     await chat.openModeMenu()
 
     // Mode tab should be active and mode items visible
-    const modeTab = page.locator('.model-tab.active').filter({ hasText: /mode|模式/i })
+    const modeTab = page.locator('.model-tab.active').filter({ hasText: /^Mode$|^模式$/ })
     await expect(modeTab).toBeVisible({ timeout: 5000 })
 
     // Mode items use .thinking-item class in the modal

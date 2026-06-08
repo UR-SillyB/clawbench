@@ -870,6 +870,65 @@ func TestServeAISession_NoProjectCookie(t *testing.T) {
 	assertStatus(t, w, http.StatusForbidden)
 }
 
+// --- ServeAISessionUpdate (PATCH /api/ai/session/update) ---
+
+func TestServeAISessionUpdate_PersistMode(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Create a session first
+	sid, err := service.CreateSession(env.ProjectDir, "codebuddy", "Test", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// PATCH with modeId
+	req := newRequest(t, http.MethodPatch, "/api/ai/session/update?session_id="+sid, map[string]any{
+		"modeId": "architect",
+	})
+	w := callHandler(ServeAISessionUpdate, req)
+	assertStatus(t, w, http.StatusOK)
+
+	// Verify mode was persisted
+	mode := service.GetSessionMode(sid)
+	assert.Equal(t, "architect", mode)
+}
+
+func TestServeAISessionUpdate_PersistThinkingEffort(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sid, err := service.CreateSession(env.ProjectDir, "codebuddy", "Test", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	req := newRequest(t, http.MethodPatch, "/api/ai/session/update?session_id="+sid, map[string]any{
+		"thinkingEffort": "high",
+	})
+	w := callHandler(ServeAISessionUpdate, req)
+	assertStatus(t, w, http.StatusOK)
+
+	effort := service.GetSessionThinkingEffort(sid)
+	assert.Equal(t, "high", effort)
+}
+
+func TestServeAISessionUpdate_NoSessionID(t *testing.T) {
+	_, teardown := setupTestEnv(t)
+	defer teardown()
+
+	req := newRequest(t, http.MethodPatch, "/api/ai/session/update", map[string]any{
+		"modeId": "architect",
+	})
+	w := callHandler(ServeAISessionUpdate, req)
+	assertStatus(t, w, http.StatusBadRequest)
+}
+
+func TestServeAISessionUpdate_WrongMethod(t *testing.T) {
+	_, teardown := setupTestEnv(t)
+	defer teardown()
+
+	req := newRequest(t, http.MethodPost, "/api/ai/session/update?session_id=abc", nil)
+	w := callHandler(ServeAISessionUpdate, req)
+	assertStatus(t, w, http.StatusMethodNotAllowed)
+}
+
 // --- ServeRoots ---
 
 func TestServeRoots(t *testing.T) {

@@ -243,6 +243,17 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 		"toolInput":    toolInput,
 		"options":      p.Options,
 	}
+
+	// Check autoApprove mode — if enabled, mark the event
+	// and auto-select the first allow option instead of waiting for user.
+	isAutoApprove := false
+	if c.connRef != nil {
+		isAutoApprove = c.connRef.IsAutoApprove()
+	}
+	if isAutoApprove {
+		approvalInput["autoApproved"] = true
+	}
+
 	inputJSON, _ := json.Marshal(approvalInput)
 
 	forwardACPEvent(ch, StreamEvent{
@@ -254,6 +265,49 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 			Done:  false,
 		},
 	})
+
+	// Auto-approve branch: immediately select the first allow option
+	if isAutoApprove {
+		allowOptionID := ""
+		for _, opt := range p.Options {
+			if opt.Kind == acp.PermissionOptionKindAllowOnce || opt.Kind == acp.PermissionOptionKindAllowAlways {
+				allowOptionID = string(opt.OptionId)
+				break
+			}
+		}
+		if allowOptionID != "" {
+			slog.Info("acp: auto-approving permission request",
+				"session_id", sessionID,
+				"tool_call_id", toolCallID,
+				"tool_name", toolName,
+				"option_id", allowOptionID,
+			)
+			// Remove from pending map — responding immediately
+			c.mu.Lock()
+			delete(c.pendingPermission, key)
+			c.mu.Unlock()
+
+			// Emit tool_result to mark the PermissionApproval as done
+			forwardACPEvent(ch, StreamEvent{
+				Type: "tool_result",
+				Tool: &ToolCall{
+					ID:     permissionBlockID,
+					Done:   true,
+					Status: "success",
+					Output: "Auto-Approved",
+				},
+			})
+
+			return acp.RequestPermissionResponse{
+				Outcome: acp.NewRequestPermissionOutcomeSelected(acp.PermissionOptionId(allowOptionID)),
+			}, nil
+		}
+		// No allow option found — fall through to normal interactive flow
+		slog.Warn("acp: auto-approve mode but no allow option found, falling back to interactive",
+			"session_id", sessionID,
+			"tool_call_id", toolCallID,
+		)
+	}
 
 	slog.Info(
 		"acp: permission request pending user response",

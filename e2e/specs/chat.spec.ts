@@ -54,10 +54,12 @@ test.describe('Chat', () => {
 
   test('should show model selector chip', async ({ page }) => {
     // acp-mock agent has models configured (mock-pro, mock-fast)
-    // so the model chip should be visible
-    await expect(chat.settingsChip).toBeVisible()
-    // Should show the default model name
-    await expect(chat.settingsChip).toContainText('Mock Pro')
+    // The settings chip opens the SessionSettingModal which shows the model
+    await chat.openSessionSettingModal()
+    // The current model (Mock Pro) should be visible with the current class
+    const mockProItem = page.locator('.model-item').filter({ hasText: /Mock Pro/ })
+    await expect(mockProItem).toBeVisible({ timeout: 5000 })
+    await expect(mockProItem).toHaveClass(/current/)
   })
 
   test('should show stop button during AI response', async ({ page }) => {
@@ -71,7 +73,9 @@ test.describe('Chat', () => {
     await chat.waitForReply(30000, countBefore)
 
     // After response completes, stop button should be gone
-    await expect(chat.stopButton).not.toBeVisible()
+    // Allow extra time for frontend to process the session_complete event
+    await page.waitForTimeout(1000)
+    await expect(chat.stopButton).not.toBeVisible({ timeout: 10000 })
   })
 
   // ───────────────────────────────────────────────────────

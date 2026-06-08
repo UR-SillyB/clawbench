@@ -76,13 +76,25 @@
         @file-tag-click="$emit('file-tag-click', $event)"
       />
     </div>
+
+    <!-- Floating scroll buttons — appear when scrolled up -->
+    <Transition name="scroll-fab">
+      <div v-if="scrolledUp" class="scroll-fab-group">
+        <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
+          <ChevronsUp :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
+          <ArrowUp :size="18" />
+        </button>
+      </div>
+    </Transition>
   </div>
 </template>
 
 <script setup>
 import { ref, nextTick, inject, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronUp } from 'lucide-vue-next'
+import { ChevronUp, ChevronsUp, ArrowUp } from 'lucide-vue-next'
 import ChatMessageItem from './ChatMessageItem.vue'
 import PendingMessageItem from './PendingMessageItem.vue'
 import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
@@ -148,7 +160,8 @@ const collapsedSet = ref(new Set())
 watch(() => props.messages, () => {
   expandedSet.value = new Set()
   collapsedSet.value = new Set()
-  isAtBottom = true
+  isAtBottom.value = true
+  scrolledUp.value = false
 })
 
 // Compute the last round: last assistant message + its preceding user message
@@ -261,7 +274,10 @@ async function handleChatClick(event) {
 let loadMorePending = false
 // Track whether the user is at the bottom of the chat.
 // When the user scrolls back to the bottom during streaming, auto-scroll resumes.
-let isAtBottom = true
+const isAtBottom = ref(true)
+
+// Whether user has scrolled up enough to show floating scroll buttons
+const scrolledUp = ref(false)
 
 const NEAR_BOTTOM_THRESHOLD = 60
 
@@ -270,7 +286,10 @@ function handleScroll() {
   const el = messagesRef.value
 
   // Update isAtBottom state based on current scroll position
-  isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+  isAtBottom.value = nearBottom
+  // Show floating buttons when scrolled up past one viewport height from bottom
+  scrolledUp.value = !nearBottom && el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight
 
   if (loadMorePending) return
   if (!props.hasMore || props.loadingMore) return
@@ -285,7 +304,7 @@ function scrollToBottom(force = false) {
   nextTick(() => {
     if (!messagesRef.value) return
     const el = messagesRef.value
-    if (force || isAtBottom) {
+    if (force || isAtBottom.value) {
       el.scrollTop = el.scrollHeight
       // Verify the scroll actually reached the bottom — content may have grown
       // between the scrollToBottom call and this nextTick callback, or may grow
@@ -300,7 +319,7 @@ function scrollToBottom(force = false) {
           el.scrollTop = el.scrollHeight
         }
         // Final isAtBottom state based on actual scroll position after correction
-        isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+        isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
         // For force scrolls, also do a delayed re-scroll to catch async content
         // rendering (Mermaid, KaTeX, collapse transitions) that settles later.
         if (force) {
@@ -308,7 +327,7 @@ function scrollToBottom(force = false) {
             if (!messagesRef.value) return
             const el = messagesRef.value
             el.scrollTop = el.scrollHeight
-            isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
+            isAtBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD
           }, 300)
         }
       })
@@ -316,10 +335,33 @@ function scrollToBottom(force = false) {
   })
 }
 
+function scrollToTop() {
+  if (!messagesRef.value) return
+  messagesRef.value.scrollTop = 0
+}
+
+function scrollToPreviousMessage() {
+  if (!messagesRef.value) return
+  const el = messagesRef.value
+  const items = el.querySelectorAll('.chat-messages-list > .chat-message')
+  if (items.length === 0) return
+  // Find the first message whose bottom is above the viewport top
+  for (let i = items.length - 1; i >= 0; i--) {
+    const rect = items[i].getBoundingClientRect()
+    const containerRect = el.getBoundingClientRect()
+    if (rect.bottom < containerRect.top + 8) {
+      items[i].scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+  }
+  // If no message is above, scroll to top
+  el.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 defineExpose({
   scrollToBottom,
   messagesRef,
-  isAtBottom: () => isAtBottom,
+  isAtBottom: () => isAtBottom.value,
 })
 </script>
 
@@ -506,6 +548,63 @@ defineExpose({
   flex-direction: column;
   gap: 6px;
   padding-top: 4px;
+}
+
+/* ── Floating scroll buttons ── */
+.scroll-fab-group {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.scroll-fab-btn {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.scroll-fab-btn:active {
+  transform: scale(0.9);
+}
+
+@media (hover: hover) {
+  .scroll-fab-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--accent-color);
+  }
+}
+
+.scroll-fab-enter-active {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+.scroll-fab-leave-active {
+  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
+}
+.scroll-fab-enter-from {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+.scroll-fab-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 
 </style>

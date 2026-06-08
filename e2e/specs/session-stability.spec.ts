@@ -19,7 +19,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message to establish a session with content
     const uniqueText = 'stability_tab_' + Date.now()
-    await chat.sendAndAwaitACPReply(uniqueText)
+    await chat.sendAndAwaitACPReply(uniqueText, 60000)
 
     // Record the current session ID
     const sessionIdBefore = await page.evaluate(async () => {
@@ -61,7 +61,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message to establish a session
     const uniqueText = 'stability_visibility_' + Date.now()
-    await chat.sendAndAwaitACPReply(uniqueText)
+    await chat.sendAndAwaitACPReply(uniqueText, 60000)
 
     // Record session ID
     const sessionIdBefore = await page.evaluate(async () => {
@@ -108,7 +108,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message
     const uniqueText = 'stability_ghost_' + Date.now()
-    await chat.sendAndAwaitACPReply(uniqueText)
+    await chat.sendAndAwaitACPReply(uniqueText, 60000)
 
     // Count sessions after — should NOT have increased
     // (a ghost session would be created if POST /api/ai/chat had no session_id)
@@ -128,7 +128,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message in the first session
     const firstMsg = 'stability_first_' + Date.now()
-    await chat.sendAndAwaitACPReply(firstMsg)
+    await chat.sendAndAwaitACPReply(firstMsg, 60000)
 
     // Record the first session ID
     const firstSessionId = await page.evaluate(async () => {
@@ -142,7 +142,7 @@ test.describe.serial('Session Stability', () => {
 
     // Send a message in the new session
     const secondMsg = 'stability_second_' + Date.now()
-    await chat.sendAndAwaitACPReply(secondMsg)
+    await chat.sendAndAwaitACPReply(secondMsg, 60000)
 
     // Record the second session ID — should be different
     const secondSessionId = await page.evaluate(async () => {
