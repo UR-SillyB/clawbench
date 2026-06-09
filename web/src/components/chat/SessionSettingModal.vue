@@ -12,7 +12,7 @@
       <button v-if="thinkingLevels.length > 0" class="model-tab" :class="{ active: activeTab === 'thinking' }" @click="activeTab = 'thinking'">
         <Brain :size="13" />{{ t('chat.thinkingEffortSwitcher.title') }}
       </button>
-      <button v-if="availableModes.length > 0" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
+      <button v-if="availableModes.length > 0 && isACP" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
         <Compass :size="13" />{{ t('chat.modeSwitcher.title') }}
       </button>
       <button v-if="showTransportTab" class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
@@ -131,9 +131,6 @@
 
     <!-- Mode tab -->
     <div v-if="activeTab === 'mode'" class="model-tab-content">
-      <div v-if="!isACP" class="mode-cli-hint">
-        {{ t('chat.modeSwitcher.cliHint') }}
-      </div>
       <div class="model-list">
         <div
           v-for="(mode, idx) in availableModes"
@@ -142,9 +139,8 @@
         >
           <button
             class="thinking-item"
-            :class="{ current: mode.id === currentModeId, disabled: !isACP }"
-            :disabled="!isACP"
-            @click="isACP && selectMode(mode)"
+            :class="{ current: mode.id === currentModeId }"
+            @click="selectMode(mode)"
           >
             <span class="model-item-indicator" :class="{ active: mode.id === currentModeId }"></span>
             <span class="model-item-name">{{ mode.name || mode.id }}</span>
@@ -184,7 +180,7 @@ import { RefreshCw, Star, Cpu, Brain, Compass, Cable } from 'lucide-vue-next'
 import ModalDialog from '@/components/common/ModalDialog.vue'
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import { useAgents, restoreOriginalModels, populateACPStateFromCache, invalidateACPStateCache } from '@/composables/useAgents'
-import { useSessionIdentity, clearModeState, clearCommandState, clearThinkingEffortState, updateModeState } from '@/composables/useSessionIdentity'
+import { useSessionIdentity, clearModeState, clearCommandState, clearThinkingEffortState } from '@/composables/useSessionIdentity'
 import { apiPost } from '@/utils/api'
 import { patchAgentPref } from '@/composables/useSettingsConfig'
 import { useToast } from '@/composables/useToast'
@@ -306,17 +302,11 @@ async function selectTransport(transport) {
 
   // When switching to CLI, clear ACP-specific state and restore CLI models
   if (transport === 'cli') {
+    clearModeState()
     clearCommandState()
     clearThinkingEffortState()
     restoreOriginalModels(props.agentId || '')
     invalidateACPStateCache(props.agentId || '')
-    // Set CLI mode from agent backend name (read-only)
-    const agent = getAgent(props.agentId || '')
-    if (agent?.backend) {
-      updateModeState(agent.backend, [{ id: agent.backend, name: agent.backend }])
-    } else {
-      clearModeState()
-    }
   }
 
   // When switching to ACP, re-populate ACP state from cache (force-refresh)
@@ -493,19 +483,6 @@ function handleClose() {
   flex-direction: column;
   min-height: 0;
   flex: 1;
-}
-
-.mode-cli-hint {
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--text-tertiary, #888);
-  border-bottom: 1px solid var(--border-color, #e5e5e5);
-}
-
-.thinking-item.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  pointer-events: none;
 }
 
 .model-search-row {

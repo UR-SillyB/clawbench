@@ -927,25 +927,11 @@ func TestServeAgentsGet_NonACPAgentNoACPState(t *testing.T) {
 	acpStates, ok := resp["acpStates"].(map[string]any)
 	require.True(t, ok, "response should contain acpStates")
 
-	// codebuddy and claude are CLI agents — they now get a synthetic read-only mode state
-	codebuddyState, hasCodebuddy := acpStates["codebuddy"].(map[string]any)
-	claudeState, hasClaude := acpStates["claude"].(map[string]any)
-	assert.True(t, hasCodebuddy, "CLI agent should have mode state (read-only)")
-	assert.True(t, hasClaude, "CLI agent should have mode state (read-only)")
-	if hasCodebuddy {
-		modeState, _ := codebuddyState["modeState"].(map[string]any)
-		if modeState != nil {
-			modes, _ := modeState["availableModes"].([]any)
-			assert.Len(t, modes, 1, "CLI agent should have exactly 1 mode")
-		}
-	}
-	if hasClaude {
-		modeState, _ := claudeState["modeState"].(map[string]any)
-		if modeState != nil {
-			modes, _ := modeState["availableModes"].([]any)
-			assert.Len(t, modes, 1, "CLI agent should have exactly 1 mode")
-		}
-	}
+	// codebuddy and claude are CLI agents — no ACP state
+	_, hasCodebuddy := acpStates["codebuddy"]
+	_, hasClaude := acpStates["claude"]
+	assert.False(t, hasCodebuddy, "CLI agent should not have ACP state")
+	assert.False(t, hasClaude, "CLI agent should not have ACP state")
 }
 
 func TestServeAgentsGet_ACPModelListOverridesModels(t *testing.T) {

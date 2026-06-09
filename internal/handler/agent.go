@@ -82,14 +82,6 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 			if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
 				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
 			}
-		} else if a.Backend != "" {
-			// CLI agents: synthesize a read-only mode from the backend name
-			states[a.ID] = &acpState{
-				Mode: &ai.ModeState{
-					CurrentModeID:  a.Backend,
-					AvailableModes: []ai.ModeDef{{ID: a.Backend, Name: a.Backend}},
-				},
-			}
 		}
 	}
 

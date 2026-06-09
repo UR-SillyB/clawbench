@@ -187,7 +187,7 @@
       <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
       <template v-if="showModeInfo">
         <span class="session-info-divider"></span>
-        <span class="session-info-mode" :class="{ 'session-info-readonly': !isACP }" @click.stop="isACP && openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
+        <span class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
       </template>
       <template v-if="showThinkingInfo">
         <span class="session-info-divider"></span>
@@ -226,7 +226,7 @@ const isACP = computed(() => {
   return props.currentTransport === 'acp-stdio'
 })
 
-const showModeInfo = computed(() => availableModes.value.length > 0)
+const showModeInfo = computed(() => availableModes.value.length > 0 && isACP.value)
 const showThinkingInfo = computed(() => isACP.value && (availableThinkingEfforts.value.length > 0 || hasThinkingEffortLevels(props.currentAgentId || '')))
 const showTransportInfo = computed(() => {
   if (supportsDualTransport(props.currentAgentId || '')) return true
@@ -804,11 +804,6 @@ defineExpose({
 .session-info-thinking svg,
 .session-info-transport svg {
   flex-shrink: 0;
-}
-
-.session-info-readonly {
-  cursor: default;
-  opacity: 0.7;
 }
 
 .session-info-divider {

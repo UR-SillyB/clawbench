@@ -535,15 +535,9 @@ function handleSwitchTransport(transport) {
   persistSessionUpdate({ transport })
   // When switching from ACP to CLI for this session, clear ACP-specific state.
   if (transport === 'cli') {
+    identity.clearModeState()
     identity.clearCommandState()
     identity.clearThinkingEffortState()
-    // Set CLI mode from agent backend name (read-only)
-    const agent = agentsApi.getAgent(identity.currentAgentId.value || '')
-    if (agent?.backend) {
-      identity.updateModeState(agent.backend, [{ id: agent.backend, name: agent.backend }])
-    } else {
-      identity.clearModeState()
-    }
   }
 }
 

@@ -221,17 +221,6 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// CLI sessions: synthesize a read-only mode from the backend name
-		// so the mode chip is visible but non-switchable. Only for agents
-		// whose configured transport is CLI (not acp-stdio).
-		if modeState == nil && sessionAgentID != "" {
-			if agent, ok := model.Agents[sessionAgentID]; ok && agent.Transport != "acp-stdio" && agent.Backend != "" {
-				modeState = &ai.ModeState{
-					CurrentModeID:  agent.Backend,
-					AvailableModes: []ai.ModeDef{{ID: agent.Backend, Name: agent.Backend}},
-				}
-			}
-		}
 
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
