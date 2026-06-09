@@ -597,8 +597,11 @@ func CreateSession(projectPath, backend, title, agentID, modelName, agentSource,
 // since all message queries are scoped to sessions, and deleted sessions are excluded.
 // Data remains for RAG search but is hidden from UI; purged by cleanup worker after retention period.
 func DeleteSession(projectPath, backend, sessionID string) error {
-	// Soft-delete the session record, update timestamp to mark deletion time
-	_, err := DB.Exec("UPDATE chat_sessions SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE project_path = ? AND backend = ? AND id = ?", projectPath, backend, sessionID)
+	// Soft-delete the session record, update timestamp to mark deletion time.
+	// backend param kept for API compatibility but not used in WHERE —
+	// session ID (UUID) is already unique; filtering by backend could cause
+	// silent no-op when the client sends a wrong/empty backend value.
+	_, err := DB.Exec("UPDATE chat_sessions SET deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE project_path = ? AND id = ?", projectPath, sessionID)
 	return err
 }
 
