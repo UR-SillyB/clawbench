@@ -450,3 +450,159 @@ func TestACPConn_HasCurrentModeChanged(t *testing.T) {
 	// Different mode — change
 	assert.True(t, conn.HasCurrentModeChanged("ask"))
 }
+
+// --- ACPConnManager.PrefetchACPState ---
+
+func TestPrefetchACPState_SIDDedup(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-prefetch-dedup", Backend: "acp-stdio", AcpCommand: "echo"}
+	prefetchSID := "_prefetch_" + agent.ID
+	defer mgr.CloseConn(prefetchSID)
+
+	// Insert a prefetch conn that is alive with cached state
+	conn := newACPConn(agent, prefetchSID)
+	conn.SetAliveForTest()
+	conn.SetCachedModeState(&ModeState{
+		CurrentModeID: "code",
+		AvailableModes: []ModeDef{
+			{ID: "code", Name: "Code"},
+			{ID: "ask", Name: "Ask"},
+		},
+	})
+	mgr.SetConnForTest(prefetchSID, conn)
+
+	// PrefetchACPState should skip — conn is alive and has state
+	mgr.PrefetchACPState(agent, "/tmp")
+
+	// Verify the original conn is still there (not replaced)
+	got := mgr.GetConn(prefetchSID)
+	assert.Equal(t, conn, got)
+}
+
+func TestPrefetchACPState_SkipsWhenHasStateEvenIfDead(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-prefetch-has-state", Backend: "acp-stdio", AcpCommand: "echo"}
+	prefetchSID := "_prefetch_" + agent.ID
+	defer mgr.CloseConn(prefetchSID)
+
+	// Insert a dead conn that still has cached state
+	conn := newACPConn(agent, prefetchSID)
+	// Not calling SetAliveForTest — conn is dead
+	conn.SetCachedModeState(&ModeState{
+		CurrentModeID: "code",
+		AvailableModes: []ModeDef{{ID: "code", Name: "Code"}},
+	})
+	mgr.SetConnForTest(prefetchSID, conn)
+
+	// PrefetchACPState should skip — conn has cached state
+	mgr.PrefetchACPState(agent, "/tmp")
+
+	got := mgr.GetConn(prefetchSID)
+	assert.Equal(t, conn, got) // not replaced
+}
+
+func TestPrefetchACPState_RetriesStaleEntry(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-prefetch-stale", Backend: "acp-stdio", AcpCommand: "echo"}
+	prefetchSID := "_prefetch_" + agent.ID
+	defer mgr.CloseConn(prefetchSID)
+
+	// Insert a dead conn with NO cached state — this is stale
+	conn := newACPConn(agent, prefetchSID)
+	// Not alive, no cached state
+	mgr.SetConnForTest(prefetchSID, conn)
+
+	// The stale entry has no state and is not alive, so PrefetchACPState
+	// should remove it and create a new one.
+	// Since we can't actually spawn a process in unit tests, we verify
+	// that the old conn was removed by checking the map after the call.
+	// The new conn won't be able to spawn (echo doesn't speak ACP), so
+	// the goroutine will fail and clean up.
+	mgr.PrefetchACPState(agent, "/tmp")
+
+	// Wait briefly for the background goroutine to finish
+	time.Sleep(200 * time.Millisecond)
+
+	// The old entry should have been replaced (and likely cleaned up
+	// by the failed spawn). At minimum, the old conn should be gone.
+	mgr.mu.Lock()
+	newConn, exists := mgr.conns[prefetchSID]
+	mgr.mu.Unlock()
+	if exists {
+		// If the entry still exists, it should NOT be the old one
+		assert.NotEqual(t, conn, newConn)
+	}
+	// Either the entry was cleaned up (failed spawn) or replaced
+}
+
+func TestPrefetchACPState_CallbackFired(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-prefetch-callback", Backend: "acp-stdio", AcpCommand: "echo"}
+	prefetchSID := "_prefetch_" + agent.ID
+	defer mgr.CloseConn(prefetchSID)
+
+	// Set up callback to capture the result
+	var callbackAgentID string
+	var callbackState ACPCachedState
+	origCallback := onACPStatePrefetched
+	onACPStatePrefetched = func(agentID string, state ACPCachedState) {
+		callbackAgentID = agentID
+		callbackState = state
+	}
+	defer func() { onACPStatePrefetched = origCallback }()
+
+	// Manually simulate a successful prefetch by inserting a conn with state
+	// and calling the callback logic directly (can't spawn real process in unit test)
+	conn := newACPConn(agent, prefetchSID)
+	conn.SetCachedModeState(&ModeState{
+		CurrentModeID: "code",
+		AvailableModes: []ModeDef{{ID: "code", Name: "Code"}},
+	})
+	conn.SetCachedThinkingEffortState(&ThinkingEffortState{
+		CurrentID: "high",
+		AvailableLevels: []ThinkingEffortDef{{ID: "high", Name: "High"}},
+	})
+	mgr.SetConnForTest(prefetchSID, conn)
+
+	// Manually invoke the callback with the state (simulating what the goroutine does)
+	state := mgr.GetCachedStateByAgentID(agent.ID)
+	if state.Mode != nil || state.Effort != nil {
+		onACPStatePrefetched(agent.ID, state)
+	}
+
+	assert.Equal(t, "test-prefetch-callback", callbackAgentID)
+	assert.NotNil(t, callbackState.Mode)
+	assert.Equal(t, "code", callbackState.Mode.CurrentModeID)
+	assert.NotNil(t, callbackState.Effort)
+	assert.Equal(t, "high", callbackState.Effort.CurrentID)
+}
+
+func TestSetACPStatePrefetchedCallback(t *testing.T) {
+	origCallback := onACPStatePrefetched
+	defer func() { onACPStatePrefetched = origCallback }()
+
+	called := false
+	SetACPStatePrefetchedCallback(func(agentID string, state ACPCachedState) {
+		called = true
+	})
+
+	onACPStatePrefetched("test-agent", ACPCachedState{})
+	assert.True(t, called)
+}
+
+func TestPrefetchACPState_CleansUpOnFailedSpawn(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-prefetch-fail", Backend: "acp-stdio", AcpCommand: "nonexistent-command-xyz"}
+	prefetchSID := "_prefetch_" + agent.ID
+
+	mgr.PrefetchACPState(agent, "/tmp")
+
+	// Wait for the background goroutine to fail and clean up
+	time.Sleep(500 * time.Millisecond)
+
+	// The prefetch entry should be cleaned up since the command doesn't exist
+	mgr.mu.Lock()
+	_, exists := mgr.conns[prefetchSID]
+	mgr.mu.Unlock()
+	assert.False(t, exists, "prefetch entry should be cleaned up after failed spawn")
+}

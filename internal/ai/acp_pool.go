@@ -1713,14 +1713,12 @@ func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
 		alive := conn.alive && conn.isAliveLocked()
 		hasState := conn.cachedModeState != nil || conn.cachedConfigState != nil || conn.cachedThinkingEffortState != nil
 		conn.mu.Unlock()
-		m.mu.Unlock()
 		if alive || hasState {
+			m.mu.Unlock()
 			return // already have state or in progress
 		}
 		// Stale prefetch entry — remove so we can retry
-		m.mu.Lock()
 		delete(m.conns, prefetchSID)
-		m.mu.Unlock()
 	}
 
 	conn := newACPConn(agent, prefetchSID)

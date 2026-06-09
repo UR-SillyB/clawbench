@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { useAgents, resetAgents, updateACPModelList, restoreOriginalModels, populateACPStateFromCache } from '@/composables/useAgents'
+import { useAgents, resetAgents, updateACPModelList, restoreOriginalModels, populateACPStateFromCache, onACPStateUpdate } from '@/composables/useAgents'
 
 // Mock apiGet to control agent data
 const mockApiGet = vi.fn()
@@ -26,6 +26,11 @@ vi.mock('@/composables/useSessionIdentity.ts', () => ({
   updateAvailableModes: (...args: any[]) => mockUpdateAvailableModes(...args),
   updateAvailableThinkingEfforts: (...args: any[]) => mockUpdateAvailableThinkingEfforts(...args),
   get currentAgentId() { return _currentAgentId },
+}))
+
+const mockUpdatePlanEntries = vi.fn()
+vi.mock('@/composables/usePlanProgress', () => ({
+  updatePlanEntries: (...args: any[]) => mockUpdatePlanEntries(...args),
 }))
 
 describe('useAgents', () => {
@@ -791,6 +796,104 @@ describe('useAgents', () => {
       mockApiGet.mockResolvedValueOnce({ agents: testAgents, defaultAgent: 'claude', acpStates: acpState })
       await populateACPStateFromCache('claude')
       expect(mockApiGet).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  // --- onACPStateUpdate (WS event handler) ---
+
+  describe('onACPStateUpdate', () => {
+    beforeEach(() => {
+      resetAgents()
+      mockUpdateAvailableModes.mockReset()
+      mockUpdateAvailableThinkingEfforts.mockReset()
+      mockUpdateCommandState.mockReset()
+      _currentAgentId.value = ''
+      mockApiGet.mockResolvedValue({ agents: testAgents, defaultAgent: 'claude' })
+    })
+
+    it('updates acpStatesCache and populates UI for current agent', async () => {
+      await loadAgents()
+      _currentAgentId.value = 'claude'
+
+      onACPStateUpdate({
+        agentId: 'claude',
+        modeState: {
+          currentModeId: 'code',
+          availableModes: [{ id: 'code', name: 'Code' }, { id: 'ask', name: 'Ask' }],
+        },
+        thinkingEffortState: {
+          currentId: 'high',
+          availableLevels: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
+        },
+        commands: [{ name: 'branch', description: 'Create a branch' }],
+      })
+
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith([
+        { id: 'code', name: 'Code' },
+        { id: 'ask', name: 'Ask' },
+      ])
+      expect(mockUpdateAvailableThinkingEfforts).toHaveBeenCalledWith([
+        { id: 'low', name: 'Low' },
+        { id: 'high', name: 'High' },
+      ])
+      expect(mockUpdateCommandState).toHaveBeenCalledWith([{ name: 'branch', description: 'Create a branch' }])
+    })
+
+    it('does not update UI when agent is not current', async () => {
+      await loadAgents()
+      _currentAgentId.value = 'gpt'
+
+      onACPStateUpdate({
+        agentId: 'claude',
+        modeState: {
+          currentModeId: 'code',
+          availableModes: [{ id: 'code', name: 'Code' }],
+        },
+      })
+
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
+    })
+
+    it('updates agent models from modelListState', async () => {
+      await loadAgents()
+
+      onACPStateUpdate({
+        agentId: 'claude',
+        modelListState: {
+          models: [{ id: 'acp-new', name: 'ACP New' }],
+          currentModelId: 'acp-new',
+        },
+      })
+
+      expect(getAgentModels('claude')[0].id).toBe('acp-new')
+    })
+
+    it('handles null/empty data gracefully', () => {
+      onACPStateUpdate({ agentId: 'claude' })
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
+    })
+
+    it('ignores event with no agentId', () => {
+      onACPStateUpdate({ agentId: '' })
+      onACPStateUpdate({} as any)
+      expect(mockUpdateAvailableModes).not.toHaveBeenCalled()
+    })
+
+    it('makes state available for later populateACPStateFromCache', async () => {
+      await loadAgents()
+
+      const modeData = {
+        agentId: 'claude',
+        modeState: {
+          currentModeId: 'code',
+          availableModes: [{ id: 'code', name: 'Code' }],
+        },
+      }
+      onACPStateUpdate(modeData)
+
+      // Now populateACPStateFromCache should find it in cache
+      await populateACPStateFromCache('claude')
+      expect(mockUpdateAvailableModes).toHaveBeenCalledWith([{ id: 'code', name: 'Code' }])
     })
   })
 })
