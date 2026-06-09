@@ -228,7 +228,11 @@ const isACP = computed(() => {
 
 const showModeInfo = computed(() => availableModes.value.length > 0)
 const showThinkingInfo = computed(() => isACP.value && (availableThinkingEfforts.value.length > 0 || hasThinkingEffortLevels(props.currentAgentId || '')))
-const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
+const showTransportInfo = computed(() => {
+  if (supportsDualTransport(props.currentAgentId || '')) return true
+  // Also show for CLI-only agents so users can see the "CLI" label
+  return !isACP.value
+})
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore

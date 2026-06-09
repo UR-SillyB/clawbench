@@ -221,11 +221,11 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// Fallback: if no modeState was set (registry empty, or CLI/unknown transport),
-		// synthesize a read-only mode from the agent's backend name so the mode chip
-		// is always visible. Real ACP modes will replace this once prefetch completes.
+		// CLI sessions: synthesize a read-only mode from the backend name
+		// so the mode chip is visible but non-switchable. Only for agents
+		// whose configured transport is CLI (not acp-stdio).
 		if modeState == nil && sessionAgentID != "" {
-			if agent, ok := model.Agents[sessionAgentID]; ok && agent.Backend != "" {
+			if agent, ok := model.Agents[sessionAgentID]; ok && agent.Transport != "acp-stdio" && agent.Backend != "" {
 				modeState = &ai.ModeState{
 					CurrentModeID:  agent.Backend,
 					AvailableModes: []ai.ModeDef{{ID: agent.Backend, Name: agent.Backend}},

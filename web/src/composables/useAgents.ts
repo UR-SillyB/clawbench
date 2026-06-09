@@ -348,6 +348,5 @@ export function useAgents() {
         updateACPModelList,
         restoreOriginalModels,
         populateACPStateFromCache,
-        getACPStateCache: () => acpStatesCache,
     }
 }

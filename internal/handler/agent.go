@@ -59,29 +59,19 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 		if a.Transport == transportACP {
 			// ACP agents: populate from AgentCapabilityRegistry
 			cap := reg.Get(a.ID)
+			if cap == nil || !cap.HasData() {
+				continue
+			}
 
 			var ms *ai.ModeState
 			var es *ai.ThinkingEffortState
 			var cmds []ai.AvailableCommandInfo
 			var ml *ai.ModelListState
 
-			if cap != nil && cap.HasData() {
-				ms = reg.GetModeState(a.ID, "")
-				es = reg.GetThinkingEffortState(a.ID, "")
-				cmds = reg.GetCommands(a.ID)
-				ml = reg.GetModelListState(a.ID, "")
-			}
-
-			// Fallback: if ACP agent has no registry data yet (never connected),
-			// synthesize a read-only mode from the backend name so the mode chip
-			// is visible immediately. The real modes will replace this once
-			// the ACP process connects and prefetch completes.
-			if ms == nil && a.Backend != "" {
-				ms = &ai.ModeState{
-					CurrentModeID:  a.Backend,
-					AvailableModes: []ai.ModeDef{{ID: a.Backend, Name: a.Backend}},
-				}
-			}
+			ms = reg.GetModeState(a.ID, "")
+			es = reg.GetThinkingEffortState(a.ID, "")
+			cmds = reg.GetCommands(a.ID)
+			ml = reg.GetModelListState(a.ID, "")
 
 			// When ACP provides a model list, override the agent's Models
 			// so the frontend SessionSettingModal shows ACP models instead of CLI-discovered ones.

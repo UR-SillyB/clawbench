@@ -899,23 +899,14 @@ func TestServeAgentsGet_PrefetchACPStateForUncachedAgent(t *testing.T) {
 	conn := mgr.GetConn("_prefetch_acp-prefetch")
 	// The connection may have been cleaned up if the spawn failed (echo isn't ACP),
 	// but the key behavior is that PrefetchACPState was called.
-	// The agent has no registry data and no pool cache, but we now synthesize
-	// a fallback mode from the backend name so the mode chip is always visible.
-	// So acp-prefetch SHOULD have an entry with a synthesized mode.
+	// At minimum, the agent should not have acpStates in the response
+	// since no pool cache existed at request time and it's an ACP agent
+	// without registry data (no fallback for ACP agents).
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	acpStates, _ := resp["acpStates"].(map[string]any)
-	prefetchState, hasState := acpStates["acp-prefetch"]
-	assert.True(t, hasState, "agent should have fallback mode state even with no registry data")
-	if hasState {
-		stateMap, _ := prefetchState.(map[string]any)
-		modeState, _ := stateMap["modeState"].(map[string]any)
-		assert.NotNil(t, modeState, "fallback mode state should be present")
-		if modeState != nil {
-			modes, _ := modeState["availableModes"].([]any)
-			assert.Len(t, modes, 1, "fallback mode should have exactly 1 mode")
-		}
-	}
+	_, hasState := acpStates["acp-prefetch"]
+	assert.False(t, hasState, "ACP agent with no registry data should not have acpState")
 
 	_ = origSpec
 	_ = conn
