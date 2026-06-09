@@ -188,9 +188,11 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// without waiting for SSE events (which may have already been consumed).
 		// Fallback: for brand-new sessions with no pool session mapping yet,
 		// look up by agent ID so mode chips appear on first load.
+		// Only populate ACP state when the session is actually using ACP transport;
+		// CLI sessions should never show mode/thinking/plan chips.
 		var modeState, thinkingEffortState, modelListState, planState any
 		var commands []ai.AvailableCommandInfo
-		if sessionID != "" {
+		if sessionID != "" && sessionTransport != "cli" {
 			if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Effort != nil || len(s.Commands) > 0 || s.ModelList != nil || s.Plan != nil {
 				modeState = s.Mode
 				thinkingEffortState = s.Effort
