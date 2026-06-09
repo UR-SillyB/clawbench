@@ -279,7 +279,7 @@ import SettingsPage from './components/settings/SettingsPage.vue'
 import TaskTab from '@/components/task/TaskTab.vue'
 import { useQuoteQuestion } from './composables/useQuoteQuestion.ts'
 import { useTaskTab, registerSwitchTab, onTaskEvent } from '@/composables/useTaskTab.ts'
-import { resetAgents } from '@/composables/useAgents'
+import { resetAgents, onACPStateUpdate } from '@/composables/useAgents'
 import { useSessionIdentity, registerSessionDrawerRef, resetIdentity } from './composables/useSessionIdentity.ts'
 import { loadSessionsOnce } from './composables/useChatSession.ts'
 import { useToast } from './composables/useToast.ts'
@@ -532,6 +532,8 @@ const { onEvent, init: initGlobalEvents, destroy: destroyGlobalEvents } = useGlo
 const removeTaskHandler = onEvent((event, data) => {
     if (event === 'task_update') {
         onTaskEvent(data)
+    } else if (event === 'acp_state_update') {
+        onACPStateUpdate(data)
     }
 })
 

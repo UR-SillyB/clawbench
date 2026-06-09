@@ -237,6 +237,39 @@ export function invalidateACPStateCache(agentId: string): void {
 }
 
 /**
+ * Handle acp_state_update WS event from backend prefetch.
+ * Updates the cache and, if the event is for the current agent,
+ * immediately refreshes the UI (mode/thinking/command chips).
+ */
+export function onACPStateUpdate(data: { agentId: string; modeState?: any; thinkingEffortState?: any; commands?: any; modelListState?: any }): void {
+    if (!data?.agentId) return
+    // Update the cache so populateACPStateFromCache can find it later
+    acpStatesCache[data.agentId] = data
+    // If this is the current agent, update UI immediately
+    if (data.agentId === currentAgentId.value) {
+        if (data.modeState?.availableModes?.length > 0) {
+            updateAvailableModes(data.modeState.availableModes)
+        }
+        if (data.thinkingEffortState?.availableLevels?.length > 0) {
+            updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
+        }
+        if (Array.isArray(data.commands) && data.commands.length > 0) {
+            updateCommandState(data.commands)
+        }
+        if (data.modelListState?.models?.length > 0) {
+            updateACPModelList(data.agentId, data.modelListState.models, data.modelListState.currentModelId)
+        }
+    }
+    // Also update the agent's model list in the agents array if ACP provided models
+    if (data.modelListState?.models?.length > 0) {
+        const agent = agents.value.find((a: any) => a.id === data.agentId)
+        if (agent) {
+            agent.models = data.modelListState.models
+        }
+    }
+}
+
+/**
  * Populate ACP state (mode, thinking, commands, model list) for the given
  * agent from the cached acpStates. Used by createSession after clearing
  * session-level state so that mode chips appear immediately on new sessions.

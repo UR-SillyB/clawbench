@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"clawbench/internal/ai"
+	"clawbench/internal/middleware"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
 )
@@ -34,7 +35,7 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
-func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
+func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	configMutex.RLock()
 	agents := make([]*model.Agent, len(model.AgentList))
 	copy(agents, model.AgentList)
@@ -82,6 +83,28 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
 		if ms != nil || es != nil || len(cmds) > 0 || ml != nil || ps != nil {
 			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml, Plan: ps}
 		}
+	}
+
+	// For acp-stdio agents with no cached state, trigger background prefetch
+	// to discover mode/command/thinking state by creating a temporary ACP connection.
+	// The frontend will receive the state via WS "acp_state_update" event once ready.
+	projectPath := middleware.GetProjectFromCookie(r)
+	for _, a := range agents {
+		if a.Transport != transportACP {
+			continue
+		}
+		if _, hasState := states[a.ID]; hasState {
+			continue
+		}
+		spec := model.FindSpecByBackend(a.Backend)
+		if spec == nil || spec.AcpCommand == "" {
+			continue
+		}
+		cwd := projectPath
+		if cwd == "" {
+			cwd = "/" // fallback: agent may still work without a project
+		}
+		go ai.GetACPConnManager().PrefetchACPState(a, cwd)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

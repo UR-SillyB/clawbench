@@ -1687,6 +1687,97 @@ func (m *ACPConnManager) GetPendingApprovalSessionIDs() map[string]bool {
 	return result
 }
 
+// onACPStatePrefetched is called when a prefetch operation successfully
+// discovers ACP state for an agent. Set by the application startup layer
+// (which has access to the ws package) to broadcast the state to the frontend.
+var onACPStatePrefetched = func(agentID string, state ACPCachedState) {}
+
+// SetACPStatePrefetchedCallback sets the callback invoked when ACP state
+// is prefetched for an agent. Must be called once during startup.
+func SetACPStatePrefetchedCallback(fn func(string, ACPCachedState)) {
+	onACPStatePrefetched = fn
+}
+
+// PrefetchACPState proactively creates an ACP connection for an agent that
+// has no cached state (e.g., never sent a message). It spawns the agent
+// process, creates a new ACP session to discover mode/command/thinking state,
+// caches it, and broadcasts the result via the onACPStatePrefetched callback.
+// The connection is marked idle afterward and will be reaped by idleSweep.
+// This is a non-blocking operation — it spawns a background goroutine.
+func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
+	prefetchSID := "_prefetch_" + agent.ID
+
+	m.mu.Lock()
+	if conn, exists := m.conns[prefetchSID]; exists {
+		conn.mu.Lock()
+		alive := conn.alive && conn.isAliveLocked()
+		hasState := conn.cachedModeState != nil || conn.cachedConfigState != nil || conn.cachedThinkingEffortState != nil
+		conn.mu.Unlock()
+		m.mu.Unlock()
+		if alive || hasState {
+			return // already have state or in progress
+		}
+		// Stale prefetch entry — remove so we can retry
+		m.mu.Lock()
+		delete(m.conns, prefetchSID)
+		m.mu.Unlock()
+	}
+
+	conn := newACPConn(agent, prefetchSID)
+	m.conns[prefetchSID] = conn
+	m.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		isNew, err := conn.ensureAliveWithSession(ctx, cwd)
+		if err != nil {
+			slog.Warn("acp prefetch: failed to create session", "agent", agent.ID, "error", err)
+			// Clean up the failed prefetch connection
+			m.mu.Lock()
+			if c, ok := m.conns[prefetchSID]; ok && c == conn {
+				delete(m.conns, prefetchSID)
+			}
+			m.mu.Unlock()
+			return
+		}
+
+		// Cache state from NewSession response (same logic as ACPBackend.cacheNewSessionState)
+		if isNew {
+			sessResp := conn.GetAndClearNewSessionResp()
+			if sessResp != nil {
+				if modeState := extractACPModeState(sessResp); modeState != nil {
+					conn.SetCachedModeState(modeState)
+					slog.Info("acp prefetch: extracted mode", "agent", agent.ID, "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
+				}
+				if configState := extractACPConfigOptions(sessResp); configState != nil {
+					conn.SetCachedConfigState(configState)
+				}
+				if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
+					conn.SetCachedThinkingEffortState(effortState)
+					slog.Info("acp prefetch: extracted thinking effort", "agent", agent.ID, "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
+				}
+				if modelList := extractACPModelList(sessResp); modelList != nil {
+					conn.SetCachedModelListState(modelList)
+					slog.Info("acp prefetch: extracted model list", "agent", agent.ID, "current", modelList.CurrentModelID, "available", len(modelList.Models))
+				}
+			}
+		}
+
+		slog.Info("acp prefetch: got state", "agent", agent.ID)
+
+		// Notify the application layer (which can broadcast via WS)
+		state := m.GetCachedStateByAgentID(agent.ID)
+		if state.Mode != nil || state.Effort != nil || state.ModelList != nil {
+			onACPStatePrefetched(agent.ID, state)
+		}
+
+		// Mark idle so sweep can clean it up after the timeout
+		m.MarkIdle(prefetchSID)
+	}()
+}
+
 // GetClient returns the ClawBenchACPClient for the given agent ID.
 //
 // Deprecated: use GetClientByAgentID instead.
