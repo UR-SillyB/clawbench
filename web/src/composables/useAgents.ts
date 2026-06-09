@@ -168,7 +168,7 @@ function getAgentModel(agentId: string, modelId: string) {
 }
 
 /** Get the thinking effort levels for an agent. Returns [] for unsupported backends. */
-function getAgentThinkingEffortLevels(agentId: string): string[] {
+export function getAgentThinkingEffortLevels(agentId: string): string[] {
     const agent = agents.value.find(a => a.id === agentId)
     return agent?.thinkingEffortLevels || []
 }
