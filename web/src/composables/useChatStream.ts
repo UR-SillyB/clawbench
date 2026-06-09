@@ -166,7 +166,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     const MAX_JSON_PARSE_FAILURES = 5
     pollingInterval = setInterval(async () => {
       try {
-        const resp = await fetch(`/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}`, { credentials: 'same-origin' })
+        const resp = await fetch(`/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=1`, { credentials: 'same-origin' })
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`)
         }
@@ -249,24 +249,6 @@ export function useChatStream(options: UseChatStreamOptions) {
             // Truly no existing message — push new one
             lastAssistant.streaming = true
             messages.value.push(lastAssistant)
-          }
-        }
-
-        // Add any new non-streaming messages that appeared (e.g., queued user messages).
-        // Deduplicate against both DB id and local messages without id (optimistic pushes).
-        const existingIds = new Set(messages.value.map((m: any) => m.id).filter(Boolean))
-        const existingLocalUserContent = new Set(
-          messages.value.filter((m: any) => m.role === 'user' && !m.id).map((m: any) => m.content)
-        )
-        for (const msg of latestMsgs) {
-          if (msg !== lastAssistant) {
-            // Skip if DB id already exists, or if this is a user message whose content
-            // matches an existing local-only user message (no id — optimistic push).
-            const idDup = msg.id && existingIds.has(msg.id)
-            const contentDup = msg.role === 'user' && existingLocalUserContent.has(msg.content)
-            if (!idDup && !contentDup) {
-              messages.value.push(msg)
-            }
           }
         }
 

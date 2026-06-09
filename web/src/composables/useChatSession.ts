@@ -195,6 +195,13 @@ export function useChatSession(options: UseChatSessionOptions) {
   // preventing expandedTools collapse, scroll reset, and unnecessary re-renders.
   let lastMessageSnapshot = ''
 
+  // Pending reload: when loadHistory is called while a load is already in-flight,
+  // we record the requested parameters and execute one more load after the current
+  // one completes. This prevents redundant concurrent fetches while ensuring the
+  // final state is always fresh.
+  let loadHistoryInProgress = false
+  let pendingReload: { forceScrollBottom: boolean; showOverlay: boolean; skipIfUnchanged: boolean } | null = null
+
   // forceScrollBottom: true = always scroll to bottom (switch session, first load)
   //                   false = only scroll if already near bottom (re-open panel, polling)
   // showOverlay: true = show the switching overlay (session switch, first open)
@@ -202,6 +209,15 @@ export function useChatSession(options: UseChatSessionOptions) {
   // skipIfUnchanged: true = when data matches last snapshot, skip UI refresh entirely
   //                (used by polling to avoid collapsing expandedTools / resetting scroll)
   async function loadHistory(forceScrollBottom = true, showOverlay = false, skipIfUnchanged = false) {
+    // If a load is already in-flight, record the requested params and skip.
+    // The in-flight load will check pendingReload when it completes and
+    // execute one more load if needed.
+    if (loadHistoryInProgress) {
+      pendingReload = { forceScrollBottom, showOverlay, skipIfUnchanged }
+      return
+    }
+    loadHistoryInProgress = true
+
     const mySeq = ++loadHistorySeq
     if (showOverlay) switching.value = true
     try {
@@ -347,11 +363,24 @@ export function useChatSession(options: UseChatSessionOptions) {
         onScrollBottom(forceScrollBottom)
       }
       switching.value = false
+      // Check if another loadHistory was requested while we were in-flight
+      loadHistoryInProgress = false
+      if (pendingReload) {
+        const next = pendingReload
+        pendingReload = null
+        setTimeout(() => loadHistory(next.forceScrollBottom, next.showOverlay, next.skipIfUnchanged), 0)
+      }
     } catch (err) {
       console.error('Failed to load chat history:', err)
       const _msg = err instanceof Error ? err.message : ''
       toast.show(_msg ? gt('chat.session.loadHistoryFailedDetail', { error: _msg }) : gt('chat.session.loadHistoryFailed'), { icon: '⚠️', type: 'error' })
       switching.value = false
+      loadHistoryInProgress = false
+      if (pendingReload) {
+        const next = pendingReload
+        pendingReload = null
+        setTimeout(() => loadHistory(next.forceScrollBottom, next.showOverlay, next.skipIfUnchanged), 0)
+      }
     }
   }
 
