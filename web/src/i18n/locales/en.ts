@@ -155,6 +155,7 @@ export default {
       defaultBadge: 'Default',
       setAsDefault: 'Set as default',
       noModels: 'No models available',
+      notAvailable: 'Not available in current mode',
       noSearchResults: 'No matching models',
     },
     thinkingEffortSwitcher: {

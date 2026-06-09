@@ -9,13 +9,13 @@
       <button class="model-tab" :class="{ active: activeTab === 'model' }" @click="activeTab = 'model'">
         <Cpu :size="13" />{{ t('chat.modelSwitcher.title') }}
       </button>
-      <button v-if="thinkingLevels.length > 0" class="model-tab" :class="{ active: activeTab === 'thinking' }" @click="activeTab = 'thinking'">
+      <button class="model-tab" :class="{ active: activeTab === 'thinking' }" @click="activeTab = 'thinking'">
         <Brain :size="13" />{{ t('chat.thinkingEffortSwitcher.title') }}
       </button>
-      <button v-if="availableModes.length > 0 && isACP" class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
+      <button class="model-tab" :class="{ active: activeTab === 'mode' }" @click="activeTab = 'mode'">
         <Compass :size="13" />{{ t('chat.modeSwitcher.title') }}
       </button>
-      <button v-if="showTransportTab" class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
+      <button class="model-tab" :class="{ active: activeTab === 'transport' }" @click="activeTab = 'transport'">
         <Cable :size="13" />{{ t('chat.transportSwitcher.title') }}
       </button>
     </div>
@@ -67,7 +67,10 @@
 
     <!-- Thinking effort tab -->
     <div v-if="activeTab === 'thinking'" class="model-tab-content">
-      <div class="model-list">
+      <div v-if="thinkingLevels.length === 0" class="tab-empty-hint">
+        {{ t('chat.sessionSetting.notAvailable') }}
+      </div>
+      <div v-else class="model-list">
         <div
           v-for="(level, idx) in thinkingLevels"
           :key="level.id"
@@ -132,6 +135,10 @@
 
     <!-- Mode tab -->
     <div v-if="activeTab === 'mode'" class="model-tab-content">
+      <div v-if="availableModes.length === 0 || !isACP" class="tab-empty-hint">
+        {{ t('chat.sessionSetting.notAvailable') }}
+      </div>
+      <template v-else>
       <div class="model-list">
         <div
           v-for="(mode, idx) in availableModes"
@@ -163,6 +170,7 @@
           </label>
         </div>
       </div>
+      </template>
     </div>
 
     <!-- Long-press PopupMenu for "Set as Default" (kept for backward compat) -->
@@ -222,8 +230,6 @@ const thinkingLevels = computed(() => {
 })
 const canRefresh = computed(() => canRefreshModels(props.agentId || ''))
 
-// Transport: show tab only for agents that support both ACP and CLI
-const showTransportTab = computed(() => supportsDualTransport(props.agentId || ''))
 const isACP = computed(() => {
   // Prefer session-level transport, fallback to agent config
   if (currentTransport.value) return currentTransport.value === 'acp-stdio'
@@ -661,6 +667,13 @@ function handleClose() {
 
 .model-empty {
   padding: 24px 14px;
+  text-align: center;
+  color: var(--text-muted, #999);
+  font-size: 13px;
+}
+
+.tab-empty-hint {
+  padding: 32px 14px;
   text-align: center;
   color: var(--text-muted, #999);
   font-size: 13px;
