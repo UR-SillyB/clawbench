@@ -175,7 +175,7 @@ import { useChatStream } from '@/composables/useChatStream.ts'
 import { useChatSession, loadSessionsOnce } from '@/composables/useChatSession.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
 import { useSessionManager } from '@/composables/useSessionManager.ts'
-import { useAgents } from '@/composables/useAgents'
+import { useAgents, populateACPStateFromCache } from '@/composables/useAgents'
 import { useToast } from '@/composables/useToast.ts'
 import { useFilePathAnnotation } from '@/composables/useFilePathAnnotation.ts'
 import { useNotification } from '@/composables/useNotification.ts'
@@ -643,9 +643,21 @@ async function sendMessageNow(text, filePaths, files) {
                 manager.setPendingMessages(data.queue)
             }
             stream.connectStream(identity.currentSessionId.value)
+            // Proactively sync ACP state for the running session
+            if (effectiveAgentId) {
+                populateACPStateFromCache(effectiveAgentId)
+            }
             return
         }
         stream.connectStream(identity.currentSessionId.value)
+        // After connecting stream, proactively sync ACP state (mode, thinking, commands)
+        // from the server cache. For ACP agents, the backend caches mode state after
+        // the first prompt, but the frontend's clearModeState() during session switch
+        // may have cleared availableModes before the SSE mode_update event arrives.
+        // This ensures mode/thinking chips appear immediately.
+        if (effectiveAgentId) {
+            populateACPStateFromCache(effectiveAgentId)
+        }
     } catch (err) {
         // Remove the optimistically pushed local user message on failure
         const localIdx = messages.value.findLastIndex(
