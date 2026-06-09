@@ -21,6 +21,7 @@ export function parseAssistantContent(content: string) {
     if (parsed.blocks && Array.isArray(parsed.blocks)) {
       const mapped = parsed.blocks.map(b => {
         if (b.type === 'tool_use') {
+          if (!b.name) b.name = ''
           if (b.done === undefined || b.done === false) b.done = true
           if (!b.output && b.input && b.input.output) {
             b.output = b.input.output

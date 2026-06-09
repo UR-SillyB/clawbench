@@ -1,4 +1,3 @@
-//nolint:govet // shadowed err is acceptable in sequential blocks
 package model
 
 import (

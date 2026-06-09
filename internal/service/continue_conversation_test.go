@@ -429,7 +429,7 @@ func helperCreateTaskExecution(t *testing.T, taskID int64, sessionID, status str
 }
 
 // helperCreateScheduledSessionWithDetails creates a scheduled session with full metadata.
-func helperCreateScheduledSessionWithDetails(t *testing.T, projectPath, backend, title, agentID, modelName, thinkingEffort string) string {
+func helperCreateScheduledSessionWithDetails(t *testing.T, projectPath, backend, title, agentID, modelName, _ string) string {
 	t.Helper()
 	id, err := service.CreateSession(projectPath, backend, title, agentID, modelName, "default", "scheduled")
 	assert.NoError(t, err)

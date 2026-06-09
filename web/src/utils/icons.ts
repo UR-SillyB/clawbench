@@ -77,10 +77,11 @@ const AGENT_SUBTYPE_NAMES = new Set([
 
 /** Look up tool icon by name (case-insensitive), with Agent sub-type fallback */
 export function getToolIcon(name: string) {
-  const entry = Object.entries(TOOL_ICONS).find(([k]) => k.toLowerCase() === name.toLowerCase())
+  const safeName = name || ''
+  const entry = Object.entries(TOOL_ICONS).find(([k]) => k.toLowerCase() === safeName.toLowerCase())
   if (entry) return entry[1]
   // Unrecognized name that is a known Agent sub-type → use Agent icon/category
-  if (AGENT_SUBTYPE_NAMES.has(name.toLowerCase())) {
+  if (safeName && AGENT_SUBTYPE_NAMES.has(safeName.toLowerCase())) {
     return TOOL_ICONS['Agent']
   }
   return FALLBACK_TOOL_ICON
@@ -92,11 +93,12 @@ export function getToolIcon(name: string) {
  * (PascalCased) instead of the generic "Agent".
  */
 export function toolDisplayName(name: string, input?: Record<string, any>): string {
-  const lower = name.toLowerCase()
+  const safeName = name || ''
+  const lower = safeName.toLowerCase()
   if ((lower === 'agent' || lower === 'task') && input?.subagent_type) {
     // PascalCase the subagent_type: "explore" → "Explore", "general-purpose" → "General-purpose"
     const raw = String(input.subagent_type)
     return raw.charAt(0).toUpperCase() + raw.slice(1)
   }
-  return name
+  return safeName
 }

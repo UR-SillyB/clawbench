@@ -46,6 +46,9 @@ func TestCleanupOrphans_KillsReParentedProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("orphan process cleanup uses Unix-specific process signaling")
 	}
+	if runtime.GOOS == "darwin" {
+		t.Skip("orphan re-parenting test uses /proc which is Linux-specific")
+	}
 	if testing.Short() {
 		t.Skip("skipping orphan cleanup test in short mode")
 	}
