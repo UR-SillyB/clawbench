@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 
 	"clawbench/internal/model"
+
+	_ "modernc.org/sqlite/vec"
 )
 
 // Global state
