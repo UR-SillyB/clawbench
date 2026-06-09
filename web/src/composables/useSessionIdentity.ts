@@ -17,6 +17,7 @@ export const currentAgentId = ref('')
 const currentModelId = ref('')
 const currentModelName = ref('')
 const currentThinkingEffort = ref('')
+const currentThinkingEffortName = ref('')
 const currentModeId = ref('')
 const currentModeName = ref('')
 const currentTransport = ref('') // 'acp-stdio' or 'cli'
@@ -48,6 +49,7 @@ export function resetIdentity(): void {
   currentModelId.value = ''
   currentModelName.value = ''
   currentThinkingEffort.value = ''
+  currentThinkingEffortName.value = ''
   currentModeId.value = ''
   currentModeName.value = ''
   currentTransport.value = ''
@@ -174,9 +176,16 @@ export async function prefetchCommands(_agentId: string) {
 export function updateThinkingEffortState(currentId: string, levels: Array<{ id: string; name: string }>) {
   if (currentId) {
     currentThinkingEffort.value = currentId
+    const level = levels.find(l => l.id === currentId)
+    currentThinkingEffortName.value = level?.name || currentId
   }
   if (levels.length > 0) {
     availableThinkingEfforts.value = levels
+    // Resolve name if id was set before levels arrived
+    if (currentThinkingEffort.value && !currentThinkingEffortName.value) {
+      const level = levels.find(l => l.id === currentThinkingEffort.value)
+      currentThinkingEffortName.value = level?.name || currentThinkingEffort.value
+    }
   }
 }
 
@@ -186,12 +195,18 @@ export function updateThinkingEffortState(currentId: string, levels: Array<{ id:
 export function updateAvailableThinkingEfforts(levels: Array<{ id: string; name: string }>) {
   if (levels.length > 0) {
     availableThinkingEfforts.value = levels
+    // Resolve name if id was set before levels arrived
+    if (currentThinkingEffort.value) {
+      const level = levels.find(l => l.id === currentThinkingEffort.value)
+      currentThinkingEffortName.value = level?.name || currentThinkingEffort.value
+    }
   }
 }
 
 /** Clear thinking effort state (called on session switch). */
 export function clearThinkingEffortState() {
   availableThinkingEfforts.value = []
+  currentThinkingEffortName.value = ''
 }
 
 /** Toggle auto-approve mode and persist to server. */
@@ -318,8 +333,10 @@ export async function initSessionFromAPI() {
           }
         }
         // Initialize thinking effort: from ACP state or localStorage pref
-        if (data.thinkingEffortState?.currentLevelId) {
-          currentThinkingEffort.value = data.thinkingEffortState.currentLevelId
+        if (data.thinkingEffortState?.currentId) {
+          currentThinkingEffort.value = data.thinkingEffortState.currentId
+          const level = data.thinkingEffortState.availableLevels?.find((l: {id: string; name: string}) => l.id === data.thinkingEffortState.currentId)
+          currentThinkingEffortName.value = level?.name || data.thinkingEffortState.currentId
         } else {
           currentThinkingEffort.value = loadThinkingPref(data.agentId || '') || ''
         }
@@ -540,6 +557,7 @@ export function useSessionIdentity() {
     currentModelId,
     currentModelName,
     currentThinkingEffort,
+    currentThinkingEffortName,
     currentModeId,
     currentModeName,
     currentTransport,

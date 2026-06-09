@@ -356,8 +356,8 @@ describe('useSessionIdentity', () => {
                     agentId: 'agent-1',
                     modelId: 'model-1',
                     thinkingEffortState: {
-                        currentLevelId: 'high',
-                        availableLevels: [{ id: 'low' }, { id: 'high' }],
+                        currentId: 'high',
+                        availableLevels: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
                     },
                 }),
             })
@@ -374,6 +374,7 @@ describe('useSessionIdentity', () => {
             expect(identity.currentModelId.value).toBe('model-1')
             expect(identity.currentModelName.value).toBe('Model One')
             expect(identity.currentThinkingEffort.value).toBe('high')
+            expect(identity.currentThinkingEffortName.value).toBe('High')
 
             vi.unstubAllGlobals()
         })
@@ -448,8 +449,8 @@ describe('useSessionIdentity', () => {
                     sessionId: 'api-session',
                     agentId: 'agent-1',
                     thinkingEffortState: {
-                        currentLevelId: 'xhigh',
-                        availableLevels: [{ id: 'low' }, { id: 'xhigh' }],
+                        currentId: 'xhigh',
+                        availableLevels: [{ id: 'low', name: 'Low' }, { id: 'xhigh', name: 'X-High' }],
                     },
                 }),
             })
@@ -459,6 +460,7 @@ describe('useSessionIdentity', () => {
             await initSessionFromAPI()
 
             expect(identity.currentThinkingEffort.value).toBe('xhigh')
+            expect(identity.currentThinkingEffortName.value).toBe('X-High')
 
             vi.unstubAllGlobals()
         })
@@ -710,6 +712,7 @@ describe('useSessionIdentity', () => {
             ])
 
             expect(identity.currentThinkingEffort.value).toBe('high')
+            expect(identity.currentThinkingEffortName.value).toBe('High')
             expect(identity.availableThinkingEfforts.value).toEqual([
                 { id: 'low', name: 'Low' },
                 { id: 'high', name: 'High' },
@@ -764,6 +767,7 @@ describe('useSessionIdentity', () => {
                 { id: 'high', name: 'High' },
             ])
             expect(identity.currentThinkingEffort.value).toBe('high')
+            expect(identity.currentThinkingEffortName.value).toBe('High')
             expect(identity.availableThinkingEfforts.value).toEqual([
                 { id: 'low', name: 'Low' },
                 { id: 'high', name: 'High' },
@@ -882,7 +886,7 @@ describe('useSessionIdentity', () => {
                     agentId: 'agent-1',
                     thinkingEffort: 'high',
                     thinkingEffortState: {
-                        currentLevelId: 'high',
+                        currentId: 'high',
                         availableLevels: [
                             { id: 'low', name: 'Low' },
                             { id: 'high', name: 'High' },
@@ -896,6 +900,7 @@ describe('useSessionIdentity', () => {
             await initSessionFromAPI()
 
             expect(identity.currentThinkingEffort.value).toBe('high')
+            expect(identity.currentThinkingEffortName.value).toBe('High')
             expect(identity.availableThinkingEfforts.value).toEqual([
                 { id: 'low', name: 'Low' },
                 { id: 'high', name: 'High' },
@@ -904,7 +909,7 @@ describe('useSessionIdentity', () => {
             vi.unstubAllGlobals()
         })
 
-        it('uses thinkingEffortState.currentLevelId when available', async () => {
+        it('uses thinkingEffortState.currentId when available', async () => {
             const identity = useSessionIdentity()
             clearThinkingEffortState()
 
@@ -914,7 +919,7 @@ describe('useSessionIdentity', () => {
                     sessionId: 'api-session',
                     agentId: 'agent-1',
                     thinkingEffortState: {
-                        currentLevelId: 'medium',
+                        currentId: 'medium',
                         availableLevels: [
                             { id: 'low', name: 'Low' },
                             { id: 'medium', name: 'Medium' },
@@ -928,6 +933,7 @@ describe('useSessionIdentity', () => {
             await initSessionFromAPI()
 
             expect(identity.currentThinkingEffort.value).toBe('medium')
+            expect(identity.currentThinkingEffortName.value).toBe('Medium')
 
             vi.unstubAllGlobals()
         })
@@ -942,7 +948,7 @@ describe('useSessionIdentity', () => {
                     sessionId: 'api-session',
                     agentId: 'agent-1',
                     thinkingEffortState: {
-                        currentLevelId: 'high',
+                        currentId: 'high',
                         availableLevels: [],
                     },
                 }),

@@ -86,7 +86,7 @@ export function useChatSession(options: UseChatSessionOptions) {
 
   // ── Identity refs from singleton ──
   const identity = useSessionIdentity()
-  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands, autoApprove } = identity
+  const { currentSessionTitle, currentBackend, currentAgentId, currentModelId, currentModelName, currentThinkingEffort, runningSessions, runningSessionsVersion, availableCommands, autoApprove, availableThinkingEfforts } = identity
 
   // ── Agents from singleton ──
   const { agents, loadAgents, getAgentIcon, getAgentName, getAgent, syncModelFromAgent, getAgentModel, agentHeaderTitle: makeAgentTitle } = useAgents()
@@ -130,6 +130,13 @@ export function useChatSession(options: UseChatSessionOptions) {
   function syncThinkingEffortFromData(thinkingEffortFromServer: string) {
     if (thinkingEffortFromServer) {
       currentThinkingEffort.value = thinkingEffortFromServer
+      // Resolve name from available levels (may be empty if levels haven't loaded yet;
+      // updateAvailableThinkingEfforts will resolve it when levels arrive)
+      const levels = availableThinkingEfforts.value
+      if (levels.length > 0) {
+        const level = levels.find(l => l.id === thinkingEffortFromServer)
+        identity.currentThinkingEffortName.value = level?.name || thinkingEffortFromServer
+      }
     } else {
       currentThinkingEffort.value = identity.loadThinkingPref(currentAgentId.value) || ''
     }
@@ -223,7 +230,7 @@ export function useChatSession(options: UseChatSessionOptions) {
             currentBackend.value = recoverData.backend || ''
             currentAgentId.value = recoverData.agentId || ''
             syncModelFromData(currentAgentId.value, recoverData.modelId)
-            syncThinkingEffortFromData(recoverData.thinkingEffortState?.currentLevelId || '')
+            syncThinkingEffortFromData(recoverData.thinkingEffortState?.currentId || '')
             syncModeFromData(recoverData.modeState?.currentModeId || '', recoverData.modeState?.availableModes)
             syncTransportFromData(recoverData.transport)
             if (recoverData.autoApprove !== undefined) {
@@ -291,7 +298,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentBackend.value = data.backend || ''
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
-      syncThinkingEffortFromData(data.thinkingEffortState?.currentLevelId || '')
+      syncThinkingEffortFromData(data.thinkingEffortState?.currentId || '')
       syncModeFromData(data.modeState?.currentModeId || '', data.modeState?.availableModes)
       syncTransportFromData(data.transport)
       // Restore autoApprove from server state (per-session, not global)
@@ -418,11 +425,11 @@ export function useChatSession(options: UseChatSessionOptions) {
       currentBackend.value = data.backend || ''
       currentAgentId.value = data.agentId || ''
       syncModelFromData(currentAgentId.value, data.modelId)
-      syncThinkingEffortFromData(data.thinkingEffortState?.currentLevelId || '')
+      syncThinkingEffortFromData(data.thinkingEffortState?.currentId || '')
       syncModeFromData(data.modeState?.currentModeId || '', data.modeState?.availableModes)
       syncTransportFromData(data.transport)
       // Populate ACP mode available modes from REST response.
-      if (data.modeState && data.modeState.availableModes?.length > 0) {
+      if (data.modeState && data.modeState?.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
       }
       // Update available thinking effort levels from ACP state

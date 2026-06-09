@@ -514,6 +514,9 @@ function handleSwitchModel(model) {
 
 function handleSwitchThinkingEffort(level) {
   identity.currentThinkingEffort.value = level
+  // Resolve and set the friendly name for display
+  const levelObj = identity.availableThinkingEfforts.value.find(l => l.id === level)
+  identity.currentThinkingEffortName.value = levelObj?.name || level
   // Persist thinking effort selection immediately so it survives page reload
   persistSessionUpdate({ thinkingEffort: level })
 }

@@ -191,7 +191,7 @@
       </template>
       <template v-if="showThinkingInfo">
         <span class="session-info-divider"></span>
-        <span class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ currentThinkingEffort }}</span>
+        <span class="session-info-thinking" @click.stop="openSettingsModal('thinking')"><Brain :size="11" />{{ currentThinkingEffortName }}</span>
       </template>
       <template v-if="showTransportInfo">
         <span class="session-info-divider"></span>
@@ -218,7 +218,7 @@ import { useSessionIdentity } from '@/composables/useSessionIdentity'
 import { useAgents } from '@/composables/useAgents'
 
 const { t } = useI18n()
-const { availableCommands, availableModes, availableThinkingEfforts, currentTransport: sessionTransport } = useSessionIdentity()
+const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport } = useSessionIdentity()
 const { supportsDualTransport } = useAgents()
 
 const isACP = computed(() => {
