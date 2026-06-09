@@ -385,10 +385,10 @@ func TestACPConn_SetCachedConfigState_DerivesModeState(t *testing.T) {
 	agent := &model.Agent{ID: "test-derive-mode", Backend: "acp-stdio", AcpCommand: "echo"}
 	conn := newACPConn(agent, "session-derive-mode")
 
-	// cachedModeState starts nil
-	assert.Nil(t, conn.GetCachedModeState())
+	// cachedModeState starts nil — check via registry
+	assert.Nil(t, GetAgentCapabilityRegistry().GetModeState(agent.ID, ""))
 
-	// Set config state with mode category — should derive modeState
+	// Set config state with mode category — should derive modeState in registry
 	conn.SetCachedConfigState(&ConfigOptionState{
 		ConfigID:  "mode",
 		CurrentID: "code",
@@ -405,7 +405,7 @@ func TestACPConn_SetCachedConfigState_DerivesModeState(t *testing.T) {
 		},
 	})
 
-	modeState := conn.GetCachedModeState()
+	modeState := GetAgentCapabilityRegistry().GetModeState(agent.ID, conn.GetCurrentModeID())
 	assert.NotNil(t, modeState)
 	assert.Equal(t, "code", modeState.CurrentModeID)
 	assert.Len(t, modeState.AvailableModes, 2)
@@ -417,10 +417,10 @@ func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testin
 	agent := &model.Agent{ID: "test-no-override", Backend: "acp-stdio", AcpCommand: "echo"}
 	conn := newACPConn(agent, "session-no-override")
 
-	// Set mode state first
+	// Set mode state first (writes to registry)
 	conn.SetCachedModeState(&ModeState{CurrentModeID: "architect", AvailableModes: []ModeDef{{ID: "architect", Name: "Architect"}}})
 
-	// Now set config state — should NOT override existing modeState
+	// Now set config state — should NOT override existing modes in registry
 	conn.SetCachedConfigState(&ConfigOptionState{
 		ConfigID:  "mode",
 		CurrentID: "code",
@@ -429,7 +429,7 @@ func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testin
 		},
 	})
 
-	modeState := conn.GetCachedModeState()
+	modeState := GetAgentCapabilityRegistry().GetModeState(agent.ID, conn.GetCurrentModeID())
 	assert.NotNil(t, modeState)
 	assert.Equal(t, "architect", modeState.CurrentModeID) // Original preserved
 }
@@ -437,11 +437,11 @@ func TestACPConn_SetCachedConfigState_DoesNotOverrideExistingModeState(t *testin
 func TestACPConn_HasCurrentModeChanged(t *testing.T) {
 	conn := newACPConn(&model.Agent{ID: "test-mode-changed", Backend: "acp-stdio", AcpCommand: "echo"}, "session-mode-changed")
 
-	// Nil cache — any non-empty modeID is a change
+	// Empty current — any non-empty modeID is a change
 	assert.True(t, conn.HasCurrentModeChanged("code"))
 	assert.False(t, conn.HasCurrentModeChanged(""))
 
-	// Set initial mode state
+	// Set initial mode state (updates currentModeID on conn)
 	conn.SetCachedModeState(&ModeState{CurrentModeID: "code", AvailableModes: []ModeDef{{ID: "code", Name: "Code"}}})
 
 	// Same mode — no change
@@ -459,46 +459,38 @@ func TestPrefetchACPState_SIDDedup(t *testing.T) {
 	prefetchSID := "_prefetch_" + agent.ID
 	defer mgr.CloseConn(prefetchSID)
 
-	// Insert a prefetch conn that is alive with cached state
-	conn := newACPConn(agent, prefetchSID)
-	conn.SetAliveForTest()
-	conn.SetCachedModeState(&ModeState{
-		CurrentModeID: "code",
-		AvailableModes: []ModeDef{
-			{ID: "code", Name: "Code"},
-			{ID: "ask", Name: "Ask"},
-		},
+	// Populate registry so PrefetchACPState skips immediately
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "code", Name: "Code"},
+		{ID: "ask", Name: "Ask"},
 	})
-	mgr.SetConnForTest(prefetchSID, conn)
 
-	// PrefetchACPState should skip — conn is alive and has state
+	// PrefetchACPState should skip — registry has data
 	mgr.PrefetchACPState(agent, "/tmp")
 
-	// Verify the original conn is still there (not replaced)
-	got := mgr.GetConn(prefetchSID)
-	assert.Equal(t, conn, got)
+	// No prefetch conn should be created in the map
+	mgr.mu.Lock()
+	_, exists := mgr.conns[prefetchSID]
+	mgr.mu.Unlock()
+	assert.False(t, exists)
 }
 
 func TestPrefetchACPState_SkipsWhenHasStateEvenIfDead(t *testing.T) {
 	mgr := GetACPConnManager()
 	agent := &model.Agent{ID: "test-prefetch-has-state", Backend: "acp-stdio", AcpCommand: "echo"}
-	prefetchSID := "_prefetch_" + agent.ID
-	defer mgr.CloseConn(prefetchSID)
 
-	// Insert a dead conn that still has cached state
-	conn := newACPConn(agent, prefetchSID)
-	// Not calling SetAliveForTest — conn is dead
-	conn.SetCachedModeState(&ModeState{
-		CurrentModeID: "code",
-		AvailableModes: []ModeDef{{ID: "code", Name: "Code"}},
-	})
-	mgr.SetConnForTest(prefetchSID, conn)
+	// Populate registry so PrefetchACPState skips — registry has data
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{{ID: "code", Name: "Code"}})
 
-	// PrefetchACPState should skip — conn has cached state
+	// PrefetchACPState should skip — registry has data
 	mgr.PrefetchACPState(agent, "/tmp")
 
-	got := mgr.GetConn(prefetchSID)
-	assert.Equal(t, conn, got) // not replaced
+	// No prefetch conn should be created
+	prefetchSID := "_prefetch_" + agent.ID
+	mgr.mu.Lock()
+	_, exists := mgr.conns[prefetchSID]
+	mgr.mu.Unlock()
+	assert.False(t, exists)
 }
 
 func TestPrefetchACPState_RetriesStaleEntry(t *testing.T) {
@@ -551,17 +543,13 @@ func TestPrefetchACPState_CallbackFired(t *testing.T) {
 	}
 	defer func() { onACPStatePrefetched = origCallback }()
 
-	// Manually simulate a successful prefetch by inserting a conn with state
+	// Manually simulate a successful prefetch by populating the registry
 	// and calling the callback logic directly (can't spawn real process in unit test)
 	conn := newACPConn(agent, prefetchSID)
-	conn.SetCachedModeState(&ModeState{
-		CurrentModeID: "code",
-		AvailableModes: []ModeDef{{ID: "code", Name: "Code"}},
-	})
-	conn.SetCachedThinkingEffortState(&ThinkingEffortState{
-		CurrentID: "high",
-		AvailableLevels: []ThinkingEffortDef{{ID: "high", Name: "High"}},
-	})
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{{ID: "code", Name: "Code"}})
+	conn.SetCurrentModeID("code")
+	GetAgentCapabilityRegistry().UpdateThinkingEfforts(agent.ID, []ThinkingEffortDef{{ID: "high", Name: "High"}})
+	conn.SetCurrentThinkingEffortID("high")
 	mgr.SetConnForTest(prefetchSID, conn)
 
 	// Manually invoke the callback with the state (simulating what the goroutine does)
@@ -572,9 +560,12 @@ func TestPrefetchACPState_CallbackFired(t *testing.T) {
 
 	assert.Equal(t, "test-prefetch-callback", callbackAgentID)
 	assert.NotNil(t, callbackState.Mode)
-	assert.Equal(t, "code", callbackState.Mode.CurrentModeID)
+	// Agent-level state has available modes but no current (no session context)
+	assert.Len(t, callbackState.Mode.AvailableModes, 1)
+	assert.Equal(t, "code", callbackState.Mode.AvailableModes[0].ID)
 	assert.NotNil(t, callbackState.Effort)
-	assert.Equal(t, "high", callbackState.Effort.CurrentID)
+	assert.Len(t, callbackState.Effort.AvailableLevels, 1)
+	assert.Equal(t, "high", callbackState.Effort.AvailableLevels[0].ID)
 }
 
 func TestSetACPStatePrefetchedCallback(t *testing.T) {

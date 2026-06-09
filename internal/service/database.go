@@ -473,6 +473,25 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 	}
 
+	// Migrate: add ACP capability columns to agents table for persistent storage
+	// of agent-level mode/thinking/commands/config state.
+	var hasACPMods int
+	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='acp_available_modes'").Scan(&hasACPMods)
+	if hasACPMods == 0 {
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_available_modes TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return fmt.Errorf("failed to add acp_available_modes column: %w", err)
+		}
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_available_thinking_efforts TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return fmt.Errorf("failed to add acp_available_thinking_efforts column: %w", err)
+		}
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_available_commands TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return fmt.Errorf("failed to add acp_available_commands column: %w", err)
+		}
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_config_options TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("failed to add acp_config_options column: %w", err)
+		}
+	}
+
 	// Migrate: extract metadata from chat_history.content into chat_metadata table.
 	// This is a one-time migration for existing data; new messages are saved
 	// to chat_metadata automatically via SaveMetadata().

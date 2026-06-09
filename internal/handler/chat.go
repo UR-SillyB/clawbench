@@ -187,7 +187,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// This allows the frontend to populate mode chips immediately
 		// without waiting for SSE events (which may have already been consumed).
 		// Fallback: for brand-new sessions with no pool session mapping yet,
-		// look up by agent ID so mode chips appear on first load.
+		// look up from AgentCapabilityRegistry so mode chips appear on first load.
 		// Only populate ACP state when the session is actually using ACP transport;
 		// CLI sessions should never show mode/thinking/plan chips.
 		var modeState, thinkingEffortState, modelListState, planState any
@@ -201,16 +201,23 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				planState = s.Plan
 			} else if sessionAgentID != "" {
 				// No session-level mapping yet (new session, never sent a message).
-				// Fall back to agent-level cache so mode/thinking/command chips
+				// Fall back to agent-level registry so mode/thinking/command chips
 				// appear immediately without requiring the first message.
-				if s := ai.GetACPConnManager().GetCachedStateByAgentID(sessionAgentID); s.Mode != nil || s.Effort != nil || s.ModelList != nil || s.Plan != nil {
-					modeState = s.Mode
-					thinkingEffortState = s.Effort
-					modelListState = s.ModelList
-					planState = s.Plan
-				}
-				if cmds := ai.GetACPConnManager().GetCommandsByAgentID(sessionAgentID); len(cmds) > 0 {
-					commands = cmds
+				reg := ai.GetAgentCapabilityRegistry()
+				cap := reg.Get(sessionAgentID)
+				if cap != nil && cap.HasData() {
+					if ms := reg.GetModeState(sessionAgentID, ""); ms != nil {
+						modeState = ms
+					}
+					if es := reg.GetThinkingEffortState(sessionAgentID, ""); es != nil {
+						thinkingEffortState = es
+					}
+					if cmds := reg.GetCommands(sessionAgentID); len(cmds) > 0 {
+						commands = cmds
+					}
+					if ml := reg.GetModelListState(sessionAgentID, ""); ml != nil {
+						modelListState = ml
+					}
 				}
 			}
 		}

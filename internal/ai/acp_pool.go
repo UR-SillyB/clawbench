@@ -311,7 +311,8 @@ type ACPCachedState struct {
 }
 
 // GetCachedStateByClawbenchSID returns the cached state for the connection
-// owned by the given ClawBench session ID.
+// owned by the given ClawBench session ID. Combines agent-level capabilities
+// from the registry with session-level current values from the ACPConn.
 func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCachedState {
 	m.mu.Lock()
 	conn := m.conns[clawbenchSID]
@@ -322,68 +323,52 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCa
 	}
 
 	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	var cmds []AvailableCommandInfo
-	if conn.client != nil {
-		cmds = conn.client.GetCommandsAsInfo()
+	currentModeID := conn.currentModeID
+	currentThinkingEffortID := conn.currentThinkingEffortID
+	currentModelID := conn.currentModelID
+	planState := conn.cachedPlanState
+	agentID := ""
+	if conn.agent != nil {
+		agentID = conn.agent.ID
+	}
+	conn.mu.Unlock()
+
+	if agentID == "" {
+		return ACPCachedState{}
+	}
+
+	reg := GetAgentCapabilityRegistry()
+	return ACPCachedState{
+		Mode:      reg.GetModeState(agentID, currentModeID),
+		Effort:    reg.GetThinkingEffortState(agentID, currentThinkingEffortID),
+		ModelList: reg.GetModelListState(agentID, currentModelID),
+		Commands:  reg.GetCommands(agentID),
+		Config:    reg.GetConfigState(agentID),
+		Plan:      planState,
+	}
+}
+
+// GetCachedStateByAgentID returns agent-level capabilities from the registry
+// for the given agent ID. Used for pre-fetching state before the first
+// message (no session yet). Session-level current values are empty.
+func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) ACPCachedState {
+	reg := GetAgentCapabilityRegistry()
+	cap := reg.Get(agentID)
+	if cap == nil || !cap.HasData() {
+		return ACPCachedState{}
 	}
 	return ACPCachedState{
-		Mode:      conn.cachedModeState,
-		Config:    conn.cachedConfigState,
-		Effort:    conn.cachedThinkingEffortState,
-		Commands:  cmds,
-		ModelList: conn.cachedModelListState,
-		Plan:      conn.cachedPlanState,
+		Mode:      reg.GetModeState(agentID, ""),
+		Effort:    reg.GetThinkingEffortState(agentID, ""),
+		ModelList: reg.GetModelListState(agentID, ""),
+		Commands:  reg.GetCommands(agentID),
+		Config:    reg.GetConfigState(agentID),
 	}
 }
 
-// GetCachedStateByAgentID returns the cached state for any connection
-// belonging to the given agent. Returns the first match found.
-// Used for pre-fetching state before the first message (no session yet).
-func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) ACPCachedState {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for key, conn := range m.conns {
-		conn.mu.Lock()
-		// Match by agent.ID, or by map key if agent is nil (test entries)
-		matched := (conn.agent != nil && conn.agent.ID == agentID) || key == agentID
-		if matched {
-			s := ACPCachedState{
-				Mode:      conn.cachedModeState,
-				Config:    conn.cachedConfigState,
-				Effort:    conn.cachedThinkingEffortState,
-				ModelList: conn.cachedModelListState,
-				Plan:      conn.cachedPlanState,
-			}
-			conn.mu.Unlock()
-			return s
-		}
-		conn.mu.Unlock()
-	}
-	return ACPCachedState{}
-}
-
-// GetCommandsByAgentID returns the cached slash commands for any connection
-// belonging to the given agent.
+// GetCommandsByAgentID returns the cached slash commands for an agent from the registry.
 func (m *ACPConnManager) GetCommandsByAgentID(agentID string) []AvailableCommandInfo {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for key, conn := range m.conns {
-		conn.mu.Lock()
-		matched := (conn.agent != nil && conn.agent.ID == agentID) || key == agentID
-		if matched {
-			client := conn.client
-			conn.mu.Unlock()
-			if client != nil {
-				return client.GetCommandsAsInfo()
-			}
-			return nil
-		}
-		conn.mu.Unlock()
-	}
-	return nil
+	return GetAgentCapabilityRegistry().GetCommands(agentID)
 }
 
 // GetClientByAgentID returns the ClawBenchACPClient for any connection
@@ -474,11 +459,14 @@ type ACPConn struct {
 	// cached state — populated from NewSession/ResumeSession responses and
 	// re-emitted for every ExecuteStream call so the frontend always has
 	// up-to-date mode/command state, even after page refreshes or SSE reconnects.
-	cachedModeState           *ModeState
-	cachedConfigState         *ConfigOptionState
-	cachedThinkingEffortState *ThinkingEffortState
-	cachedModelListState      *ModelListState
-	cachedPlanState           *PlanState
+	//
+	// Agent-level capabilities (available modes, thinking levels, models, commands)
+	// are stored in AgentCapabilityRegistry. ACPConn only holds session-level
+	// current values that differ between sessions of the same agent.
+	currentModeID           string
+	currentThinkingEffortID string
+	currentModelID          string
+	cachedPlanState         *PlanState
 
 	// lastSetConfig tracks the last values successfully sent to the agent via
 	// setSessionConfigOption. Used to avoid re-sending unchanged values that
@@ -600,19 +588,13 @@ type cachedConfigSnapshot struct {
 	effort string
 }
 
-// snapshotCachedConfig captures current cached config values before a respawn.
+// snapshotCachedConfig captures current session-level config values before a respawn.
 func (c *ACPConn) snapshotCachedConfig() cachedConfigSnapshot {
-	var snap cachedConfigSnapshot
-	if c.cachedModeState != nil {
-		snap.mode = c.cachedModeState.CurrentModeID
+	return cachedConfigSnapshot{
+		mode:   c.currentModeID,
+		model:  c.currentModelID,
+		effort: c.currentThinkingEffortID,
 	}
-	if c.cachedModelListState != nil {
-		snap.model = c.cachedModelListState.CurrentModelID
-	}
-	if c.cachedThinkingEffortState != nil {
-		snap.effort = c.cachedThinkingEffortState.CurrentID
-	}
-	return snap
 }
 
 // recoverViaResumeSession recovers a session via ResumeSession and re-applies config.
@@ -800,6 +782,11 @@ func (c *ACPConn) watchProcessDeath() {
 	c.mu.Lock()
 	if c.alive {
 		c.alive = false
+		// Mark registry capability as stale so the next connection
+		// to this agent triggers a ForceUpdate with fresh capabilities.
+		if c.agent != nil && c.agent.ID != "" {
+			GetAgentCapabilityRegistry().MarkStale(c.agent.ID)
+		}
 	}
 	agentID := ""
 	if c.agent != nil {
@@ -868,6 +855,16 @@ func (c *ACPConn) AcpSID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.acpSID
+}
+
+// AgentID returns the ID of the agent this connection belongs to.
+func (c *ACPConn) AgentID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.agent != nil {
+		return c.agent.ID
+	}
+	return ""
 }
 
 // Prompt sends a prompt on the ACP session and forwards events to streamCh.
@@ -1319,31 +1316,50 @@ func (c *ACPConn) IsConfigUnsupported(configID string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Cached state accessors
+// Session-level state accessors
 // ---------------------------------------------------------------------------
 
-func (c *ACPConn) GetCachedModeState() *ModeState {
+// GetCurrentModeID returns the session's current mode ID.
+func (c *ACPConn) GetCurrentModeID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedModeState
+	return c.currentModeID
 }
 
-func (c *ACPConn) GetCachedConfigState() *ConfigOptionState {
+// SetCurrentModeID sets the session's current mode ID and updates the
+// agent-level available modes in the registry.
+func (c *ACPConn) SetCurrentModeID(modeID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedConfigState
+	c.currentModeID = modeID
 }
 
-func (c *ACPConn) GetCachedThinkingEffortState() *ThinkingEffortState {
+// GetCurrentThinkingEffortID returns the session's current thinking effort ID.
+func (c *ACPConn) GetCurrentThinkingEffortID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedThinkingEffortState
+	return c.currentThinkingEffortID
 }
 
-func (c *ACPConn) GetCachedModelListState() *ModelListState {
+// SetCurrentThinkingEffortID sets the session's current thinking effort ID.
+func (c *ACPConn) SetCurrentThinkingEffortID(effortID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedModelListState
+	c.currentThinkingEffortID = effortID
+}
+
+// GetCurrentModelID returns the session's current model ID.
+func (c *ACPConn) GetCurrentModelID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentModelID
+}
+
+// SetCurrentModelID sets the session's current model ID.
+func (c *ACPConn) SetCurrentModelID(modelID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.currentModelID = modelID
 }
 
 // SetCachedPlanState caches the plan state from a plan_update event.
@@ -1352,7 +1368,6 @@ func (c *ACPConn) SetCachedPlanState(state *PlanState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cachedPlanState = state
-	// Plan is transient, not persisted
 }
 
 // GetCachedPlanState returns the cached plan state.
@@ -1409,37 +1424,88 @@ func (c *ACPConn) resetLastSetConfig() {
 	c.unsupportedConfigs = nil
 }
 
+// SetCachedModeState updates the session's current mode ID and registers
+// available modes in the agent capability registry.
 func (c *ACPConn) SetCachedModeState(state *ModeState) {
+	if state == nil {
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cachedModeState = state
+	c.currentModeID = state.CurrentModeID
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
+	c.mu.Unlock()
+	if agentID != "" && len(state.AvailableModes) > 0 {
+		GetAgentCapabilityRegistry().UpdateModes(agentID, state.AvailableModes)
+	}
 }
 
+// SetCachedConfigState registers the config option state in the agent capability registry.
+// Also derives mode state from config if no v1 Modes were present (ACP v2 agents).
 func (c *ACPConn) SetCachedConfigState(state *ConfigOptionState) {
+	if state == nil {
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cachedConfigState = state
-	// ACP v2 agents (e.g., OpenCode) expose modes via ConfigOptions instead of
-	// the legacy Modes field. If cachedModeState is nil (no v1 Modes in response),
-	// derive it from the config so REST APIs can populate mode chips without
-	// requiring SSE events.
-	if c.cachedModeState == nil {
-		if derived := modeStateFromConfigState(state); derived != nil {
-			c.cachedModeState = derived
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
+	c.mu.Unlock()
+	if agentID != "" {
+		GetAgentCapabilityRegistry().UpdateConfigState(agentID, state)
+		// ACP v2 agents (e.g., OpenCode) expose modes via ConfigOptions instead of
+		// the legacy Modes field. If no modes registered yet, derive from config.
+		if !GetAgentCapabilityRegistry().HasAvailableModes(agentID) {
+			if derived := modeStateFromConfigState(state); derived != nil && len(derived.AvailableModes) > 0 {
+				GetAgentCapabilityRegistry().UpdateModes(agentID, derived.AvailableModes)
+				// Also set current mode from derived state
+				c.mu.Lock()
+				if c.currentModeID == "" {
+					c.currentModeID = derived.CurrentModeID
+				}
+				c.mu.Unlock()
+			}
 		}
 	}
 }
 
+// SetCachedThinkingEffortState updates the session's current thinking effort ID
+// and registers available levels in the agent capability registry.
 func (c *ACPConn) SetCachedThinkingEffortState(state *ThinkingEffortState) {
+	if state == nil {
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cachedThinkingEffortState = state
+	c.currentThinkingEffortID = state.CurrentID
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
+	c.mu.Unlock()
+	if agentID != "" && len(state.AvailableLevels) > 0 {
+		GetAgentCapabilityRegistry().UpdateThinkingEfforts(agentID, state.AvailableLevels)
+	}
 }
 
+// SetCachedModelListState updates the session's current model ID
+// and registers available models in the agent capability registry.
 func (c *ACPConn) SetCachedModelListState(state *ModelListState) {
+	if state == nil {
+		return
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cachedModelListState = state
+	c.currentModelID = state.CurrentModelID
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
+	c.mu.Unlock()
+	if agentID != "" && len(state.Models) > 0 {
+		GetAgentCapabilityRegistry().UpdateModels(agentID, state.Models)
+	}
 }
 
 // SetAutoApprove enables or disables hands-off mode for this connection.
@@ -1459,123 +1525,70 @@ func (c *ACPConn) IsAutoApprove() bool {
 func (c *ACPConn) UpdateCachedCurrentModel(modelID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedModelListState != nil {
-		c.cachedModelListState.CurrentModelID = modelID
-	}
+	c.currentModelID = modelID
 }
 
 func (c *ACPConn) UpdateCachedCurrentMode(modeID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedModeState != nil {
-		c.cachedModeState.CurrentModeID = modeID
-	}
-	if c.cachedConfigState != nil {
-		c.cachedConfigState.CurrentID = modeID
-	}
+	c.currentModeID = modeID
 }
 
-// HasNewAvailableModes returns true if the given modes list contains mode IDs
-// not present in the cached available modes. Used to diff-check whether an ACP
-// agent's ConfigOptionUpdate should be forwarded to the frontend.
+// HasNewAvailableModes delegates to AgentCapabilityRegistry.
 func (c *ACPConn) HasNewAvailableModes(newModes []ModeDef) bool {
 	c.mu.Lock()
-	existing := c.cachedModeState
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
 	c.mu.Unlock()
-	if existing == nil || len(existing.AvailableModes) == 0 {
-		return len(newModes) > 0
-	}
-	seen := make(map[string]struct{}, len(existing.AvailableModes))
-	for _, m := range existing.AvailableModes {
-		seen[m.ID] = struct{}{}
-	}
-	for _, m := range newModes {
-		if _, ok := seen[m.ID]; !ok {
-			return true
-		}
-	}
-	return false
+	return GetAgentCapabilityRegistry().HasNewAvailableModes(agentID, newModes)
 }
 
-// HasCurrentModeChanged returns true if the given modeId differs from the cached
-// currentModeId. Used to determine whether a mode_update SSE should be forwarded
-// when only the current mode changed (available modes unchanged).
+// HasCurrentModeChanged checks if the given modeId differs from the session's current mode.
 func (c *ACPConn) HasCurrentModeChanged(modeID string) bool {
 	c.mu.Lock()
-	existing := c.cachedModeState
-	c.mu.Unlock()
-	if existing == nil {
-		return modeID != ""
-	}
-	return existing.CurrentModeID != modeID
+	defer c.mu.Unlock()
+	return c.currentModeID != modeID
 }
 
-// IsModeAvailable checks whether the given modeId exists in the cached availableModes.
-// Used to validate agent-reported mode changes — only accept modes that are in the
-// available list, filtering out invalid mode reports from bridge adapters.
+// IsModeAvailable delegates to AgentCapabilityRegistry.
 func (c *ACPConn) IsModeAvailable(modeID string) bool {
 	c.mu.Lock()
-	existing := c.cachedModeState
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
 	c.mu.Unlock()
-	if existing == nil {
-		return false
-	}
-	for _, m := range existing.AvailableModes {
-		if m.ID == modeID {
-			return true
-		}
-	}
-	return false
+	return GetAgentCapabilityRegistry().IsModeAvailable(agentID, modeID)
 }
 
-// HasNewAvailableThinkingEfforts returns true if the given levels list contains
-// IDs not present in the cached available levels.
+// HasNewAvailableThinkingEfforts delegates to AgentCapabilityRegistry.
 func (c *ACPConn) HasNewAvailableThinkingEfforts(newLevels []ThinkingEffortDef) bool {
 	c.mu.Lock()
-	existing := c.cachedThinkingEffortState
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
 	c.mu.Unlock()
-	if existing == nil || len(existing.AvailableLevels) == 0 {
-		return len(newLevels) > 0
-	}
-	seen := make(map[string]struct{}, len(existing.AvailableLevels))
-	for _, l := range existing.AvailableLevels {
-		seen[l.ID] = struct{}{}
-	}
-	for _, l := range newLevels {
-		if _, ok := seen[l.ID]; !ok {
-			return true
-		}
-	}
-	return false
+	return GetAgentCapabilityRegistry().HasNewAvailableThinkingEfforts(agentID, newLevels)
 }
 
-// HasNewAvailableModels returns true if the given models list contains
-// IDs not present in the cached available models.
+// HasNewAvailableModels delegates to AgentCapabilityRegistry.
 func (c *ACPConn) HasNewAvailableModels(newModels []model.AgentModel) bool {
 	c.mu.Lock()
-	existing := c.cachedModelListState
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
 	c.mu.Unlock()
-	if existing == nil || len(existing.Models) == 0 {
-		return len(newModels) > 0
-	}
-	seen := make(map[string]struct{}, len(existing.Models))
-	for _, m := range existing.Models {
-		seen[m.ID] = struct{}{}
-	}
-	for _, m := range newModels {
-		if _, ok := seen[m.ID]; !ok {
-			return true
-		}
-	}
-	return false
+	return GetAgentCapabilityRegistry().HasNewAvailableModels(agentID, newModels)
 }
 
 func (c *ACPConn) UpdateCachedCurrentThinkingEffort(effortID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedThinkingEffortState != nil {
-		c.cachedThinkingEffortState.CurrentID = effortID
-	}
+	c.currentThinkingEffortID = effortID
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,15 +1742,20 @@ func SetACPStatePrefetchedCallback(fn func(string, ACPCachedState)) {
 func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
 	prefetchSID := "_prefetch_" + agent.ID
 
+	// Check if registry already has data for this agent — no need to prefetch.
+	reg := GetAgentCapabilityRegistry()
+	if cap := reg.Get(agent.ID); cap != nil && cap.HasData() {
+		return
+	}
+
 	m.mu.Lock()
 	if conn, exists := m.conns[prefetchSID]; exists {
 		conn.mu.Lock()
 		alive := conn.alive && conn.isAliveLocked()
-		hasState := conn.cachedModeState != nil || conn.cachedConfigState != nil || conn.cachedThinkingEffortState != nil
 		conn.mu.Unlock()
-		if alive || hasState {
+		if alive {
 			m.mu.Unlock()
-			return // already have state or in progress
+			return // already in progress
 		}
 		// Stale prefetch entry — remove so we can retry
 		delete(m.conns, prefetchSID)
@@ -1763,25 +1781,43 @@ func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
 			return
 		}
 
-		// Cache state from NewSession response (same logic as ACPBackend.cacheNewSessionState)
+		// Cache state from NewSession response and force-update the agent capability registry.
 		if isNew {
 			sessResp := conn.GetAndClearNewSessionResp()
 			if sessResp != nil {
+				var modes []ModeDef
+				var modeCurrentID string
 				if modeState := extractACPModeState(sessResp); modeState != nil {
-					conn.SetCachedModeState(modeState)
+					modes = modeState.AvailableModes
+					modeCurrentID = modeState.CurrentModeID
 					slog.Info("acp prefetch: extracted mode", "agent", agent.ID, "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 				}
-				if configState := extractACPConfigOptions(sessResp); configState != nil {
-					conn.SetCachedConfigState(configState)
+				var configState *ConfigOptionState
+				if cs := extractACPConfigOptions(sessResp); cs != nil {
+					configState = cs
 				}
+				var efforts []ThinkingEffortDef
+				var effortCurrentID string
 				if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-					conn.SetCachedThinkingEffortState(effortState)
+					efforts = effortState.AvailableLevels
+					effortCurrentID = effortState.CurrentID
 					slog.Info("acp prefetch: extracted thinking effort", "agent", agent.ID, "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
 				}
+				var models []model.AgentModel
+				var modelCurrentID string
 				if modelList := extractACPModelList(sessResp); modelList != nil {
-					conn.SetCachedModelListState(modelList)
+					models = modelList.Models
+					modelCurrentID = modelList.CurrentModelID
 					slog.Info("acp prefetch: extracted model list", "agent", agent.ID, "current", modelList.CurrentModelID, "available", len(modelList.Models))
 				}
+
+				// Set session-level current values on conn
+				conn.SetCurrentModeID(modeCurrentID)
+				conn.SetCurrentThinkingEffortID(effortCurrentID)
+				conn.SetCurrentModelID(modelCurrentID)
+
+				// Force-update registry (full overwrite)
+				GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agent.ID, modes, efforts, models, nil, configState)
 			}
 		}
 

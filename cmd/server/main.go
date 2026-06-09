@@ -432,6 +432,11 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	}
 	defer service.CloseDB()
 
+	// Load persisted agent capabilities from DB so mode/thinking/command chips
+	// appear immediately on startup without requiring prefetch.
+	ai.SetRegistryDB(service.DB)
+	ai.GetAgentCapabilityRegistry().LoadFromDB(service.DB)
+
 	// Kill orphan AI subprocesses from a previous server crash.
 	// On Linux, scans /proc for CLAWBENCH_CHILD=1 env marker.
 	ai.CleanupOrphans()

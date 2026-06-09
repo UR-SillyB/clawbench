@@ -798,26 +798,10 @@ func TestServeAgentsGet_ACPStateFromPoolCache(t *testing.T) {
 	model.AgentList = append(model.AgentList, acpAgent)
 	require.NoError(t, service.SaveAgent(service.DB, acpAgent))
 
-	// Inject a pool entry with cached state
-	pool := ai.GetACPConnectionPool()
-	entry := &ai.ACPConnEntry{}
-	entry.SetCachedModeState(&ai.ModeState{
-		CurrentModeID:  "code",
-		AvailableModes: []ai.ModeDef{{ID: "code", Name: "Code"}, {ID: "ask", Name: "Ask"}},
-	})
-	entry.SetCachedThinkingEffortState(&ai.ThinkingEffortState{
-		CurrentID:       "high",
-		AvailableLevels: []ai.ThinkingEffortDef{{ID: "low"}, {ID: "high"}},
-	})
-	entry.SetCachedModelListState(&ai.ModelListState{
-		CurrentModelID: "m1",
-		Models:         []model.AgentModel{{ID: "acp-m1", Name: "ACP Model 1", Default: true}},
-	})
-	// Set a client with commands
-	client := ai.NewClawBenchACPClient()
-	entry.SetClientForTest(client)
-	pool.SetEntryForTest("acp-agent", entry)
-	defer pool.CloseConnection("acp-agent")
+	// Populate agent-level capabilities in the registry
+	ai.GetAgentCapabilityRegistry().UpdateModes("acp-agent", []ai.ModeDef{{ID: "code", Name: "Code"}, {ID: "ask", Name: "Ask"}})
+	ai.GetAgentCapabilityRegistry().UpdateThinkingEfforts("acp-agent", []ai.ThinkingEffortDef{{ID: "low"}, {ID: "high"}})
+	ai.GetAgentCapabilityRegistry().UpdateModels("acp-agent", []model.AgentModel{{ID: "acp-m1", Name: "ACP Model 1", Default: true}})
 
 	req := newRequest(t, http.MethodGet, "/api/agents", nil)
 	withAuthCookie(req, model.SessionToken)
@@ -834,20 +818,20 @@ func TestServeAgentsGet_ACPStateFromPoolCache(t *testing.T) {
 	state, ok := acpStates["acp-agent"].(map[string]any)
 	require.True(t, ok, "acpStates should contain acp-agent")
 
-	// Verify mode state from pool cache
+	// Verify mode state from registry (agent-level has empty currentModeId)
 	modeState, ok := state["modeState"].(map[string]any)
 	require.True(t, ok, "state should contain modeState")
-	assert.Equal(t, "code", modeState["currentModeId"])
+	assert.Equal(t, "", modeState["currentModeId"]) // no session context
 
-	// Verify thinking effort state from pool cache
+	// Verify thinking effort state from registry
 	effortState, ok := state["thinkingEffortState"].(map[string]any)
 	require.True(t, ok, "state should contain thinkingEffortState")
-	assert.Equal(t, "high", effortState["currentId"])
+	assert.Equal(t, "", effortState["currentId"]) // no session context
 
-	// Verify model list state from pool cache
+	// Verify model list state from registry
 	mlState, ok := state["modelListState"].(map[string]any)
 	require.True(t, ok, "state should contain modelListState")
-	assert.Equal(t, "m1", mlState["currentModelId"])
+	assert.Equal(t, "", mlState["currentModelId"]) // no session context
 
 	// Verify models were overridden by ACP model list
 	agents, ok := resp["agents"].([]any)
@@ -964,18 +948,11 @@ func TestServeAgentsGet_ACPModelListOverridesModels(t *testing.T) {
 	model.AgentList = append(model.AgentList, acpAgent)
 	require.NoError(t, service.SaveAgent(service.DB, acpAgent))
 
-	// Inject pool entry with model list that should override CLI-discovered models
-	pool := ai.GetACPConnectionPool()
-	entry := &ai.ACPConnEntry{}
-	entry.SetCachedModelListState(&ai.ModelListState{
-		CurrentModelID: "acp-model-1",
-		Models: []model.AgentModel{
-			{ID: "acp-model-1", Name: "ACP Model 1", Default: true},
-			{ID: "acp-model-2", Name: "ACP Model 2"},
-		},
+	// Inject agent-level models in the registry that should override CLI-discovered models
+	ai.GetAgentCapabilityRegistry().UpdateModels("acp-ml-override", []model.AgentModel{
+		{ID: "acp-model-1", Name: "ACP Model 1", Default: true},
+		{ID: "acp-model-2", Name: "ACP Model 2"},
 	})
-	pool.SetEntryForTest("acp-ml-override", entry)
-	defer pool.CloseConnection("acp-ml-override")
 
 	req := newRequest(t, http.MethodGet, "/api/agents", nil)
 	withAuthCookie(req, model.SessionToken)

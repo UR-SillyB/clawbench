@@ -1277,16 +1277,15 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	// Pre-populate cached mode state with available modes so IsModeAvailable can validate
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "architect",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-			{ID: "architect", Name: "Architect"},
-		},
-	}
+	agent := &model.Agent{ID: "test-current-mode", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-current-mode-sid")
+	// Pre-populate available modes in registry so IsModeAvailable can validate
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+		{ID: "architect", Name: "Architect"},
+	})
+	entry.SetCurrentModeID("architect")
 
 	update := acp.SessionUpdate{
 		CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
@@ -1296,8 +1295,8 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
-	// Cache should be updated — "code" is a valid mode in availableModes
-	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+	// Session current mode should be updated — "code" is a valid mode in availableModes
+	assert.Equal(t, "code", entry.GetCurrentModeID())
 
 	// mode_update SSE should be forwarded because currentModeId changed
 	events := drainACPEvents(ch, 1)
@@ -1310,15 +1309,14 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_InvalidModeRejected(t *testing.T)
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	// Pre-populate cached mode state with available modes
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "architect",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-		},
-	}
+	agent := &model.Agent{ID: "test-invalid-mode", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-invalid-mode-sid")
+	// Pre-populate available modes in registry
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+	})
+	entry.SetCurrentModeID("architect")
 
 	update := acp.SessionUpdate{
 		CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
@@ -1329,8 +1327,8 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_InvalidModeRejected(t *testing.T)
 
 	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
-	// Cache should NOT be updated — invalid mode rejected
-	assert.Equal(t, "architect", entry.cachedModeState.CurrentModeID)
+	// Session current mode should NOT be updated — invalid mode rejected
+	assert.Equal(t, "architect", entry.GetCurrentModeID())
 
 	// No SSE event forwarded — invalid mode was filtered
 	assertNoMoreACPEvents(ch, t)
@@ -1387,14 +1385,13 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testi
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "ask",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-		},
-	}
+	agent := &model.Agent{ID: "test-same-modes", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-same-modes-sid")
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+	})
+	entry.SetCurrentModeID("ask")
 
 	modeCategory := acp.SessionConfigOptionCategoryMode
 	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
@@ -1428,22 +1425,21 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testi
 	require.NotNil(t, events[0].Config)
 	assert.Equal(t, "code", events[0].Config.CurrentID)
 
-	// Cache should be updated — "code" is a valid mode in availableModes
-	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+	// Session current mode should be updated — "code" is a valid mode
+	assert.Equal(t, "code", entry.GetCurrentModeID())
 }
 
 func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_InvalidModeRejected(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "ask",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-		},
-	}
+	agent := &model.Agent{ID: "test-invalid-config-mode", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-invalid-config-mode-sid")
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+	})
+	entry.SetCurrentModeID("ask")
 
 	modeCategory := acp.SessionConfigOptionCategoryMode
 	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
@@ -1477,22 +1473,21 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_InvalidModeRejected(t *test
 	require.NotNil(t, events[0].Config)
 	assert.Equal(t, "bypass_permissions", events[0].Config.CurrentID)
 
-	// Cache currentModeId should NOT be updated — "bypass_permissions" not in availableModes
-	assert.Equal(t, "ask", entry.cachedModeState.CurrentModeID)
+	// Session current mode should NOT be updated — "bypass_permissions" not in availableModes
+	assert.Equal(t, "ask", entry.GetCurrentModeID())
 }
 
 func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesSameCurrentNoForward(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "code",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-		},
-	}
+	agent := &model.Agent{ID: "test-same-same", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-same-same-sid")
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+	})
+	entry.SetCurrentModeID("code")
 
 	modeCategory := acp.SessionConfigOptionCategoryMode
 	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
@@ -1523,21 +1518,20 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesSameCurrentNoForwa
 	// Same available modes AND same currentModeId → no SSE forwarded
 	assertNoMoreACPEvents(ch, t)
 
-	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+	assert.Equal(t, "code", entry.GetCurrentModeID())
 }
 
 func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_NewModeForward(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	ctx := context.Background()
 
-	entry := &ACPConnEntry{}
-	entry.cachedModeState = &ModeState{
-		CurrentModeID: "ask",
-		AvailableModes: []ModeDef{
-			{ID: "ask", Name: "Ask"},
-			{ID: "code", Name: "Code"},
-		},
-	}
+	agent := &model.Agent{ID: "test-new-mode", Backend: "acp-stdio"}
+	entry := newACPConn(agent, "test-new-mode-sid")
+	GetAgentCapabilityRegistry().UpdateModes(agent.ID, []ModeDef{
+		{ID: "ask", Name: "Ask"},
+		{ID: "code", Name: "Code"},
+	})
+	entry.SetCurrentModeID("ask")
 
 	modeCategory := acp.SessionConfigOptionCategoryMode
 	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
@@ -1571,10 +1565,13 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_NewModeForward(t *testing.T
 	assert.Equal(t, "config_update", events[0].Type)
 	require.NotNil(t, events[0].Config)
 
-	// Cache should be updated with new mode list including "architect"
+	// Session current mode should be updated with "architect"
 	// "architect" is in the new available modes, so it's valid
-	assert.Equal(t, "architect", entry.cachedModeState.CurrentModeID)
-	require.Len(t, entry.cachedModeState.AvailableModes, 3)
+	assert.Equal(t, "architect", entry.GetCurrentModeID())
+	// Registry should have 3 modes now
+	regModes := GetAgentCapabilityRegistry().Get(agent.ID)
+	require.NotNil(t, regModes)
+	require.Len(t, regModes.AvailableModes, 3)
 
 	assertNoMoreACPEvents(ch, t)
 }

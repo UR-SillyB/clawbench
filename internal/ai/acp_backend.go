@@ -189,7 +189,7 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 
 	// config_update is still re-emitted every stream because the frontend
 	// resets config state on session switch and config covers more than just mode.
-	if configState := conn.GetCachedConfigState(); configState != nil {
+	if configState := GetAgentCapabilityRegistry().GetConfigState(conn.AgentID()); configState != nil {
 		slog.Debug("acp: re-emitting cached config_update", "config_id", configState.ConfigID, "current", configState.CurrentID)
 		forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 	}
@@ -207,6 +207,8 @@ func (b *ACPBackend) emitSessionAndCacheState(conn *ACPConn, isNew bool, ch chan
 
 // cacheNewSessionState extracts and caches mode/config/thinking/model state from
 // a NewSessionResponse after creating a new ACP session.
+// Session-level current values are stored on ACPConn; agent-level available lists
+// are force-updated into AgentCapabilityRegistry (full overwrite, once per process).
 func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 	sessResp := conn.GetAndClearNewSessionResp()
 	if sessResp == nil {
@@ -217,35 +219,55 @@ func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 		"has_modes", sessResp.Modes != nil,
 		"config_options_count", len(sessResp.ConfigOptions),
 	)
+
+	// Extract all state from response
+	var modes []ModeDef
+	var modeCurrentID string
 	if modeState := extractACPModeState(sessResp); modeState != nil {
-		conn.SetCachedModeState(modeState)
+		modes = modeState.AvailableModes
+		modeCurrentID = modeState.CurrentModeID
 		slog.Info("acp: extracted mode from v1 Modes field", "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 	} else {
 		slog.Info("acp: no mode from v1 Modes field, will rely on configOptions fallback")
 	}
-	if configState := extractACPConfigOptions(sessResp); configState != nil {
-		conn.SetCachedConfigState(configState)
+	configState := extractACPConfigOptions(sessResp)
+	if configState != nil {
 		slog.Info("acp: extracted config from configOptions", "config_id", configState.ConfigID, "current", configState.CurrentID, "options", len(configState.Options))
 	} else {
 		slog.Info("acp: no mode config from configOptions")
 	}
+	var efforts []ThinkingEffortDef
+	var effortCurrentID string
 	if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-		conn.SetCachedThinkingEffortState(effortState)
+		efforts = effortState.AvailableLevels
+		effortCurrentID = effortState.CurrentID
 		slog.Info("acp: extracted thinking effort", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
 	} else {
 		slog.Info("acp: no thinking effort from configOptions")
 	}
+	var models []model.AgentModel
+	var modelCurrentID string
 	if modelList := extractACPModelList(sessResp); modelList != nil {
-		conn.SetCachedModelListState(modelList)
+		models = modelList.Models
+		modelCurrentID = modelList.CurrentModelID
 		slog.Info("acp: extracted model list", "current", modelList.CurrentModelID, "available", len(modelList.Models))
 	} else {
 		slog.Info("acp: no model list from configOptions")
 	}
+
+	// Set session-level current values on ACPConn
+	conn.SetCurrentModeID(modeCurrentID)
+	conn.SetCurrentThinkingEffortID(effortCurrentID)
+	conn.SetCurrentModelID(modelCurrentID)
+
+	// Force-update agent-level registry (full overwrite, once per process instance)
+	agentID := conn.AgentID()
+	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState)
 }
 
 // mergeResumedSessionState merges state from a ResumeSessionResponse, preserving
 // the user's current selections (re-applied by ensureAliveWithSession) while
-// updating available options lists from the resumed agent.
+// updating available options lists from the resumed agent via the registry.
 func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 	resumeResp := conn.GetAndClearResumeSessionResp()
 	if resumeResp == nil {
@@ -256,76 +278,86 @@ func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 		"has_modes", resumeResp.Modes != nil,
 		"config_options_count", len(resumeResp.ConfigOptions),
 	)
+
+	// Extract all state from response
+	var modes []ModeDef
+	var modeCurrentID string
 	if modeState := extractACPModeStateFromResume(resumeResp); modeState != nil {
-		if existing := conn.GetCachedModeState(); existing != nil && existing.CurrentModeID != "" {
-			modeState.CurrentModeID = existing.CurrentModeID
-		}
-		conn.SetCachedModeState(modeState)
+		modes = modeState.AvailableModes
+		modeCurrentID = modeState.CurrentModeID
 		slog.Info("acp: resumed mode state", "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 	} else {
 		slog.Info("acp: no mode from resumed v1 Modes field")
 	}
-	if configState := extractACPConfigOptionsFromResume(resumeResp); configState != nil {
-		if existing := conn.GetCachedConfigState(); existing != nil && existing.CurrentID != "" {
-			configState.CurrentID = existing.CurrentID
-		}
-		conn.SetCachedConfigState(configState)
-	}
+	configState := extractACPConfigOptionsFromResume(resumeResp)
+	var efforts []ThinkingEffortDef
+	var effortCurrentID string
 	if effortState := extractACPThinkingEffortFromResume(resumeResp); effortState != nil {
-		if existing := conn.GetCachedThinkingEffortState(); existing != nil && existing.CurrentID != "" {
-			effortState.CurrentID = existing.CurrentID
-		}
-		conn.SetCachedThinkingEffortState(effortState)
+		efforts = effortState.AvailableLevels
+		effortCurrentID = effortState.CurrentID
 	}
+	var models []model.AgentModel
+	var modelCurrentID string
 	if modelList := extractACPModelListFromResume(resumeResp); modelList != nil {
-		if existing := conn.GetCachedModelListState(); existing != nil && existing.CurrentModelID != "" {
-			modelList.CurrentModelID = existing.CurrentModelID
-		}
-		conn.SetCachedModelListState(modelList)
+		models = modelList.Models
+		modelCurrentID = modelList.CurrentModelID
 	}
+
+	// Preserve user's current selections over the resumed agent's defaults
+	if existing := conn.GetCurrentModeID(); existing != "" {
+		modeCurrentID = existing
+	}
+	if configState != nil && conn.GetCurrentModeID() != "" {
+		configState.CurrentID = conn.GetCurrentModeID()
+	}
+	if existing := conn.GetCurrentThinkingEffortID(); existing != "" {
+		effortCurrentID = existing
+	}
+	if existing := conn.GetCurrentModelID(); existing != "" {
+		modelCurrentID = existing
+	}
+
+	// Set session-level current values on ACPConn
+	conn.SetCurrentModeID(modeCurrentID)
+	conn.SetCurrentThinkingEffortID(effortCurrentID)
+	conn.SetCurrentModelID(modelCurrentID)
+
+	// Force-update agent-level registry (full overwrite, once per process instance)
+	agentID := conn.AgentID()
+	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState)
 }
 
 // emitSessionStateEvents emits mode_update, thinking_effort_update, and model_list_update
 // SSE events. Called on every stream start (new and resumed sessions) so the frontend
-// always receives the current ACP state.
+// always receives the current ACP state. Reads from AgentCapabilityRegistry + session current values.
 func (b *ACPBackend) emitSessionStateEvents(conn *ACPConn, ch chan<- StreamEvent) {
-	if modeState := conn.GetCachedModeState(); modeState != nil {
+	agentID := conn.AgentID()
+	reg := GetAgentCapabilityRegistry()
+
+	if modeState := reg.GetModeState(agentID, conn.GetCurrentModeID()); modeState != nil {
 		slog.Info("acp: emitting mode_update for new session", "current_mode", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
 		forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: modeState})
 	}
-	if effortState := conn.GetCachedThinkingEffortState(); effortState != nil {
+	if effortState := reg.GetThinkingEffortState(agentID, conn.GetCurrentThinkingEffortID()); effortState != nil {
 		slog.Debug("acp: emitting thinking_effort_update for new session", "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
 		forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
 	}
-	if modelListState := conn.GetCachedModelListState(); modelListState != nil {
+	if modelListState := reg.GetModelListState(agentID, conn.GetCurrentModelID()); modelListState != nil {
 		slog.Debug("acp: emitting model_list_update for new session", "current", modelListState.CurrentModelID, "available", len(modelListState.Models))
 		forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelListState})
 	}
 }
 
 // emitCommandsUpdate re-emits cached slash commands as an SSE event.
+// Reads commands from the AgentCapabilityRegistry.
 func (b *ACPBackend) emitCommandsUpdate(conn *ACPConn, ch chan<- StreamEvent) {
-	client := conn.GetClient()
-	if client == nil {
-		return
-	}
-	cmds := client.GetCommands()
+	agentID := conn.AgentID()
+	cmds := GetAgentCapabilityRegistry().GetCommands(agentID)
 	if len(cmds) == 0 {
 		return
 	}
-	infos := make([]AvailableCommandInfo, 0, len(cmds))
-	for _, c := range cmds {
-		info := AvailableCommandInfo{
-			Name:        c.Name,
-			Description: c.Description,
-		}
-		if c.Input != nil && c.Input.Unstructured != nil {
-			info.InputHint = c.Input.Unstructured.Hint
-		}
-		infos = append(infos, info)
-	}
-	slog.Info("acp: re-emitting cached commands_update", "count", len(infos))
-	forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: infos})
+	slog.Info("acp: re-emitting cached commands_update", "count", len(cmds))
+	forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: cmds})
 }
 
 // isACPPeerDisconnected checks whether the error is an ACP peer-disconnect error

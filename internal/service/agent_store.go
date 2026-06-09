@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS agents (
 	sort_order INTEGER NOT NULL DEFAULT 0,
 	transport TEXT NOT NULL DEFAULT 'cli',
 	acp_command TEXT NOT NULL DEFAULT '',
+	acp_available_modes TEXT NOT NULL DEFAULT '[]',
+	acp_available_thinking_efforts TEXT NOT NULL DEFAULT '[]',
+	acp_available_commands TEXT NOT NULL DEFAULT '[]',
+	acp_config_options TEXT NOT NULL DEFAULT '',
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

@@ -8,8 +8,6 @@ import (
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,7 +102,7 @@ func TestServeAICommands_ACPAgentNoPoolClientReturnsEmpty(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
 
-	// Add an ACP agent with no active pool connection
+	// Add an ACP agent with no registry data
 	acpAgent := &model.Agent{
 		ID:        "acp-test",
 		Name:      "ACP Test",
@@ -115,9 +113,8 @@ func TestServeAICommands_ACPAgentNoPoolClientReturnsEmpty(t *testing.T) {
 	model.Agents["acp-test"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)
 
-	// Ensure no pool entry exists for this agent
-	pool := ai.GetACPConnectionPool()
-	pool.CloseConnection("acp-test")
+	// Ensure no registry data for this agent
+	ai.GetAgentCapabilityRegistry().Update("acp-test", &ai.AgentCapability{})
 
 	req := newRequest(t, http.MethodGet, "/api/ai/commands?agent_id=acp-test", nil)
 	w := callHandler(ServeAICommands, req)
@@ -146,19 +143,11 @@ func TestServeAICommands_ACPAgentWithCommands(t *testing.T) {
 	model.Agents["acp-cmds"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)
 
-	// Inject a pool entry with a client that has commands
-	pool := ai.GetACPConnectionPool()
-	entry := &ai.ACPConnEntry{}
-	client := ai.NewClawBenchACPClient()
-	client.SetCommands([]acp.AvailableCommand{
+	// Populate commands in the registry
+	ai.GetAgentCapabilityRegistry().UpdateCommands("acp-cmds", []ai.AvailableCommandInfo{
 		{Name: "/compact", Description: "Compact history"},
-		{Name: "/ask", Description: "Ask a question", Input: &acp.AvailableCommandInput{
-			Unstructured: &acp.UnstructuredCommandInput{Hint: "your question"},
-		}},
+		{Name: "/ask", Description: "Ask a question", InputHint: "your question"},
 	})
-	entry.SetClientForTest(client)
-	pool.SetEntryForTest("acp-cmds", entry)
-	defer pool.CloseConnection("acp-cmds")
 
 	req := newRequest(t, http.MethodGet, "/api/ai/commands?agent_id=acp-cmds", nil)
 	w := callHandler(ServeAICommands, req)
@@ -198,13 +187,7 @@ func TestServeAICommands_ACPAgentWithEmptyCommands(t *testing.T) {
 	model.Agents["acp-no-cmds"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)
 
-	// Inject a pool entry with a client that has no commands
-	pool := ai.GetACPConnectionPool()
-	entry := &ai.ACPConnEntry{}
-	client := ai.NewClawBenchACPClient()
-	entry.SetClientForTest(client)
-	pool.SetEntryForTest("acp-no-cmds", entry)
-	defer pool.CloseConnection("acp-no-cmds")
+	// No commands in registry for this agent
 
 	req := newRequest(t, http.MethodGet, "/api/ai/commands?agent_id=acp-no-cmds", nil)
 	w := callHandler(ServeAICommands, req)

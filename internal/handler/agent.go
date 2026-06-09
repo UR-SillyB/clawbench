@@ -44,7 +44,8 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 
 	// Attach cached ACP mode/thinking/commands state to each agent.
 	// This lets the frontend populate mode chips and slash commands without
-	// extra API calls. State comes from the ACP connection manager cache only.
+	// extra API calls. State comes from the AgentCapabilityRegistry (agent-level)
+	// so it persists across connection lifecycle.
 	type acpState struct {
 		Mode      *ai.ModeState             `json:"modeState,omitempty"`
 		Effort    *ai.ThinkingEffortState   `json:"thinkingEffortState,omitempty"`
@@ -53,26 +54,26 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 		Plan      *ai.PlanState             `json:"planState,omitempty"`
 	}
 	states := make(map[string]*acpState, len(agents))
-	mgr := ai.GetACPConnManager()
+	reg := ai.GetAgentCapabilityRegistry()
 	for _, a := range agents {
 		if a.Transport != transportACP {
 			continue
 		}
+
+		cap := reg.Get(a.ID)
+		if cap == nil || !cap.HasData() {
+			continue
+		}
+
 		var ms *ai.ModeState
 		var es *ai.ThinkingEffortState
 		var cmds []ai.AvailableCommandInfo
 		var ml *ai.ModelListState
-		var ps *ai.PlanState
 
-		if s := mgr.GetCachedStateByAgentID(a.ID); s.Mode != nil || s.Effort != nil || s.ModelList != nil || s.Plan != nil {
-			ms = s.Mode
-			es = s.Effort
-			ml = s.ModelList
-			ps = s.Plan
-		}
-		if pcmds := mgr.GetCommandsByAgentID(a.ID); len(pcmds) > 0 {
-			cmds = pcmds
-		}
+		ms = reg.GetModeState(a.ID, "")
+		es = reg.GetThinkingEffortState(a.ID, "")
+		cmds = reg.GetCommands(a.ID)
+		ml = reg.GetModelListState(a.ID, "")
 
 		// When ACP provides a model list, override the agent's Models
 		// so the frontend SessionSettingModal shows ACP models instead of CLI-discovered ones.
@@ -80,12 +81,12 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 			a.Models = ml.Models
 		}
 
-		if ms != nil || es != nil || len(cmds) > 0 || ml != nil || ps != nil {
-			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml, Plan: ps}
+		if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
+			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
 		}
 	}
 
-	// For acp-stdio agents with no cached state, trigger background prefetch
+	// For acp-stdio agents with no registry data, trigger background prefetch
 	// to discover mode/command/thinking state by creating a temporary ACP connection.
 	// The frontend will receive the state via WS "acp_state_update" event once ready.
 	projectPath := middleware.GetProjectFromCookie(r)

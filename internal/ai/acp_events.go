@@ -127,6 +127,13 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			}
 			infos = append(infos, info)
 		}
+		// Update agent-level commands in registry
+		if conn != nil {
+			agentID := conn.AgentID()
+			if agentID != "" {
+				GetAgentCapabilityRegistry().UpdateCommands(agentID, infos)
+			}
+		}
 		forwardACPEvent(ch, StreamEvent{
 			Type:     "commands_update",
 			Commands: infos,
@@ -134,13 +141,13 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 
 	case update.CurrentModeUpdate != nil:
 		// v1 mode update: only currentModeId; available modes were sent in session/new.
-		// Update cache and forward SSE event so the frontend can reflect
+		// Update session-level current value and forward SSE event so the frontend can reflect
 		// agent-initiated mode changes. Only accept the mode if it's in availableModes
 		// to filter out invalid mode reports from bridge adapters.
 		mu := update.CurrentModeUpdate
 		modeID := string(mu.CurrentModeId)
 		if conn != nil {
-			if modeID != "" && !conn.IsModeAvailable(modeID) {
+			if modeID != "" && !GetAgentCapabilityRegistry().IsModeAvailable(conn.AgentID(), modeID) {
 				// Agent reported a mode not in availableModes — likely a bridge adapter
 				// artifact. Skip updating currentModeId but still update cache for
 				// availableModes if needed.
@@ -149,7 +156,8 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			} else {
 				if conn.HasCurrentModeChanged(modeID) {
 					conn.UpdateCachedCurrentMode(modeID)
-					if ms := conn.GetCachedModeState(); ms != nil {
+					// Build mode state from registry + session current value
+					if ms := GetAgentCapabilityRegistry().GetModeState(conn.AgentID(), modeID); ms != nil {
 						forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: ms})
 					}
 				} else {
@@ -180,22 +188,27 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 				configState := buildConfigOptionStateFromSelect(sel, "mode")
 				if conn != nil {
 					derived := modeStateFromConfigState(configState)
-					newModes := derived != nil && conn.HasNewAvailableModes(derived.AvailableModes)
+					agentID := conn.AgentID()
+					reg := GetAgentCapabilityRegistry()
+					newModes := derived != nil && reg.HasNewAvailableModes(agentID, derived.AvailableModes)
 					modeChanged := derived != nil && conn.HasCurrentModeChanged(derived.CurrentModeID)
 					// Forward config_update SSE if available modes or currentModeId changed.
 					if newModes || modeChanged {
 						forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 					}
-					conn.SetCachedConfigState(configState)
+					// Update agent-level config state in registry
+					reg.UpdateConfigState(agentID, configState)
 					if derived != nil {
 						if newModes {
-							// Available modes changed — full update
-							conn.SetCachedModeState(derived)
+							// Available modes changed — update registry
+							reg.UpdateModes(agentID, derived.AvailableModes)
+							// Also update session current mode
+							conn.UpdateCachedCurrentMode(derived.CurrentModeID)
 						} else if modeChanged {
 							// Only currentModeId changed — validate before updating cache.
 							// Only accept the mode if it's in availableModes to filter out
 							// invalid mode reports from bridge adapters.
-							if derived.CurrentModeID != "" && !conn.IsModeAvailable(derived.CurrentModeID) {
+							if derived.CurrentModeID != "" && !reg.IsModeAvailable(agentID, derived.CurrentModeID) {
 								slog.Debug("acp: ignoring ConfigOptionUpdate with unrecognized mode",
 									"mode_id", derived.CurrentModeID, "clawbench_sid", conn.clawbenchSID)
 							} else {
@@ -210,10 +223,13 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			case acp.SessionConfigOptionCategoryThoughtLevel:
 				effortState := buildThinkingEffortStateFromSelect(sel)
 				if effortState != nil {
-					// Diff-check: only forward SSE if available levels actually changed.
-					// currentId is managed by frontend user action + DB.
 					if conn != nil {
-						if conn.HasNewAvailableThinkingEfforts(effortState.AvailableLevels) {
+						agentID := conn.AgentID()
+						reg := GetAgentCapabilityRegistry()
+						// Diff-check: only forward SSE if available levels actually changed.
+						if reg.HasNewAvailableThinkingEfforts(agentID, effortState.AvailableLevels) {
+							// Update agent-level thinking efforts in registry
+							reg.UpdateThinkingEfforts(agentID, effortState.AvailableLevels)
 							forwardACPEvent(ch, StreamEvent{Type: "thinking_effort_update", ThinkingEffort: effortState})
 						}
 						conn.UpdateCachedCurrentThinkingEffort(string(sel.CurrentValue))
@@ -225,10 +241,13 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 			case acp.SessionConfigOptionCategoryModel:
 				modelList := buildModelListStateFromSelect(sel)
 				if modelList != nil {
-					// Diff-check: only forward SSE if available models actually changed.
-					// currentModelId is managed by frontend user action + DB.
 					if conn != nil {
-						if conn.HasNewAvailableModels(modelList.Models) {
+						agentID := conn.AgentID()
+						reg := GetAgentCapabilityRegistry()
+						// Diff-check: only forward SSE if available models actually changed.
+						if reg.HasNewAvailableModels(agentID, modelList.Models) {
+							// Update agent-level models in registry
+							reg.UpdateModels(agentID, modelList.Models)
 							forwardACPEvent(ch, StreamEvent{Type: "model_list_update", ModelList: modelList})
 						}
 						conn.SetCachedModelListState(modelList)

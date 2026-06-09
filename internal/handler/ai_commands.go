@@ -43,25 +43,9 @@ func ServeAICommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mgr := ai.GetACPConnManager()
-	client := mgr.GetClientByAgentID(agent.ID)
-	if client == nil {
-		writeJSON(w, http.StatusOK, map[string]any{keyCommands: []any{}})
-		return
+	cmds := ai.GetAgentCapabilityRegistry().GetCommands(agent.ID)
+	if cmds == nil {
+		cmds = []ai.AvailableCommandInfo{}
 	}
-
-	acpCmds := client.GetCommands()
-	cmds := make([]ai.AvailableCommandInfo, 0, len(acpCmds))
-	for _, c := range acpCmds {
-		info := ai.AvailableCommandInfo{
-			Name:        c.Name,
-			Description: c.Description,
-		}
-		if c.Input != nil && c.Input.Unstructured != nil {
-			info.InputHint = c.Input.Unstructured.Hint
-		}
-		cmds = append(cmds, info)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{keyCommands: cmds})
 }
