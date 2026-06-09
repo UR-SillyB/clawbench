@@ -228,7 +228,7 @@ func (s *Scheduler) LoadTasksFromDB(projectPath string) error {
 		// Validate agent_id against loaded agents
 		if _, ok := model.Agents[task.AgentID]; !ok {
 			// Skip registration but do NOT pause — the agent may not be loaded yet
-			// (e.g., if LoadAgents hasn't run). The task stays active in DB and
+			// (e.g., if agents haven't been loaded yet). The task stays active in DB and
 			// will be registered on next restart when agents are available.
 			// Runtime validation in executeTask() handles genuinely invalid agents.
 			slog.Warn(

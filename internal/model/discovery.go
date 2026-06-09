@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"clawbench/internal/platform"
-
-	"gopkg.in/yaml.v3"
 )
 
 // BackendSpec defines a known AI backend for auto-discovery.
@@ -39,8 +37,8 @@ type BackendSpec struct {
 }
 
 // BackendRegistry lists all known AI backends for auto-discovery.
-// When no agent configs exist, each entry is checked: if DefaultCmd
-// is found on PATH, a YAML config is generated for that backend.
+// When no agent DB records exist, each entry is checked: if DefaultCmd
+// is found on PATH, a minimal agent record is inserted into the DB.
 // For backends with ListModelsCmd+ParseModels, model lists are auto-discovered too.
 var BackendRegistry = []BackendSpec{
 	{
@@ -217,21 +215,6 @@ func discoverModels(spec BackendSpec) []AgentModel {
 	return models
 }
 
-// GenerateAgentYAML creates a minimal YAML config for the given backend spec.
-// Only id, name, icon, specialty, and backend are written.
-// Models, thinking_effort_levels, and system_prompt are NOT written —
-// they are filled at runtime from auto-discovery and BackendRegistry.
-func GenerateAgentYAML(spec BackendSpec) ([]byte, error) {
-	agent := Agent{
-		ID:        spec.ID,
-		Name:      spec.Name,
-		Icon:      spec.Icon,
-		Specialty: spec.Specialty,
-		Backend:   spec.Backend,
-	}
-	return yaml.Marshal(agent)
-}
-
 // FindSpecByBackend returns the BackendSpec for the given backend type, or nil.
 func FindSpecByBackend(backend string) *BackendSpec {
 	for i := range BackendRegistry {
@@ -242,155 +225,6 @@ func FindSpecByBackend(backend string) *BackendSpec {
 	return nil
 }
 
-// DiscoverAgents scans the system for installed AI CLI tools and generates
-// agent YAML configs in the given directory. It only runs when no agent
-// configs exist (one-time generation).
-//
-// For each backend in BackendRegistry, it runs `{DefaultCmd} --version`
-// concurrently. If the command succeeds, it writes a YAML file.
-// Existing files are not overwritten.
-func DiscoverAgents(dir string) error {
-	// Ensure directory exists
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create agents directory: %w", err)
-	}
-
-	// Check all CLIs concurrently
-	type result struct {
-		spec   BackendSpec
-		exists bool
-	}
-	results := make([]result, len(BackendRegistry))
-	var wg sync.WaitGroup
-	for i, spec := range BackendRegistry {
-		wg.Add(1)
-		go func(i int, spec BackendSpec) {
-			defer wg.Done()
-			exists := spec.NoCLI || CheckCLIExists(spec.DefaultCmd)
-			results[i] = result{spec: spec, exists: exists}
-		}(i, spec)
-	}
-	wg.Wait()
-
-	generated := 0
-	skipped := 0
-
-	for _, r := range results {
-		yamlPath := filepath.Join(dir, r.spec.ID+".yaml")
-
-		// Don't overwrite existing files
-		if _, err := os.Stat(yamlPath); err == nil {
-			continue
-		}
-
-		if !r.exists {
-			skipped++
-			continue
-		}
-
-		data, err := GenerateAgentYAML(r.spec)
-		if err != nil {
-			skipped++
-			continue
-		}
-
-		if err := os.WriteFile(yamlPath, data, 0o644); err != nil {
-			skipped++
-			continue
-		}
-
-		generated++
-	}
-
-	return nil
-}
-
-// SyncDiscoverAgents is called on every startup (not just first-run).
-// It does three things:
-// 1. Detects all installed CLIs from BackendRegistry.
-// 2. Generates minimal YAML for newly found backends (no overwrite).
-// 3. Returns a set of backend types whose CLI is currently present.
-func SyncDiscoverAgents(dir string) map[string]bool { //nolint:gocognit,gocyclo // agent discovery with multi-backend detection
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("failed to create agents directory", "dir", dir, "error", err)
-		return nil
-	}
-
-	type result struct {
-		spec   BackendSpec
-		exists bool
-	}
-	results := make([]result, len(BackendRegistry))
-	var wg sync.WaitGroup
-	for i, spec := range BackendRegistry {
-		wg.Add(1)
-		go func(i int, spec BackendSpec) {
-			defer wg.Done()
-			exists := spec.NoCLI || CheckCLIExists(spec.DefaultCmd)
-			results[i] = result{spec: spec, exists: exists}
-		}(i, spec)
-	}
-	wg.Wait()
-
-	present := make(map[string]bool)
-	for _, r := range results {
-		if r.exists {
-			present[r.spec.Backend] = true
-		}
-
-		yamlPath := filepath.Join(dir, r.spec.ID+".yaml")
-
-		// Don't overwrite existing files
-		if _, err := os.Stat(yamlPath); err == nil {
-			continue
-		}
-
-		if !r.exists {
-			continue
-		}
-
-		// New CLI found + no YAML → generate minimal config
-		data, err := GenerateAgentYAML(r.spec)
-		if err != nil {
-			slog.Warn("failed to generate agent YAML", "backend", r.spec.ID, "error", err)
-			continue
-		}
-		if err := os.WriteFile(yamlPath, data, 0o644); err != nil {
-			slog.Warn("failed to write agent YAML", "path", yamlPath, "error", err)
-			continue
-		}
-		slog.Info("auto-generated agent config", "backend", r.spec.ID, "path", yamlPath)
-	}
-
-	// Include backends that have existing YAML configs but are not in BackendRegistry
-	// (e.g., mock backend configured explicitly for E2E testing).
-	// This ensures MergeDiscoveredData doesn't soft-remove them.
-	// We read the "backend" field from each YAML file (same as LoadAgents),
-	// rather than using the filename, so the key matches what MergeDiscoveredData
-	// checks (agent.Backend) and what BackendRegistry entries produce (r.spec.Backend).
-	entries, err := os.ReadDir(dir)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			var agent Agent
-			if err := yaml.Unmarshal(data, &agent); err != nil || agent.Backend == "" {
-				continue
-			}
-			if !present[agent.Backend] {
-				present[agent.Backend] = true
-			}
-		}
-	}
-
-	return present
-}
-
 // CanDiscoverModels returns true if the spec supports model discovery
 // via either DiscoverModelsFunc or ListModelsCmd+ParseModels.
 func CanDiscoverModels(spec BackendSpec) bool {
@@ -398,9 +232,10 @@ func CanDiscoverModels(spec BackendSpec) bool {
 }
 
 // SyncDiscoverModels runs DiscoverModels for all backends that support it
-// and writes results to the model cache. This is called synchronously
-// on first startup (when cache is empty).
-func SyncDiscoverModels(cacheDir string) {
+// and returns the results as a map keyed by backend type.
+// This is called synchronously on first startup (when no DB models exist yet).
+func SyncDiscoverModels() map[string][]AgentModel {
+	result := make(map[string][]AgentModel)
 	for _, spec := range BackendRegistry {
 		if !CanDiscoverModels(spec) {
 			continue
@@ -409,18 +244,15 @@ func SyncDiscoverModels(cacheDir string) {
 		if len(models) == 0 {
 			continue
 		}
-		if err := WriteModelCache(cacheDir, spec.Backend, models); err != nil {
-			slog.Warn("failed to write model cache", "backend", spec.Backend, "error", err)
-		} else {
-			slog.Info("cached discovered models", "backend", spec.Backend, "count", len(models))
-		}
+		result[spec.Backend] = models
+		slog.Info("discovered models", "backend", spec.Backend, "count", len(models))
 	}
+	return result
 }
 
 // AsyncRefreshModelCache runs DiscoverModels in a goroutine for all backends
-// and updates the model cache + in-memory Agent data. Call this after startup
-// is complete — it does not block.
-func AsyncRefreshModelCache(cacheDir string) {
+// and updates in-memory Agent data + DB. Call this after startup — it does not block.
+func AsyncRefreshModelCache(db *sql.DB) {
 	go func() {
 		for _, spec := range BackendRegistry {
 			if !CanDiscoverModels(spec) {
@@ -430,16 +262,19 @@ func AsyncRefreshModelCache(cacheDir string) {
 			if len(models) == 0 {
 				continue
 			}
-			if err := WriteModelCache(cacheDir, spec.Backend, models); err != nil {
-				slog.Warn("failed to refresh model cache", "backend", spec.Backend, "error", err)
-				continue
-			}
-			slog.Info("refreshed model cache", "backend", spec.Backend, "count", len(models))
+			slog.Info("refreshed discovered models", "backend", spec.Backend, "count", len(models))
 
-			// Update in-memory agents whose models were auto-detected (not user-defined)
+			// Update in-memory and DB for agents whose models were auto-detected (not user-defined)
+			modelsJSON, _ := json.Marshal(models)
 			for _, agent := range AgentList {
 				if agent.Backend == spec.Backend && agent.ModelsAutoDetected {
 					agent.Models = models
+					if db != nil {
+						if _, err := db.Exec("UPDATE agents SET models = ? WHERE id = ?",
+							string(modelsJSON), agent.ID); err != nil {
+							slog.Warn("failed to persist refreshed models to DB", "id", agent.ID, "error", err)
+						}
+					}
 				}
 			}
 		}
@@ -447,52 +282,6 @@ func AsyncRefreshModelCache(cacheDir string) {
 }
 
 // --- Model list parsers ---
-
-// MergeDiscoveredData fills models and thinking_effort_levels for loaded agents.
-//   - Models: uses user-defined models if present; otherwise reads from model cache.
-//   - ThinkingEffortLevels: always from BackendRegistry by backend type (YAML values ignored).
-//   - Present map: if provided, agents whose backend is not in present are soft-removed
-//     (removed from AgentList/Agents map, but YAML file is preserved).
-func MergeDiscoveredData(cacheDir string, present ...map[string]bool) {
-	var presentMap map[string]bool
-	if len(present) > 0 {
-		presentMap = present[0]
-	}
-
-	// Soft-remove agents whose CLI is not present
-	if presentMap != nil {
-		var keep []*Agent
-		for _, agent := range AgentList {
-			if !presentMap[agent.Backend] {
-				slog.Info("soft-removing agent (CLI not found)", "id", agent.ID, "backend", agent.Backend)
-				delete(Agents, agent.ID)
-				continue
-			}
-			keep = append(keep, agent)
-		}
-		AgentList = keep
-	}
-
-	// Fill models, thinking effort levels, and CanRefreshModels
-	for _, agent := range AgentList {
-		spec := FindSpecByBackend(agent.Backend)
-
-		// ThinkingEffortLevels: always from Registry (ignore YAML values)
-		if spec != nil {
-			agent.ThinkingEffortLevels = spec.ThinkingEffortLevels
-			agent.CanRefreshModels = CanDiscoverModels(*spec)
-		}
-
-		// Models: user-defined takes priority; otherwise use cache
-		if len(agent.Models) == 0 {
-			cached := ReadModelCache(cacheDir, agent.Backend)
-			if len(cached) > 0 {
-				agent.Models = cached
-				agent.ModelsAutoDetected = true
-			}
-		}
-	}
-}
 
 // codebuddyProductFile is the JSON file in the codebuddy installation that contains
 // the authoritative model list with names, capabilities, and default status.
@@ -1710,7 +1499,7 @@ func saveAgentToDB(db *sql.DB, agent *Agent) error {
 // 2. Fill ThinkingEffortLevels from BackendRegistry and update DB
 // 3. Fill Models from cache for agents with empty models and update DB
 // 4. Reload in-memory state from DB
-func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool) { //nolint:gocognit,gocyclo // multi-step data merge
+func MergeDiscoveredDataDB(db *sql.DB, discoveredModels map[string][]AgentModel, present map[string]bool) { //nolint:gocognit,gocyclo // multi-step data merge
 	// Step 1: Soft-delete auto agents whose CLI is not present
 	if present != nil {
 		// Build list of present backends for SQL
@@ -1782,7 +1571,7 @@ func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool)
 		}
 	}
 
-	// Step 3: Fill Models from cache for agents with empty models
+	// Step 3: Fill Models from discovered results for agents with empty models
 	rows, err = db.Query("SELECT id, backend, COALESCE(models, '[]') FROM agents WHERE (models IS NULL OR models = '[]' OR models = 'null') AND models_auto_detected = 0")
 	if err != nil {
 		slog.Warn("failed to query agents for model fill", "error", err)
@@ -1804,14 +1593,14 @@ func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool)
 	_ = rows.Close()
 
 	for _, ref := range modelRefs {
-		cached := ReadModelCache(cacheDir, ref.Backend)
-		if len(cached) == 0 {
+		cached, ok := discoveredModels[ref.Backend]
+		if !ok || len(cached) == 0 {
 			continue
 		}
 		modelsJSON, _ := json.Marshal(cached)
 		if _, err := db.Exec("UPDATE agents SET models = ?, models_auto_detected = 1 WHERE id = ?",
 			string(modelsJSON), ref.ID); err != nil {
-			slog.Warn("failed to update models from cache", "id", ref.ID, "error", err)
+			slog.Warn("failed to update models from discovery", "id", ref.ID, "error", err)
 		}
 	}
 

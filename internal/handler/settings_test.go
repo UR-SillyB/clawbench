@@ -851,10 +851,8 @@ func TestServeConfig_Patch_InvalidDefaultAgent(t *testing.T) {
 	defer teardown()
 
 	// Set up agents so we can validate
-	agentsDir := filepath.Join(t.TempDir(), "agents")
-	require.NoError(t, os.MkdirAll(agentsDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "test.yaml"), []byte("id: test\nname: Test\nbackend: test\n"), 0o644))
-	require.NoError(t, model.LoadAgents(agentsDir))
+	model.Agents = map[string]*model.Agent{"test": {ID: "test", Name: "Test", Backend: "test"}}
+	model.AgentList = []*model.Agent{{ID: "test", Name: "Test", Backend: "test"}}
 	defer func() { model.Agents = nil; model.AgentList = nil }()
 
 	cfg := model.Config{}

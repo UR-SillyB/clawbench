@@ -287,11 +287,6 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to persist model refresh to DB", "agent", agentID, "error", err)
 	}
 
-	// Update cache file
-	if err := model.WriteModelCache(model.ModelCacheDir, agent.Backend, models); err != nil {
-		slog.Warn("failed to write model cache after refresh", "backend", agent.Backend, "error", err)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models": models,
 	})
