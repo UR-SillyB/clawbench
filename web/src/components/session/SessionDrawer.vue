@@ -28,8 +28,8 @@
             :class="{ active: session.id === currentSessionId, running: session.running }"
             @click="selectSession(session.id, session.backend)"
           >
-            <span v-if="session.unreadCount > 0 || session.pendingApproval" class="session-item-badge">{{ session.pendingApproval ? '!' : '' }}</span>
-            <span v-if="session.running" class="session-running-dot"></span>
+            <span v-if="session.unreadCount > 0 || session.pendingApproval" class="session-item-badge"></span>
+            <span v-if="session.running" class="session-running-line"></span>
             <div class="session-item-info">
               <div class="session-item-header">
                 <span class="session-item-title">{{ session.title }}</span>
@@ -377,19 +377,29 @@ onUnmounted(() => {
   background: var(--accent-color, #0066cc);
 }
 
-.session-running-dot {
+.session-running-line {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  height: 2px;
-  background: #22c55e;
-  animation: pulse-bar 1.5s infinite;
+  height: 1px;
+  overflow: hidden;
 }
 
-@keyframes pulse-bar {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+.session-running-line::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #22c55e, transparent);
+  animation: scan-line 2s ease-in-out infinite;
+}
+
+@keyframes scan-line {
+  0% { left: -40%; }
+  100% { left: 100%; }
 }
 
 .session-item.running {
