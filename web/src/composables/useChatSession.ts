@@ -201,6 +201,7 @@ export function useChatSession(options: UseChatSessionOptions) {
   // final state is always fresh.
   let loadHistoryInProgress = false
   let pendingReload: { forceScrollBottom: boolean; showOverlay: boolean; skipIfUnchanged: boolean } | null = null
+  let loadHistoryDeferred: { promise: Promise<void> } | null = null
 
   // forceScrollBottom: true = always scroll to bottom (switch session, first load)
   //                   false = only scroll if already near bottom (re-open panel, polling)
@@ -209,14 +210,19 @@ export function useChatSession(options: UseChatSessionOptions) {
   // skipIfUnchanged: true = when data matches last snapshot, skip UI refresh entirely
   //                (used by polling to avoid collapsing expandedTools / resetting scroll)
   async function loadHistory(forceScrollBottom = true, showOverlay = false, skipIfUnchanged = false) {
-    // If a load is already in-flight, record the requested params and skip.
-    // The in-flight load will check pendingReload when it completes and
-    // execute one more load if needed.
+    // If a load is already in-flight, record the requested params and return
+    // a promise that resolves when all queued loads complete. This coalesces
+    // rapid calls while ensuring callers can await + .finally() and that the
+    // final state is always fresh.
     if (loadHistoryInProgress) {
       pendingReload = { forceScrollBottom, showOverlay, skipIfUnchanged }
-      return
+      // Return the in-flight load's promise so callers can await/finally it.
+      // The pendingReload will be executed after the in-flight load completes.
+      return loadHistoryDeferred!.promise
     }
     loadHistoryInProgress = true
+    let resolveDeferred: () => void
+    loadHistoryDeferred = { promise: new Promise<void>((r) => { resolveDeferred = r }) }
 
     const mySeq = ++loadHistorySeq
     if (showOverlay) switching.value = true
@@ -368,7 +374,12 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (pendingReload) {
         const next = pendingReload
         pendingReload = null
+        // Execute pending load — its completion will resolve the deferred
         setTimeout(() => loadHistory(next.forceScrollBottom, next.showOverlay, next.skipIfUnchanged), 0)
+      } else {
+        // No pending load — resolve the deferred so all awaiting callers proceed
+        resolveDeferred!()
+        loadHistoryDeferred = null
       }
     } catch (err) {
       console.error('Failed to load chat history:', err)
@@ -380,6 +391,18 @@ export function useChatSession(options: UseChatSessionOptions) {
         const next = pendingReload
         pendingReload = null
         setTimeout(() => loadHistory(next.forceScrollBottom, next.showOverlay, next.skipIfUnchanged), 0)
+      } else {
+        resolveDeferred!()
+        loadHistoryDeferred = null
+      }
+    } finally {
+      // Safety net: always reset in-flight state and resolve deferred on any
+      // exit path (early returns via loadHistorySeq guard, etc.) so callers
+      // aren't stuck awaiting and future loadHistory calls aren't blocked.
+      loadHistoryInProgress = false
+      if (loadHistoryDeferred) {
+        resolveDeferred!()
+        loadHistoryDeferred = null
       }
     }
   }
