@@ -125,6 +125,7 @@ export default {
     },
     modeSwitcher: {
       title: 'Mode',
+      cliHint: 'CLI mode does not support switching. Switch to ACP mode first.',
     },
     transportSwitcher: {
       title: 'API',

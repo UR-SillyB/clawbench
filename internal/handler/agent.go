@@ -56,33 +56,40 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	states := make(map[string]*acpState, len(agents))
 	reg := ai.GetAgentCapabilityRegistry()
 	for _, a := range agents {
-		if a.Transport != transportACP {
-			continue
-		}
+		if a.Transport == transportACP {
+			// ACP agents: populate from AgentCapabilityRegistry
+			cap := reg.Get(a.ID)
+			if cap == nil || !cap.HasData() {
+				continue
+			}
 
-		cap := reg.Get(a.ID)
-		if cap == nil || !cap.HasData() {
-			continue
-		}
+			var ms *ai.ModeState
+			var es *ai.ThinkingEffortState
+			var cmds []ai.AvailableCommandInfo
+			var ml *ai.ModelListState
 
-		var ms *ai.ModeState
-		var es *ai.ThinkingEffortState
-		var cmds []ai.AvailableCommandInfo
-		var ml *ai.ModelListState
+			ms = reg.GetModeState(a.ID, "")
+			es = reg.GetThinkingEffortState(a.ID, "")
+			cmds = reg.GetCommands(a.ID)
+			ml = reg.GetModelListState(a.ID, "")
 
-		ms = reg.GetModeState(a.ID, "")
-		es = reg.GetThinkingEffortState(a.ID, "")
-		cmds = reg.GetCommands(a.ID)
-		ml = reg.GetModelListState(a.ID, "")
+			// When ACP provides a model list, override the agent's Models
+			// so the frontend SessionSettingModal shows ACP models instead of CLI-discovered ones.
+			if ml != nil && len(ml.Models) > 0 {
+				a.Models = ml.Models
+			}
 
-		// When ACP provides a model list, override the agent's Models
-		// so the frontend SessionSettingModal shows ACP models instead of CLI-discovered ones.
-		if ml != nil && len(ml.Models) > 0 {
-			a.Models = ml.Models
-		}
-
-		if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
-			states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
+			if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
+				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
+			}
+		} else if a.Backend != "" {
+			// CLI agents: synthesize a read-only mode from the backend name
+			states[a.ID] = &acpState{
+				Mode: &ai.ModeState{
+					CurrentModeID:  a.Backend,
+					AvailableModes: []ai.ModeDef{{ID: a.Backend, Name: a.Backend}},
+				},
+			}
 		}
 	}
 

@@ -188,8 +188,8 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// without waiting for SSE events (which may have already been consumed).
 		// Fallback: for brand-new sessions with no pool session mapping yet,
 		// look up from AgentCapabilityRegistry so mode chips appear on first load.
-		// Only populate ACP state when the session is actually using ACP transport;
-		// CLI sessions should never show mode/thinking/plan chips.
+		// For CLI sessions, synthesize a read-only mode from the backend name
+		// so the mode chip is visible but non-switchable.
 		var modeState, thinkingEffortState, modelListState, planState any
 		var commands []ai.AvailableCommandInfo
 		if sessionID != "" && sessionTransport != "cli" {
@@ -218,6 +218,15 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 					if ml := reg.GetModelListState(sessionAgentID, ""); ml != nil {
 						modelListState = ml
 					}
+				}
+			}
+		} else if sessionTransport == "cli" && sessionAgentID != "" {
+			// CLI sessions: synthesize a read-only mode from the backend name.
+			// The frontend shows the mode chip but disables switching.
+			if agent, ok := model.Agents[sessionAgentID]; ok && agent.Backend != "" {
+				modeState = &ai.ModeState{
+					CurrentModeID:  agent.Backend,
+					AvailableModes: []ai.ModeDef{{ID: agent.Backend, Name: agent.Backend}},
 				}
 			}
 		}

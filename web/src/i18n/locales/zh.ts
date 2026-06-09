@@ -125,6 +125,7 @@ export default {
     },
     modeSwitcher: {
       title: '模式',
+      cliHint: 'CLI 模式不支持切换，如需切换请先改为 ACP 模式',
     },
     transportSwitcher: {
       title: 'API',

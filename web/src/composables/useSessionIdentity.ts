@@ -356,18 +356,16 @@ export async function initSessionFromAPI() {
         if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
           availableCommands.value = data.commands
         }
-        // Initialize mode: from ACP state currentModeId
-        // Only populate mode state for ACP sessions — CLI backends don't support modes
-        if (currentTransport.value !== 'cli' && data.modeState?.currentModeId) {
+        // Initialize mode: from modeState currentModeId
+        if (data.modeState?.currentModeId) {
           currentModeId.value = data.modeState.currentModeId
         }
         // Populate mode state from chat response — update available modes.
-        // Only for ACP sessions — CLI backends don't support modes
-        if (currentTransport.value !== 'cli' && data.modeState && data.modeState.availableModes?.length > 0) {
+        if (data.modeState && data.modeState.availableModes?.length > 0) {
           updateAvailableModes(data.modeState.availableModes)
           // Set mode name from available modes now that the list is populated
           if (currentModeId.value) {
-            const mode = data.modeState.availableModes.find(m => m.id === currentModeId.value)
+            const mode = data.modeState.availableModes.find((m: any) => m.id === currentModeId.value)
             currentModeName.value = mode?.name || currentModeId.value
           }
         }
@@ -605,5 +603,7 @@ export function useSessionIdentity() {
     loadModelPref,
     loadThinkingPref,
     toggleAutoApprove,
+    // Mode state helpers
+    updateModeState,
   }
 }
