@@ -219,7 +219,7 @@ import { useAgents } from '@/composables/useAgents'
 
 const { t } = useI18n()
 const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport } = useSessionIdentity()
-const { supportsDualTransport } = useAgents()
+const { supportsDualTransport, hasThinkingEffortLevels } = useAgents()
 
 const isACP = computed(() => {
   if (sessionTransport.value) return sessionTransport.value === 'acp-stdio'
@@ -227,7 +227,7 @@ const isACP = computed(() => {
 })
 
 const showModeInfo = computed(() => availableModes.value.length > 0)
-const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0)
+const showThinkingInfo = computed(() => availableThinkingEfforts.value.length > 0 || hasThinkingEffortLevels(props.currentAgentId || ''))
 const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
 const dialog = useDialog()
 const quickSendStore = useQuickSend()

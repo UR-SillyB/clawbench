@@ -188,9 +188,11 @@ vi.mock('@/composables/useAgents', () => ({
     syncModelFromAgent: mockAgentFns.syncModelFromAgent,
     getAgentModel: mockAgentFns.getAgentModel,
     agentHeaderTitle: mockAgentFns.agentHeaderTitle,
+    getAgentThinkingEffortLevels: vi.fn().mockReturnValue([]),
   }),
   restoreOriginalModels: vi.fn(),
   populateACPStateFromCache: vi.fn().mockResolvedValue(undefined),
+  getAgentThinkingEffortLevels: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('@/stores/app', () => ({

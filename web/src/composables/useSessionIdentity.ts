@@ -373,6 +373,18 @@ export async function initSessionFromAPI() {
         // currentThinkingEffort was already set above from ACP state.
         if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
           updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
+        } else if (data.agentId) {
+          // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+          const agentLevels = agentsApi.getAgentThinkingEffortLevels(data.agentId)
+          if (agentLevels.length > 0) {
+            const levels = agentLevels.map((id: string) => ({ id, name: id }))
+            updateAvailableThinkingEfforts(levels)
+            // Resolve name if currentThinkingEffort was set from localStorage pref
+            if (currentThinkingEffort.value && !currentThinkingEffortName.value) {
+              const level = levels.find(l => l.id === currentThinkingEffort.value)
+              currentThinkingEffortName.value = level?.name || currentThinkingEffort.value
+            }
+          }
         }
       }
     }

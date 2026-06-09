@@ -63,6 +63,12 @@ async function loadAgents(force = false): Promise<void> {
                     }
                     if (activeState.thinkingEffortState?.availableLevels?.length > 0) {
                         updateAvailableThinkingEfforts(activeState.thinkingEffortState.availableLevels)
+                    } else {
+                        // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+                        const agentLevels = getAgentThinkingEffortLevels(activeAgentId)
+                        if (agentLevels.length > 0) {
+                            updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+                        }
                     }
                     if (Array.isArray(activeState.commands) && activeState.commands.length > 0) {
                         updateCommandState(activeState.commands)
@@ -252,6 +258,12 @@ export function onACPStateUpdate(data: { agentId: string; modeState?: any; think
         }
         if (data.thinkingEffortState?.availableLevels?.length > 0) {
             updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
+        } else {
+            // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+            const agentLevels = getAgentThinkingEffortLevels(data.agentId)
+            if (agentLevels.length > 0) {
+                updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+            }
         }
         if (Array.isArray(data.commands) && data.commands.length > 0) {
             updateCommandState(data.commands)
@@ -291,6 +303,12 @@ export async function populateACPStateFromCache(agentId: string): Promise<void> 
     }
     if (state.thinkingEffortState?.availableLevels?.length > 0) {
         updateAvailableThinkingEfforts(state.thinkingEffortState.availableLevels)
+    } else {
+        // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+        const agentLevels = getAgentThinkingEffortLevels(agentId)
+        if (agentLevels.length > 0) {
+            updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+        }
     }
     if (Array.isArray(state.commands) && state.commands.length > 0) {
         updateCommandState(state.commands)

@@ -5,7 +5,7 @@ import { useNotification } from '@/composables/useNotification.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
 import { clearModeState, updateAvailableModes, clearCommandState, updateCommandState, updateAvailableThinkingEfforts, clearThinkingEffortState, currentAgentId as _currentAgentId } from '@/composables/useSessionIdentity.ts'
 import { clearPlanState, updatePlanEntries } from '@/composables/usePlanProgress'
-import { useAgents, restoreOriginalModels, populateACPStateFromCache } from '@/composables/useAgents'
+import { useAgents, restoreOriginalModels, populateACPStateFromCache, getAgentThinkingEffortLevels } from '@/composables/useAgents'
 import { store } from '@/stores/app.ts'
 import { buildMessageSnapshot, parseMessages } from '@/utils/chatSessionUtils.ts'
 import { warmWorktreeCache } from '@/composables/useWorktreeAnnotation.ts'
@@ -312,6 +312,18 @@ export function useChatSession(options: UseChatSessionOptions) {
       // Update available thinking effort levels from ACP state
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
         updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
+      } else if (data.agentId) {
+        // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+        const agentLevels = getAgentThinkingEffortLevels(data.agentId)
+        if (agentLevels.length > 0) {
+          updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+        }
+      } else if (data.agentId) {
+        // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+        const agentLevels = getAgentThinkingEffortLevels(data.agentId)
+        if (agentLevels.length > 0) {
+          updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+        }
       }
       // Populate slash commands from REST response (cached ACP state)
       if (Array.isArray(data.commands) && data.commands.length > 0 && availableCommands.value.length === 0) {
