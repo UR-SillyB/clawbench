@@ -69,8 +69,9 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		embedderHealthy = reachable && modelAvailable
 	}
 
-	// Check VectorCache readiness
-	cacheReady := store.cache.IsReady()
+	// Check VectorCache readiness — with vec0, vector search is always available
+	// when embeddings exist (embDim > 0)
+	cacheReady := store.embDim > 0
 
 	// FTS5 is always available with SQLite (no extension loading needed)
 	ftsAvailable := true

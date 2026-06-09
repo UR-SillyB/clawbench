@@ -2,7 +2,6 @@ package rag
 
 import (
 	"database/sql"
-	"encoding/binary"
 	"math"
 	"testing"
 
@@ -80,11 +79,22 @@ func TestSqliteVec_InsertAndQuery(t *testing.T) {
 	require.Equal(t, []int64{1, 3, 2}, results, "cosine KNN should return nearest vectors first")
 }
 
-// serializeFloat32 converts []float32 to little-endian byte slice for vec0 BLOB storage.
-func serializeFloat32(vec []float32) []byte {
-	buf := make([]byte, len(vec)*4)
-	for i, v := range vec {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+func TestSerializeFloat32_Roundtrip(t *testing.T) {
+	original := []float32{0.1, -0.2, 0.3, 1.5, -99.9}
+	blob := serializeFloat32(original)
+	result := deserializeFloat32(blob, len(original))
+	for i := range original {
+		if math.Abs(float64(original[i]-result[i])) > 1e-6 {
+			t.Errorf("index %d: expected %v, got %v", i, original[i], result[i])
+		}
 	}
-	return buf
+}
+
+func TestFloat64ToFloat32(t *testing.T) {
+	input := []float64{0.1, -0.2, 0.3, 1.5}
+	output := float64ToFloat32(input)
+	require.Len(t, output, len(input))
+	for i := range input {
+		require.InDelta(t, float64(output[i]), input[i], 1e-6)
+	}
 }

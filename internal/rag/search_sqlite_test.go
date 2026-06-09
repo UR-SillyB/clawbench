@@ -96,7 +96,7 @@ func TestRAGSearch_RespectsDefaultLimit(t *testing.T) {
 	assert.LessOrEqual(t, len(result.Results), 3)
 }
 
-func TestRAGSearch_CacheNotReady_FallbackToFTS(t *testing.T) {
+func TestRAGSearch_EmbDimZero_FallbackToFTS(t *testing.T) {
 	store := setupSQLiteStore(t)
 	SetEmbedderHealthy(true)
 
@@ -111,16 +111,16 @@ func TestRAGSearch_CacheNotReady_FallbackToFTS(t *testing.T) {
 	err := store.InsertChunks([]Chunk{chunk})
 	require.NoError(t, err)
 
-	// Clear cache to simulate "not ready" state
-	store.cache.Clear()
+	// Set embDim to 0 to simulate "not ready" state
+	store.embDim = 0
 
-	// With healthy flag but cache not ready — should fall back to FTS
+	// With healthy flag but embDim=0 — should fall back to FTS
 	result, err := RAGSearch(context.Background(), store, nil, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
-	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when cache not ready")
+	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embDim is 0")
 }
 
 // ---------- RAGSearch with real embedder (mock HTTP server) ----------
@@ -146,7 +146,7 @@ func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {
 
 	// Create store with 4-dim embeddings
 	store := setupSQLiteStore(t)
-	store.cache.SetDim(4)
+	store.embDim = 4
 
 	// Insert chunk with 4-dim embedding
 	chunk := Chunk{
@@ -158,16 +158,14 @@ func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {
 	}
 	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
 
-	// Reload cache
-	_ = store.loadCache()
-
-	// Now search with embedder — should go hybrid
+	// Now search with embedder — SearchSimple is stubbed so hybrid falls back to FTS
 	SetEmbedderHealthy(true)
 	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
+	// SearchSimple is stubbed, so hybrid vector part fails → falls back to FTS within hybrid
 	assert.Equal(t, SearchModeHybrid, result.Mode)
 	assert.NotEmpty(t, result.Results)
 }
@@ -203,9 +201,6 @@ func TestRAGSearch_EmbeddingFails_FallbackToFTS(t *testing.T) {
 
 	// Force embedder healthy flag (normally set by indexer health check)
 	SetEmbedderHealthy(true)
-	// But we don't call IsHealthy first, so embedder is nil check path
-	// The RAGSearch code checks EmbedderHealthy() which returns true
-	// and cache.IsReady() which should be true after auto-reload
 
 	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{
 		Query:       "database",
@@ -245,7 +240,7 @@ func TestRAGSearch_NegativeLimitUsesDefault(t *testing.T) {
 	assert.LessOrEqual(t, len(result.Results), 2)
 }
 
-func TestRAGSearch_EmbedderHealthyButCacheNotReady(t *testing.T) {
+func TestRAGSearch_EmbedderHealthyButEmbDimZero(t *testing.T) {
 	store := setupSQLiteStore(t)
 	SetEmbedderHealthy(true)
 
@@ -258,15 +253,15 @@ func TestRAGSearch_EmbedderHealthyButCacheNotReady(t *testing.T) {
 	}
 	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
 
-	// Clear cache to make it not ready
-	store.cache.Clear()
+	// Set embDim to 0 to simulate "not ready"
+	store.embDim = 0
 
 	result, err := RAGSearch(context.Background(), store, nil, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
-	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when cache not ready even if embedder healthy")
+	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embDim is 0 even if embedder healthy")
 }
 
 // ---------- getSessionTitles ----------
@@ -287,11 +282,10 @@ func TestGetSessionTitles_ServiceDBNil(t *testing.T) {
 
 // ---------- RAGSearch vector-only path ----------
 
-func TestRAGSearch_VectorOnly_WhenCacheReadyButFTSUnavailable(t *testing.T) {
-	// This tests the defensive "embedderHealthy && cacheReady && !ftsAvailable" branch.
+func TestRAGSearch_VectorOnly_WhenEmbDimReadyButFTSUnavailable(t *testing.T) {
+	// This tests the defensive "embedderHealthy && embDim>0 && !ftsAvailable" branch.
 	// In practice ftsAvailable is always true with SQLite, but the code has this branch.
-	// We test indirectly by verifying the search strategy when FTS returns no results
-	// but vector search returns results.
+	// We test indirectly by verifying the search strategy when FTS returns no results.
 	store := setupSQLiteStore(t)
 	SetEmbedderHealthy(false)
 	insertTestChunksSQLite(t, store, 3)

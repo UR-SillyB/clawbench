@@ -2,6 +2,7 @@ package rag
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
@@ -49,10 +50,10 @@ type PendingChunk struct {
 	ChunkText string
 }
 
-// Store manages the SQLite connection, FTS5 index, and vector cache.
+// Store manages the SQLite connection and FTS5 index.
 type Store struct {
-	db    *sql.DB
-	cache *VectorCache
+	db     *sql.DB
+	embDim int
 }
 
 // NewSQLiteStore creates a new SQLite-backed RAG store.
@@ -87,8 +88,7 @@ func NewSQLiteStore(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{
-		db:    db,
-		cache: NewVectorCache(0),
+		db: db,
 	}
 
 	if err := s.initSchema(); err != nil {
@@ -98,11 +98,6 @@ func NewSQLiteStore(dbPath string) (*Store, error) {
 
 	// Load embedding dimension from existing data
 	s.loadEmbeddingDimFromDB()
-
-	// Load vector cache (synchronously for simplicity; in production this would be async)
-	if err := s.loadCache(); err != nil {
-		slog.Warn("rag: initial vector cache load failed", slog.String("err", err.Error()))
-	}
 
 	return s, nil
 }
@@ -136,7 +131,7 @@ func (s *Store) initSchema() error {
 		return fmt.Errorf("create rag_chunks table: %w", err)
 	}
 
-	// Create partial index for VectorCache loading
+	// Create partial index for embedding queries
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_rag_chunks_has_embedding ON rag_chunks(id) WHERE has_embedding = 1`)
 
 	// Create FTS5 virtual table with external content mode
@@ -162,56 +157,9 @@ func (s *Store) loadEmbeddingDimFromDB() {
 		SELECT embedding_dim FROM rag_chunks WHERE has_embedding = 1 AND embedding_dim > 0 LIMIT 1
 	`).Scan(&dim)
 	if err == nil && dim > 0 {
-		s.cache.SetDim(dim)
+		s.embDim = dim
 		slog.Info("rag: loaded embedding dimension from existing data", slog.Int("dim", dim))
 	}
-}
-
-// asyncLoadCache starts a background goroutine to load all vectors into memory.
-func (s *Store) asyncLoadCache() {
-	go func() {
-		if err := s.loadCache(); err != nil {
-			slog.Warn("rag: failed to load vector cache", slog.String("err", err.Error()))
-		}
-	}()
-}
-
-// loadCache reads all embedded vectors from the database into VectorCache.
-func (s *Store) loadCache() error {
-	rows, err := s.db.Query(`
-		SELECT id, session_id, project_path, backend, role, embedding, embedding_dim
-		FROM rag_chunks
-		WHERE has_embedding = 1 AND embedding IS NOT NULL
-	`)
-	if err != nil {
-		return fmt.Errorf("query vectors: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var vectors []CachedVector
-	for rows.Next() {
-		var cv CachedVector
-		var blob []byte
-		var dim int
-		if err := rows.Scan(&cv.ChunkID, &cv.SessionID, &cv.ProjectPath, &cv.Backend, &cv.Role, &blob, &dim); err != nil {
-			return fmt.Errorf("scan vector: %w", err)
-		}
-		if dim <= 0 || len(blob) != dim*8 {
-			continue // skip malformed entries
-		}
-		cv.Vector = deserializeEmbedding(blob, dim)
-		vectors = append(vectors, cv)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	if len(vectors) > 0 {
-		s.cache.SetDim(len(vectors[0].Vector))
-	}
-	s.cache.SetVectors(vectors)
-	slog.Info("rag: loaded vector cache", slog.Int("vectors", len(vectors)))
-	return nil
 }
 
 // InsertChunks inserts multiple chunks into SQLite with FTS5 sync.
@@ -271,106 +219,13 @@ func (s *Store) InsertChunks(chunks []Chunk) error {
 		return fmt.Errorf("commit insert transaction: %w", err)
 	}
 
-	s.cache.MarkDirty()
 	return nil
 }
 
-// SearchSimple performs vector similarity search using in-memory VectorCache.
-//
-//nolint:gocyclo // time filter branch logic is inherently multi-conditional
+// SearchSimple performs vector similarity search.
+// TODO: Will be replaced by SearchVector using vec0 in Task 3.
 func (s *Store) SearchSimple(queryEmbedding []float64, limit int, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime string) ([]SearchHit, error) {
-	// Validate query embedding
-	if err := validateEmbedding(queryEmbedding); err != nil {
-		return nil, fmt.Errorf("query embedding validation: %w", err)
-	}
-
-	// Reload cache if dirty (new embeddings were added)
-	if s.cache.IsDirty() {
-		if err := s.loadCache(); err != nil {
-			slog.Warn("rag: failed to reload dirty cache", slog.String("err", err.Error()))
-		}
-	}
-
-	// Use VectorCache for in-memory search
-	cacheHits := s.cache.Search(queryEmbedding, limit*2, projectPath, backend, role, sessionID, excludeSessionID)
-	if len(cacheHits) == 0 {
-		return nil, nil
-	}
-
-	// Apply time filters by fetching from DB
-	if fromTime == "" && toTime == "" {
-		// No time filters — return cache results directly
-		if limit > len(cacheHits) {
-			limit = len(cacheHits)
-		}
-		return cacheHits[:limit], nil
-	}
-
-	// Time filters need DB lookup — fetch chunk metadata for candidates
-	chunkIDs := make([]int64, len(cacheHits))
-	for i, h := range cacheHits {
-		chunkIDs[i] = h.ChunkID
-	}
-
-	// Build query with time filters
-	placeholders := make([]string, len(chunkIDs))
-	args := make([]any, 0, len(chunkIDs)+2)
-	for i, id := range chunkIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-
-	query := fmt.Sprintf(`
-		SELECT id, chunk_text, session_id, message_id, role, project_path, backend, created_at
-		FROM rag_chunks
-		WHERE id IN (%s)`, strings.Join(placeholders, ","))
-
-	if fromTime != "" {
-		query += " AND created_at >= ?"
-		args = append(args, fromTime)
-	}
-	if toTime != "" {
-		query += " AND created_at <= ?"
-		args = append(args, toTime)
-	}
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search time filter query: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	// Build a map of chunk_id -> SearchHit from cache results
-	hitMap := make(map[int64]SearchHit, len(cacheHits))
-	for _, h := range cacheHits {
-		hitMap[h.ChunkID] = h
-	}
-
-	var hits []SearchHit
-	for rows.Next() {
-		var id int64
-		var h SearchHit
-		if err := rows.Scan(&id, &h.ChunkText, &h.SessionID, &h.MessageID, &h.Role, &h.ProjectPath, &h.Backend, &h.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan time-filtered hit: %w", err)
-		}
-		if cacheHit, ok := hitMap[id]; ok {
-			h.Score = cacheHit.Score
-			hits = append(hits, h)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Re-sort by score (time filter may have removed some)
-	sort.Slice(hits, func(i, j int) bool {
-		return hits[i].Score > hits[j].Score
-	})
-
-	if limit > len(hits) {
-		limit = len(hits)
-	}
-	return hits[:limit], nil
+	return nil, fmt.Errorf("SearchSimple: not implemented, use SearchVector")
 }
 
 // SearchFTS performs BM25 full-text search using SQLite FTS5.
@@ -563,12 +418,11 @@ func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 		return fmt.Errorf("update embedding: %w", err)
 	}
 
-	s.cache.MarkDirty()
 	return nil
 }
 
 // CheckDimensionMismatch checks if existing embeddings have a different dimension
-// than the cache's configured dimension. Returns the existing dimension (0 if no data)
+// than the store's configured dimension. Returns the existing dimension (0 if no data)
 // and whether there is a mismatch.
 func (s *Store) CheckDimensionMismatch() (int, bool, error) {
 	var dim int
@@ -584,15 +438,15 @@ func (s *Store) CheckDimensionMismatch() (int, bool, error) {
 	if dim == 0 {
 		return 0, false, nil
 	}
-	return dim, dim != s.cache.Dim(), nil
+	return dim, dim != s.embDim, nil
 }
 
 // SetEmbeddingDim sets the embedding dimension. Returns true if it changed.
 func (s *Store) SetEmbeddingDim(dim int) bool {
-	if dim == s.cache.Dim() {
+	if dim == s.embDim {
 		return false
 	}
-	s.cache.SetDim(dim)
+	s.embDim = dim
 	return true
 }
 
@@ -620,8 +474,7 @@ func (s *Store) ResetForDimensionMismatch(newDim int) error {
 		return fmt.Errorf("commit reset: %w", err)
 	}
 
-	s.cache.SetDim(newDim)
-	s.cache.Clear()
+	s.embDim = newDim
 	return nil
 }
 
@@ -673,7 +526,6 @@ func (s *Store) DeleteChunksBySessionIDs(sessionIDs []string) (int64, error) {
 		return 0, fmt.Errorf("commit delete: %w", err)
 	}
 
-	s.cache.MarkDirty()
 	return affected, nil
 }
 
@@ -709,14 +561,65 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// Ensure Store still satisfies the same interface — context-based query methods
-// needed by search.go and indexer.go are on the same *Store type.
-
-// ReloadCacheIfNeeded checks if the cache is dirty and reloads incrementally.
-func (s *Store) ReloadCacheIfNeeded() error {
-	if !s.cache.IsDirty() {
-		return nil
+// serializeFloat32 converts []float32 to a little-endian byte slice for vec0 BLOB storage.
+func serializeFloat32(vec []float32) []byte {
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
 	}
-	slog.Info("rag: reloading vector cache (dirty)")
-	return s.loadCache()
+	return buf
+}
+
+// deserializeFloat32 converts a little-endian byte slice back to []float32.
+func deserializeFloat32(buf []byte, dim int) []float32 {
+	vec := make([]float32, dim)
+	for i := 0; i < dim && i*4+4 <= len(buf); i++ {
+		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+	}
+	return vec
+}
+
+// float64ToFloat32 converts []float64 to []float32 with minimal precision loss.
+func float64ToFloat32(vec []float64) []float32 {
+	result := make([]float32, len(vec))
+	for i, v := range vec {
+		result[i] = float32(v)
+	}
+	return result
+}
+
+// serializeEmbedding converts a []float64 to a byte slice for BLOB storage.
+// Each float64 is stored as 8 bytes using math.Float64bits.
+func serializeEmbedding(vec []float64) []byte {
+	buf := make([]byte, len(vec)*8)
+	for i, v := range vec {
+		bits := math.Float64bits(v)
+		buf[i*8+0] = byte(bits >> 56)
+		buf[i*8+1] = byte(bits >> 48) //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+2] = byte(bits >> 40) //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+3] = byte(bits >> 32) //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+4] = byte(bits >> 24) //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+5] = byte(bits >> 16) //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+6] = byte(bits >> 8)  //nolint:gosec // G115: intentional bit extraction
+		buf[i*8+7] = byte(bits)       //nolint:gosec // G115: intentional bit extraction
+	}
+	return buf
+}
+
+// deserializeEmbedding converts a BLOB byte slice back to []float64.
+// dim specifies the expected number of float64 values.
+func deserializeEmbedding(buf []byte, dim int) []float64 {
+	vec := make([]float64, 0, dim)
+	for i := 0; i+8 <= len(buf) && len(vec) < dim; i += 8 {
+		bits := uint64(buf[i+0])<<56 |
+			uint64(buf[i+1])<<48 |
+			uint64(buf[i+2])<<40 |
+			uint64(buf[i+3])<<32 |
+			uint64(buf[i+4])<<24 |
+			uint64(buf[i+5])<<16 |
+			uint64(buf[i+6])<<8 |
+			uint64(buf[i+7])
+		vec = append(vec, math.Float64frombits(bits))
+	}
+	return vec
 }
