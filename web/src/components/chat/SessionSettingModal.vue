@@ -97,7 +97,8 @@
     <!-- Transport tab -->
     <div v-if="activeTab === 'transport'" class="model-tab-content">
       <div class="model-list">
-        <div class="model-item-wrapper">
+        <!-- Only show ACP option for agents that support dual transport -->
+        <div v-if="supportsDualTransport(props.agentId || '')" class="model-item-wrapper">
           <button
             class="thinking-item"
             :class="{ current: isACP, 'is-default': defaultTransport === 'acp-stdio' }"

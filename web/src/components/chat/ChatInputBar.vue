@@ -228,7 +228,7 @@ const isACP = computed(() => {
 
 const showModeInfo = computed(() => availableModes.value.length > 0 && isACP.value)
 const showThinkingInfo = computed(() => isACP.value && (availableThinkingEfforts.value.length > 0 || hasThinkingEffortLevels(props.currentAgentId || '')))
-const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || ''))
+const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || '') || !isACP.value)
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
