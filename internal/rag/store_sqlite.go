@@ -166,6 +166,12 @@ func (s *Store) initSchema() error {
 		return fmt.Errorf("create rag_vec: %w", err)
 	}
 
+	// Migrate existing float64 BLOB embeddings from rag_chunks to rag_vec
+	if err := s.migrateEmbeddingsToVec(); err != nil {
+		slog.Warn("rag: embedding migration to vec0 failed", slog.String("err", err.Error()))
+		// Non-fatal: new inserts will populate rag_vec going forward
+	}
+
 	return nil
 }
 
@@ -179,6 +185,66 @@ func (s *Store) loadEmbeddingDimFromDB() {
 		s.embDim = dim
 		slog.Info("rag: loaded embedding dimension from existing data", slog.Int("dim", dim))
 	}
+}
+
+// migrateEmbeddingsToVec migrates existing float64 BLOB embeddings from rag_chunks
+// into the rag_vec vec0 virtual table. This handles upgrades from the pre-vec0 schema
+// where embeddings were stored as float64 BLOBs in the rag_chunks.embedding column.
+// The migration is idempotent: rows already present in rag_vec are skipped.
+func (s *Store) migrateEmbeddingsToVec() error {
+	// Check if rag_chunks has embedding column (it should, but be defensive)
+	var hasEmbCol int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('rag_chunks') WHERE name = 'embedding'").Scan(&hasEmbCol)
+	if err != nil || hasEmbCol == 0 {
+		return nil // no embedding column — nothing to migrate
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, embedding, project_path, backend, role, session_id
+		FROM rag_chunks
+		WHERE has_embedding = 1 AND embedding IS NOT NULL
+		AND id NOT IN (SELECT rowid FROM rag_vec)
+	`)
+	if err != nil {
+		return fmt.Errorf("query embeddings for migration: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var migrated int
+	for rows.Next() {
+		var id int64
+		var blob []byte
+		var projectPath, backend, role, sessionID string
+		if err := rows.Scan(&id, &blob, &projectPath, &backend, &role, &sessionID); err != nil {
+			continue
+		}
+		// Convert float64 BLOB → float32 BLOB for vec0
+		dim := len(blob) / 8
+		if dim == 0 {
+			continue
+		}
+		vec64 := deserializeEmbedding(blob, dim)
+		vec32 := float64ToFloat32(vec64)
+		vecBlob := serializeFloat32(vec32)
+		_, err := s.db.Exec(
+			`INSERT OR IGNORE INTO rag_vec(rowid, embedding, project_path, backend, role, session_id)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			id, vecBlob, projectPath, backend, role, sessionID,
+		)
+		if err != nil {
+			slog.Warn("rag: failed to migrate embedding to vec0",
+				slog.Int64("chunk_id", id), slog.String("err", err.Error()))
+			continue
+		}
+		migrated++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate embeddings for migration: %w", err)
+	}
+	if migrated > 0 {
+		slog.Info("rag: migrated embeddings to vec0", slog.Int("count", migrated))
+	}
+	return nil
 }
 
 // InsertChunks inserts multiple chunks into SQLite with FTS5 sync.
@@ -334,12 +400,6 @@ func (s *Store) HasVecData() bool {
 		return false
 	}
 	return count > 0
-}
-
-// SearchSimple is a deprecated stub that always returns an error.
-// Use SearchVector instead for vector similarity search.
-func (s *Store) SearchSimple(queryEmbedding []float64, limit int, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime string) ([]SearchHit, error) {
-	return nil, fmt.Errorf("SearchSimple: not implemented, use SearchVector")
 }
 
 // SearchFTS performs BM25 full-text search using SQLite FTS5.

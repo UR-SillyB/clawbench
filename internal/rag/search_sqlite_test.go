@@ -125,6 +125,60 @@ func TestRAGSearch_EmbDimZero_FallbackToFTS(t *testing.T) {
 	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embDim is 0")
 }
 
+func TestRAGSearch_HasVecDataFalse_FTSFallback(t *testing.T) {
+	// When HasVecData() returns false (no vectors in vec0 table), search should
+	// fall back to FTS-only even if the embedder is healthy and embDim > 0.
+	// This can happen when embDim is set but all embeddings have been deleted,
+	// or when embDim is configured but no chunks have been embedded yet.
+	store := setupSQLiteStore(t)
+
+	// Insert a chunk WITHOUT embedding (HasEmbedding=false), so HasVecData() returns false
+	chunk := Chunk{
+		SessionID: "sess-1", MessageID: 1, ChunkText: "database search test",
+		ChunkTextSegmented: "database search test", ChunkIndex: 0,
+		TokenCount: 3, Embedding: nil, HasEmbedding: false,
+		ProjectPath: testProjectPath, Backend: testBackendClaude, Role: testRoleAssistant,
+		CreatedAt: time.Now().Truncate(time.Millisecond),
+	}
+	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
+
+	// Force embDim > 0 so the old check (embDim > 0) would pass,
+	// but HasVecData() returns false because no chunks have embeddings
+	store.embDim = 1024
+
+	require.False(t, store.HasVecData(), "no chunks with embeddings → HasVecData should be false")
+
+	// Create a mock embedding server
+	mockEmb := makeTestEmbedding()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/embeddings" {
+			embJSON, _ := json.Marshal(mockEmb)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"embedding":%s,"index":0}]}`, embJSON)))
+			return
+		}
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"test-model"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	embedder := NewEmbeddingClient(server.URL, "test-model", "")
+	SetEmbedderHealthy(true)
+
+	// With healthy embedder but no vec data — should use FTS-only
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{
+		Query:       "database",
+		ProjectPath: testProjectPath,
+	}, 5, 20)
+	require.NoError(t, err)
+	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when HasVecData() is false even with healthy embedder")
+	assert.NotEmpty(t, result.Results)
+}
+
 // ---------- RAGSearch with real embedder (mock HTTP server) ----------
 
 func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {

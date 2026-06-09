@@ -38,9 +38,8 @@ type SearchResult struct {
 }
 
 // RAGSearch performs a search using the best available strategy:
-//   - Hybrid (vector + FTS with RRF) when embedding API is available and VectorCache is ready
-//   - Vector-only when embedding API is available but cache is not ready
-//   - FTS-only when embedding API is unavailable
+//   - Hybrid (vector + FTS with RRF) when embedding API is available and vec0 has data
+//   - FTS-only when embedding API is unavailable or vec0 has no data
 //
 // FTS5 is always available in SQLite (built-in), unlike DuckDB where it was an extension.
 func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, params SearchParams, defaultLimit int, searchPoolSize int) (*SearchResult, error) { //nolint:gocyclo // multi-mode search with fallback
@@ -69,9 +68,9 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		embedderHealthy = reachable && modelAvailable
 	}
 
-	// Check VectorCache readiness — with vec0, vector search is always available
-	// when embeddings exist (embDim > 0)
-	cacheReady := store.embDim > 0
+	// Check vec0 readiness — vector search is available when HasVecData() returns true
+	// (i.e., there are chunks with embeddings in the vec0 table)
+	vecReady := store.HasVecData()
 
 	// FTS5 is always available with SQLite (no extension loading needed)
 	ftsAvailable := true
@@ -81,7 +80,7 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 	var err error
 
 	switch {
-	case embedderHealthy && cacheReady && ftsAvailable:
+	case embedderHealthy && vecReady && ftsAvailable:
 		// Hybrid: vector + FTS with RRF fusion
 		if embedder == nil {
 			// Embedder marked healthy but no client available — fall back to FTS
@@ -100,7 +99,7 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 			hits, err = store.SearchHybrid(queryEmbedding, params.Query, poolSize, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 		}
 
-	case embedderHealthy && cacheReady && !ftsAvailable:
+	case embedderHealthy && vecReady && !ftsAvailable:
 		// Vector-only (FTS not available — shouldn't happen with SQLite, but defensive)
 		if embedder == nil {
 			mode = SearchModeFTS
@@ -115,8 +114,8 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		}
 		hits, err = store.SearchVector(queryEmbedding, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
-	case embedderHealthy && !cacheReady:
-		// Embedder available but cache not loaded yet — degrade to FTS-only
+	case embedderHealthy && !vecReady:
+		// Embedder available but vec0 not ready yet — degrade to FTS-only
 		mode = SearchModeFTS
 		slog.Warn("rag: vec0 not ready, falling back to FTS-only")
 		hits, err = store.SearchFTS(params.Query, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
