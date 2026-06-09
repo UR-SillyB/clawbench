@@ -86,10 +86,16 @@ func (e *acpTestEnv) closeConn(t *testing.T, sessionID string) {
 // setupACPTestEnv creates a test environment with external session ID store
 // and state persister overrides. Uses t.Cleanup() to ensure global state
 // is restored after all test teardown completes.
+// Defaults to CodeBuddy ACP agent; use setupACPTestEnvForAgent for other agents.
 func setupACPTestEnv(t *testing.T) *acpTestEnv {
 	t.Helper()
+	return setupACPTestEnvForAgent(t, acpTestAgent())
+}
 
-	agent := acpTestAgent()
+// setupACPTestEnvForAgent creates a test environment for any ACP agent.
+func setupACPTestEnvForAgent(t *testing.T, agent *model.Agent) *acpTestEnv {
+	t.Helper()
+
 	mgr := GetACPConnManager()
 
 	// Store external session IDs in memory (normally backed by DB)
@@ -104,12 +110,6 @@ func setupACPTestEnv(t *testing.T) *acpTestEnv {
 		return externalSessionIDs[clawbenchSID]
 	}
 
-	// Override state persister (normally writes to DB)
-	origPersist := persistAgentACPStateToDB
-	persistAgentACPStateToDB = func(agentID, modeState, commands, thinkingState, modelListState string) error {
-		return nil // no-op for testing
-	}
-
 	storeSID := func(clawbenchSID, acpSID string) {
 		sidMu.Lock()
 		defer sidMu.Unlock()
@@ -119,7 +119,6 @@ func setupACPTestEnv(t *testing.T) *acpTestEnv {
 	// Use t.Cleanup to ensure global state is restored after all other teardown
 	t.Cleanup(func() {
 		getExternalSessionID = origGetExtSID
-		persistAgentACPStateToDB = origPersist
 	})
 
 	return &acpTestEnv{
@@ -256,10 +255,17 @@ func fmtACPStateSummary(conn *ACPConn) string {
 }
 
 // cleanupConn closes the connection for the given session after the test.
+// cleanupConn closes the connection for the given session after the test.
+// Kills the agent process first if it's still running to avoid cleanup hangs
+// (bridge adapters like claude-agent-acp may not exit cleanly on stdin close).
 func cleanupConn(t *testing.T, sessionID string) {
 	t.Helper()
 	t.Cleanup(func() {
-		GetACPConnManager().CloseConn(sessionID)
+		mgr := GetACPConnManager()
+		if conn := mgr.GetConn(sessionID); conn != nil && conn.IsAlive() {
+			_ = conn.KillProcessForTest()
+		}
+		mgr.CloseConn(sessionID)
 	})
 }
 
