@@ -220,9 +220,15 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-		} else if sessionTransport == "cli" && sessionAgentID != "" {
-			// CLI sessions: synthesize a read-only mode from the backend name.
-			// The frontend shows the mode chip but disables switching.
+		} else if sessionAgentID != "" && (sessionTransport == "cli" || (sessionTransport == "" && func() bool {
+			// For sessions with no persisted transport, check the agent's configured transport.
+			// If the agent is CLI-only (not acp-stdio), synthesize a read-only mode.
+			a, ok := model.Agents[sessionAgentID]
+			return ok && a.Transport != "acp-stdio"
+		}())) {
+			// CLI sessions (or sessions whose transport hasn't been persisted yet
+			// but whose agent is CLI-only): synthesize a read-only mode from
+			// the backend name so the mode chip is visible but non-switchable.
 			if agent, ok := model.Agents[sessionAgentID]; ok && agent.Backend != "" {
 				modeState = &ai.ModeState{
 					CurrentModeID:  agent.Backend,

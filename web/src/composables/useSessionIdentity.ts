@@ -368,6 +368,19 @@ export async function initSessionFromAPI() {
             const mode = data.modeState.availableModes.find((m: any) => m.id === currentModeId.value)
             currentModeName.value = mode?.name || currentModeId.value
           }
+        } else if (data.agentId && availableModes.value.length === 0) {
+          // No modeState from chat response — try acpStatesCache from loadAgents.
+          // This handles CLI agents where the backend returns modeState but
+          // initSessionFromAPI processes loadAgents before currentAgentId is set.
+          const cachedState = agentsApi.getACPStateCache()?.[data.agentId]
+          if (cachedState?.modeState?.availableModes?.length > 0) {
+            updateAvailableModes(cachedState.modeState.availableModes)
+            if (cachedState.modeState.currentModeId) {
+              currentModeId.value = cachedState.modeState.currentModeId
+              const mode = cachedState.modeState.availableModes.find((m: any) => m.id === cachedState.modeState.currentModeId)
+              currentModeName.value = mode?.name || cachedState.modeState.currentModeId
+            }
+          }
         }
         // Populate thinking effort state — update available levels.
         // currentThinkingEffort was already set above from ACP state.
