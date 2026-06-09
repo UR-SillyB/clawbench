@@ -199,13 +199,24 @@ func (r *AgentCapabilityRegistry) GetModeState(agentID, currentModeID string) *M
 	r.mu.RLock()
 	cap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableModes) == 0 {
+	if !ok || cap == nil {
 		return nil
 	}
-	return &ModeState{
-		CurrentModeID:  currentModeID,
-		AvailableModes: cap.AvailableModes,
+	if len(cap.AvailableModes) > 0 {
+		return &ModeState{
+			CurrentModeID:  currentModeID,
+			AvailableModes: cap.AvailableModes,
+		}
 	}
+	// ACP v2 agents (like OpenCode) report modes via ConfigOptionState
+	// with Category "mode" instead of the legacy Modes field.
+	if ms := modeStateFromConfigState(cap.ConfigOptionState); ms != nil {
+		if currentModeID != "" {
+			ms.CurrentModeID = currentModeID
+		}
+		return ms
+	}
+	return nil
 }
 
 // GetThinkingEffortState returns a ThinkingEffortState combining agent-level
