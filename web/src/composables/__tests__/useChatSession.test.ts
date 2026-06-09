@@ -26,13 +26,18 @@ const { mockState, resetMockState } = vi.hoisted(() => {
 })
 
 const { mockIdentity, mockToastFn, mockAgentFns, mockUtilsFns, mockIdentityFns, resetAdditionalMocks } = vi.hoisted(() => {
-  const mockIdentity: Record<string, string> = {
+  const mockIdentity: Record<string, string | boolean> = {
     currentSessionTitle: '',
     currentBackend: '',
     currentAgentId: '',
     currentModelId: '',
     currentModelName: '',
     currentThinkingEffort: '',
+    currentThinkingEffortName: '',
+    currentModeId: '',
+    currentModeName: '',
+    currentTransport: '',
+    autoApprove: false,
   }
   const mockToastFn = vi.fn()
   const mockIdentityFns = {
@@ -54,7 +59,7 @@ const { mockIdentity, mockToastFn, mockAgentFns, mockUtilsFns, mockIdentityFns, 
     parseMessages: vi.fn().mockReturnValue([]),
   }
   function resetAdditionalMocks() {
-    Object.keys(mockIdentity).forEach(k => { mockIdentity[k] = '' })
+    Object.keys(mockIdentity).forEach(k => { mockIdentity[k] = k === 'autoApprove' ? false : '' })
     mockToastFn.mockReset()
     mockIdentityFns.loadModelPref.mockReset()
     mockIdentityFns.loadThinkingPref.mockReset()
@@ -104,6 +109,10 @@ vi.mock('@/composables/useSessionIdentity', () => ({
       get value() { return mockIdentity.currentThinkingEffort },
       set value(v) { mockIdentity.currentThinkingEffort = v },
     },
+    currentThinkingEffortName: {
+      get value() { return mockIdentity.currentThinkingEffortName },
+      set value(v) { mockIdentity.currentThinkingEffortName = v },
+    },
     currentModeId: {
       get value() { return mockIdentity.currentModeId || '' },
       set value(v) { mockIdentity.currentModeId = v },
@@ -112,7 +121,17 @@ vi.mock('@/composables/useSessionIdentity', () => ({
       get value() { return mockIdentity.currentModeName || '' },
       set value(v) { mockIdentity.currentModeName = v },
     },
+    currentTransport: {
+      get value() { return mockIdentity.currentTransport },
+      set value(v) { mockIdentity.currentTransport = v },
+    },
+    autoApprove: {
+      get value() { return mockIdentity.autoApprove },
+      set value(v) { mockIdentity.autoApprove = v },
+    },
     availableCommands: { value: [] },
+    availableModes: { value: [] },
+    availableThinkingEfforts: { value: [] },
     runningSessions: {
       get value() { return mockState.runningSessions },
     },
@@ -121,17 +140,23 @@ vi.mock('@/composables/useSessionIdentity', () => ({
       set value(v: number) { mockState.runningSessionsVersion = v },
     },
     agentHeaderTitle: { value: '' },
+    sessionDrawerOpen: { value: false },
     switchSession: vi.fn(),
     createSession: vi.fn(),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
     openChatPanel: vi.fn(),
+    openSessionTab: vi.fn(),
+    openAgentSelector: vi.fn(),
+    continueFromExecution: vi.fn(),
+    checkContinueSession: vi.fn(),
     registerSessionActions: vi.fn(),
     initSessionFromAPI: vi.fn(),
     saveModelPref: mockIdentityFns.saveModelPref,
     saveThinkingPref: mockIdentityFns.saveThinkingPref,
     loadModelPref: mockIdentityFns.loadModelPref,
     loadThinkingPref: mockIdentityFns.loadThinkingPref,
+    toggleAutoApprove: vi.fn(),
   }),
   currentAgentId: { value: '' },
   updateModeState: vi.fn(),
@@ -150,12 +175,16 @@ vi.mock('@/composables/useToast', () => ({
 vi.mock('@/composables/useNotification', () => ({
   useNotification: () => ({ play: vi.fn() }),
 }))
+vi.mock('@/composables/useWorktreeAnnotation', () => ({
+  warmWorktreeCache: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('@/composables/useAgents', () => ({
   useAgents: () => ({
     agents: { value: [] },
     loadAgents: mockAgentFns.loadAgents,
     getAgentIcon: mockAgentFns.getAgentIcon,
     getAgentName: mockAgentFns.getAgentName,
+    getAgent: vi.fn().mockReturnValue(undefined),
     syncModelFromAgent: mockAgentFns.syncModelFromAgent,
     getAgentModel: mockAgentFns.getAgentModel,
     agentHeaderTitle: mockAgentFns.agentHeaderTitle,
@@ -2203,7 +2232,7 @@ describe('deleteSession', () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
   })
 
-  it('API returns ok=false: no toast shown', async () => {
+  it('API returns ok=false: shows error toast', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ ok: false }),
@@ -2212,8 +2241,11 @@ describe('deleteSession', () => {
     const session = createSession()
     await session.deleteSession('s1', 'claude')
 
-    // No toast shown when data.ok is false (no error handling path)
-    expect(mockToastFn).not.toHaveBeenCalled()
+    // Error toast shown when data.ok is false
+    expect(mockToastFn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ icon: '⚠️', type: 'error' })
+    )
   })
 })
 

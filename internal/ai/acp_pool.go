@@ -944,6 +944,10 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			return err
 		}
 		c.markConfigSet("mode", req.Mode)
+		// Update cache so subsequent GET /api/ai/chat returns the correct mode.
+		if !c.IsConfigUnsupported("mode") {
+			c.UpdateCachedCurrentMode(req.Mode)
+		}
 	}
 
 	// Send prompt
@@ -1504,6 +1508,24 @@ func (c *ACPConn) HasCurrentModeChanged(modeID string) bool {
 		return modeID != ""
 	}
 	return existing.CurrentModeID != modeID
+}
+
+// IsModeAvailable checks whether the given modeId exists in the cached availableModes.
+// Used to validate agent-reported mode changes — only accept modes that are in the
+// available list, filtering out invalid mode reports from bridge adapters.
+func (c *ACPConn) IsModeAvailable(modeID string) bool {
+	c.mu.Lock()
+	existing := c.cachedModeState
+	c.mu.Unlock()
+	if existing == nil {
+		return false
+	}
+	for _, m := range existing.AvailableModes {
+		if m.ID == modeID {
+			return true
+		}
+	}
+	return false
 }
 
 // HasNewAvailableThinkingEfforts returns true if the given levels list contains

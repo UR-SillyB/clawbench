@@ -134,18 +134,27 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 
 	case update.CurrentModeUpdate != nil:
 		// v1 mode update: only currentModeId; available modes were sent in session/new.
-		// Update cache and forward mode_update SSE so the frontend can reflect
-		// agent-initiated mode changes. Agent mode takes priority over user selection.
+		// Update cache and forward SSE event so the frontend can reflect
+		// agent-initiated mode changes. Only accept the mode if it's in availableModes
+		// to filter out invalid mode reports from bridge adapters.
 		mu := update.CurrentModeUpdate
 		modeID := string(mu.CurrentModeId)
 		if conn != nil {
-			if conn.HasCurrentModeChanged(modeID) {
-				conn.UpdateCachedCurrentMode(modeID)
-				if ms := conn.GetCachedModeState(); ms != nil {
-					forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: ms})
-				}
+			if modeID != "" && !conn.IsModeAvailable(modeID) {
+				// Agent reported a mode not in availableModes — likely a bridge adapter
+				// artifact. Skip updating currentModeId but still update cache for
+				// availableModes if needed.
+				slog.Debug("acp: ignoring CurrentModeUpdate with unrecognized mode",
+					"mode_id", modeID, "clawbench_sid", conn.clawbenchSID)
 			} else {
-				conn.UpdateCachedCurrentMode(modeID)
+				if conn.HasCurrentModeChanged(modeID) {
+					conn.UpdateCachedCurrentMode(modeID)
+					if ms := conn.GetCachedModeState(); ms != nil {
+						forwardACPEvent(ch, StreamEvent{Type: "mode_update", Mode: ms})
+					}
+				} else {
+					conn.UpdateCachedCurrentMode(modeID)
+				}
 			}
 		} else {
 			forwardACPEvent(ch, StreamEvent{
@@ -174,18 +183,24 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 					newModes := derived != nil && conn.HasNewAvailableModes(derived.AvailableModes)
 					modeChanged := derived != nil && conn.HasCurrentModeChanged(derived.CurrentModeID)
 					// Forward config_update SSE if available modes or currentModeId changed.
-					// Agent mode change takes priority over user manual selection.
 					if newModes || modeChanged {
 						forwardACPEvent(ch, StreamEvent{Type: "config_update", Config: configState})
 					}
 					conn.SetCachedConfigState(configState)
 					if derived != nil {
 						if newModes {
-							// Available modes changed — full update + persist
+							// Available modes changed — full update
 							conn.SetCachedModeState(derived)
-						} else {
-							// Only currentModeId changed — update cache without triggering persist
-							conn.UpdateCachedCurrentMode(derived.CurrentModeID)
+						} else if modeChanged {
+							// Only currentModeId changed — validate before updating cache.
+							// Only accept the mode if it's in availableModes to filter out
+							// invalid mode reports from bridge adapters.
+							if derived.CurrentModeID != "" && !conn.IsModeAvailable(derived.CurrentModeID) {
+								slog.Debug("acp: ignoring ConfigOptionUpdate with unrecognized mode",
+									"mode_id", derived.CurrentModeID, "clawbench_sid", conn.clawbenchSID)
+							} else {
+								conn.UpdateCachedCurrentMode(derived.CurrentModeID)
+							}
 						}
 					}
 				} else {

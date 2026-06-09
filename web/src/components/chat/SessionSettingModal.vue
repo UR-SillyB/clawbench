@@ -68,25 +68,6 @@
     <!-- Thinking effort tab -->
     <div v-if="activeTab === 'thinking'" class="model-tab-content">
       <div class="model-list">
-        <div class="model-item-wrapper">
-          <button
-            class="thinking-item"
-            :class="{ current: !currentThinkingEffort, 'is-default': !defaultThinkingEffort }"
-            @click="selectThinkingEffort('')"
-            @contextmenu.prevent="showThinkingDefaultMenu('')"
-            @touchstart="onTouchStartThinking('', $event)"
-            @touchend="onTouchEnd"
-            @touchmove="onTouchMove"
-          >
-            <span class="model-item-indicator" :class="{ active: !currentThinkingEffort }"></span>
-            <span class="model-item-name">{{ t('chat.thinkingEffortSwitcher.auto') }}</span>
-            <span v-if="!defaultThinkingEffort" class="default-badge">{{ t('chat.sessionSetting.defaultBadge') }}</span>
-            <button v-if="defaultThinkingEffort" class="set-default-btn" @click.stop="setDefaultThinkingEffort('')" :title="t('chat.sessionSetting.setAsDefault')">
-              <Star :size="12" />
-            </button>
-          </button>
-          <div class="model-divider"></div>
-        </div>
         <div
           v-for="(level, idx) in thinkingLevels"
           :key="level.id"

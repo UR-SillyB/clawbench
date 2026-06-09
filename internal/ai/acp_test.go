@@ -1278,8 +1278,15 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &ACPConnEntry{}
-	// Pre-populate cached mode state directly so UpdateCachedCurrentMode can update it
-	entry.cachedModeState = &ModeState{CurrentModeID: "architect"}
+	// Pre-populate cached mode state with available modes so IsModeAvailable can validate
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "architect",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+			{ID: "architect", Name: "Architect"},
+		},
+	}
 
 	update := acp.SessionUpdate{
 		CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
@@ -1289,7 +1296,7 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 
 	mapACPSessionUpdate(update, ch, ctx, entry, nil)
 
-	// Cache should be updated
+	// Cache should be updated — "code" is a valid mode in availableModes
 	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
 
 	// mode_update SSE should be forwarded because currentModeId changed
@@ -1297,6 +1304,36 @@ func TestMapACPSessionUpdate_CurrentModeUpdate_WithCacheEntry(t *testing.T) {
 	assert.Equal(t, "mode_update", events[0].Type)
 	require.NotNil(t, events[0].Mode)
 	assert.Equal(t, "code", events[0].Mode.CurrentModeID)
+}
+
+func TestMapACPSessionUpdate_CurrentModeUpdate_InvalidModeRejected(t *testing.T) {
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	entry := &ACPConnEntry{}
+	// Pre-populate cached mode state with available modes
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "architect",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+
+	update := acp.SessionUpdate{
+		CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
+			// "bypass_permissions" is NOT in availableModes — bridge adapter artifact
+			CurrentModeId: acp.SessionModeId("bypass_permissions"),
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
+
+	// Cache should NOT be updated — invalid mode rejected
+	assert.Equal(t, "architect", entry.cachedModeState.CurrentModeID)
+
+	// No SSE event forwarded — invalid mode was filtered
+	assertNoMoreACPEvents(ch, t)
 }
 
 // --- mapACPSessionUpdate ConfigOptionUpdate tests ---
@@ -1391,8 +1428,57 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesNoForward(t *testi
 	require.NotNil(t, events[0].Config)
 	assert.Equal(t, "code", events[0].Config.CurrentID)
 
-	// Cache should still be updated
+	// Cache should be updated — "code" is a valid mode in availableModes
 	assert.Equal(t, "code", entry.cachedModeState.CurrentModeID)
+}
+
+func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_InvalidModeRejected(t *testing.T) {
+	ch := make(chan StreamEvent, 10)
+	ctx := context.Background()
+
+	entry := &ACPConnEntry{}
+	entry.cachedModeState = &ModeState{
+		CurrentModeID: "ask",
+		AvailableModes: []ModeDef{
+			{ID: "ask", Name: "Ask"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	ungrouped := acp.SessionConfigSelectOptionsUngrouped(
+		[]acp.SessionConfigSelectOption{
+			{Name: "Ask", Value: acp.SessionConfigValueId("ask")},
+			{Name: "Code", Value: acp.SessionConfigValueId("code")},
+		},
+	)
+
+	update := acp.SessionUpdate{
+		ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Id:           acp.SessionConfigId("mode"),
+						Name:         "Mode",
+						Category:     &modeCategory,
+						CurrentValue: acp.SessionConfigValueId("bypass_permissions"),
+						Options:      acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
+					},
+				},
+			},
+		},
+	}
+
+	mapACPSessionUpdate(update, ch, ctx, entry, nil)
+
+	// config_update SSE should be forwarded (currentModeId changed)
+	events := drainACPEvents(ch, 1)
+	assert.Equal(t, "config_update", events[0].Type)
+	require.NotNil(t, events[0].Config)
+	assert.Equal(t, "bypass_permissions", events[0].Config.CurrentID)
+
+	// Cache currentModeId should NOT be updated — "bypass_permissions" not in availableModes
+	assert.Equal(t, "ask", entry.cachedModeState.CurrentModeID)
 }
 
 func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_SameModesSameCurrentNoForward(t *testing.T) {
@@ -1485,7 +1571,8 @@ func TestMapACPSessionUpdate_ConfigOptionUpdate_Mode_NewModeForward(t *testing.T
 	assert.Equal(t, "config_update", events[0].Type)
 	require.NotNil(t, events[0].Config)
 
-	// Cache should be updated with new mode list
+	// Cache should be updated with new mode list including "architect"
+	// "architect" is in the new available modes, so it's valid
 	assert.Equal(t, "architect", entry.cachedModeState.CurrentModeID)
 	require.Len(t, entry.cachedModeState.AvailableModes, 3)
 

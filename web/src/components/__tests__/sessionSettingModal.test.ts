@@ -237,7 +237,7 @@ describe('SessionSettingModal', () => {
     await nextTick()
 
     const items = wrapper.findAll('.thinking-item')
-    expect(items.length).toBe(6) // 5 levels + auto
+    expect(items.length).toBe(5)
   })
 
   it('highlights current thinking effort', async () => {
@@ -280,34 +280,8 @@ describe('SessionSettingModal', () => {
     expect(wrapper.emitted('update:show')![0][0]).toBe(false)
   })
 
-  it('shows auto option as current when thinking effort is empty', async () => {
-    mockIdentity.currentThinkingEffort.value = ''
-    const wrapper = mountModal()
-    const tabs = wrapper.findAll('.model-tab')
-    await tabs[1].trigger('click')
-    await nextTick()
-
-    const items = wrapper.findAll('.thinking-item')
-    // Auto (first item) should be current
-    expect(items[0].classes()).toContain('current')
-    mockIdentity.currentThinkingEffort.value = 'high' // restore
-  })
-
-  it('auto option shows default badge when no preferred thinking', async () => {
-    const wrapper = mountModal()
-    const tabs = wrapper.findAll('.model-tab')
-    await tabs[1].trigger('click')
-    await nextTick()
-
-    const items = wrapper.findAll('.thinking-item')
-    // Auto is the first item, and preferredThinkingEffort is '' so auto has default badge
-    expect(items[0].find('.default-badge').exists()).toBe(true)
-  })
-
-  it('auto option shows star button when there is a preferred thinking', async () => {
-    // Set a preferred thinking effort so auto is not default
+  it('shows default badge on default thinking effort level', async () => {
     const claudeAgent = mockAgents.agents.value.find(a => a.id === 'claude')!
-    const originalPreferred = claudeAgent.preferredThinkingEffort
     claudeAgent.preferredThinkingEffort = 'high'
 
     const wrapper = mountModal()
@@ -316,13 +290,10 @@ describe('SessionSettingModal', () => {
     await nextTick()
 
     const items = wrapper.findAll('.thinking-item')
-    // Auto item should have a set-default-btn since preferredThinkingEffort is 'high'
-    expect(items[0].find('.set-default-btn').exists()).toBe(true)
-    // The 'high' item should have a default badge
     const highItem = items.find(i => i.text().includes('high'))
     expect(highItem?.find('.default-badge').exists()).toBe(true)
 
-    claudeAgent.preferredThinkingEffort = originalPreferred // restore
+    claudeAgent.preferredThinkingEffort = '' // restore
   })
 
   // --- Refresh ---
@@ -470,44 +441,36 @@ describe('SessionSettingModal', () => {
   // --- Thinking effort default ---
 
   it('sets default thinking effort via star button on thinking tab', async () => {
-    // Set a preferred so the auto item has a star button
-    const claudeAgent = mockAgents.agents.value.find(a => a.id === 'claude')!
-    claudeAgent.preferredThinkingEffort = 'high'
-
     const wrapper = mountModal()
     const tabs = wrapper.findAll('.model-tab')
     await tabs[1].trigger('click')
     await nextTick()
 
-    // Click the star on the auto item to set default to auto
-    const autoItem = wrapper.findAll('.thinking-item')[0]
-    await autoItem.find('.set-default-btn').trigger('click')
+    // Click the star on the medium item to set default
+    const items = wrapper.findAll('.thinking-item')
+    const mediumItem = items.find(i => i.text().includes('medium'))
+    await mediumItem?.find('.set-default-btn').trigger('click')
 
-    expect(patchAgentPref).toHaveBeenCalledWith('claude', 'preferred_thinking_effort', '')
-    expect(mockAgents.updateAgentField).toHaveBeenCalledWith('claude', 'preferredThinkingEffort', '')
-
-    claudeAgent.preferredThinkingEffort = '' // restore
+    expect(patchAgentPref).toHaveBeenCalledWith('claude', 'preferred_thinking_effort', 'medium')
+    expect(mockAgents.updateAgentField).toHaveBeenCalledWith('claude', 'preferredThinkingEffort', 'medium')
   })
 
   it('shows error toast when setDefaultThinkingEffort fails', async () => {
     vi.mocked(patchAgentPref).mockRejectedValueOnce(new Error('fail'))
-    const claudeAgent = mockAgents.agents.value.find(a => a.id === 'claude')!
-    claudeAgent.preferredThinkingEffort = 'high'
 
     const wrapper = mountModal()
     const tabs = wrapper.findAll('.model-tab')
     await tabs[1].trigger('click')
     await nextTick()
 
-    const autoItem = wrapper.findAll('.thinking-item')[0]
-    await autoItem.find('.set-default-btn').trigger('click')
+    const items = wrapper.findAll('.thinking-item')
+    const mediumItem = items.find(i => i.text().includes('medium'))
+    await mediumItem?.find('.set-default-btn').trigger('click')
     await nextTick()
     await new Promise(r => setTimeout(r, 10))
     await nextTick()
 
     expect(mockToastShow).toHaveBeenCalledWith('settings.saveFailed', expect.any(Object))
-
-    claudeAgent.preferredThinkingEffort = '' // restore
   })
 
   // --- No models ---
@@ -580,8 +543,8 @@ describe('SessionSettingModal', () => {
     await nextTick()
 
     const dividers = wrapper.findAll('.model-divider')
-    // 5 levels + auto = 6 items, 5 dividers
-    expect(dividers.length).toBe(5)
+    // 5 levels = 4 dividers
+    expect(dividers.length).toBe(4)
   })
 
   // --- is-default class ---
@@ -594,14 +557,19 @@ describe('SessionSettingModal', () => {
   })
 
   it('adds is-default class to default thinking effort', async () => {
+    const claudeAgent = mockAgents.agents.value.find(a => a.id === 'claude')!
+    claudeAgent.preferredThinkingEffort = 'high'
+
     const wrapper = mountModal()
     const tabs = wrapper.findAll('.model-tab')
     await tabs[1].trigger('click')
     await nextTick()
 
     const items = wrapper.findAll('.thinking-item')
-    // Auto (first) is default since preferredThinkingEffort is ''
-    expect(items[0].classes()).toContain('is-default')
+    const highItem = items.find(i => i.text().includes('high'))
+    expect(highItem?.classes()).toContain('is-default')
+
+    claudeAgent.preferredThinkingEffort = '' // restore
   })
 
   // --- Search resets on reopen ---
