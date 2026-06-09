@@ -115,9 +115,9 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		hits, err = store.SearchVector(queryEmbedding, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
 	case embedderHealthy && !vecReady:
-		// Embedder available but vec0 not ready yet — degrade to FTS-only
+		// Embedder available but no vectors in vec0 — degrade to FTS-only
 		mode = SearchModeFTS
-		slog.Warn("rag: vec0 not ready, falling back to FTS-only")
+		slog.Warn("rag: vec0 has no data, falling back to FTS-only")
 		hits, err = store.SearchFTS(params.Query, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
 	default:

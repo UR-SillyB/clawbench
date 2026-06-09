@@ -98,31 +98,30 @@ func TestRAGSearch_RespectsDefaultLimit(t *testing.T) {
 	assert.LessOrEqual(t, len(result.Results), 3)
 }
 
-func TestRAGSearch_EmbDimZero_FallbackToFTS(t *testing.T) {
+func TestRAGSearch_NoVecData_FallbackToFTS(t *testing.T) {
 	store := setupSQLiteStore(t)
 	SetEmbedderHealthy(true)
 
-	// Insert chunk
+	// Insert chunk WITHOUT embedding — HasVecData() returns false
 	chunk := Chunk{
 		SessionID: "sess-1", MessageID: 1, ChunkText: "database search test",
 		ChunkTextSegmented: "database search test", ChunkIndex: 0,
-		TokenCount: 3, Embedding: makeTestEmbedding(), HasEmbedding: true,
+		TokenCount: 3, Embedding: nil, HasEmbedding: false,
 		ProjectPath: testProjectPath, Backend: testBackendClaude, Role: testRoleAssistant,
 		CreatedAt: time.Now().Truncate(time.Millisecond),
 	}
 	err := store.InsertChunks([]Chunk{chunk})
 	require.NoError(t, err)
 
-	// Set embDim to 0 to simulate "not ready" state
-	store.embDim = 0
+	require.False(t, store.HasVecData(), "no chunks with embeddings → HasVecData should be false")
 
-	// With healthy flag but embDim=0 — should fall back to FTS
+	// With healthy flag but HasVecData()=false — should fall back to FTS
 	result, err := RAGSearch(context.Background(), store, nil, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
-	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embDim is 0")
+	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when HasVecData() is false")
 }
 
 func TestRAGSearch_HasVecDataFalse_FTSFallback(t *testing.T) {
@@ -300,28 +299,28 @@ func TestRAGSearch_NegativeLimitUsesDefault(t *testing.T) {
 	assert.LessOrEqual(t, len(result.Results), 2)
 }
 
-func TestRAGSearch_EmbedderHealthyButEmbDimZero(t *testing.T) {
+func TestRAGSearch_EmbedderHealthyButNoVecData(t *testing.T) {
 	store := setupSQLiteStore(t)
 	SetEmbedderHealthy(true)
 
+	// Insert chunk WITHOUT embedding — HasVecData() returns false
 	chunk := Chunk{
 		SessionID: "sess-1", MessageID: 1, ChunkText: "database search test",
 		ChunkTextSegmented: "database search test", ChunkIndex: 0,
-		TokenCount: 3, Embedding: makeTestEmbedding(), HasEmbedding: true,
+		TokenCount: 3, Embedding: nil, HasEmbedding: false,
 		ProjectPath: testProjectPath, Backend: testBackendClaude, Role: testRoleAssistant,
 		CreatedAt: time.Now().Truncate(time.Millisecond),
 	}
 	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
 
-	// Set embDim to 0 to simulate "not ready"
-	store.embDim = 0
+	require.False(t, store.HasVecData(), "no chunks with embeddings → HasVecData should be false")
 
 	result, err := RAGSearch(context.Background(), store, nil, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
-	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embDim is 0 even if embedder healthy")
+	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when HasVecData() is false even if embedder healthy")
 }
 
 // ---------- getSessionTitles ----------
@@ -342,8 +341,8 @@ func TestGetSessionTitles_ServiceDBNil(t *testing.T) {
 
 // ---------- RAGSearch vector-only path ----------
 
-func TestRAGSearch_VectorOnly_WhenEmbDimReadyButFTSUnavailable(t *testing.T) {
-	// This tests the defensive "embedderHealthy && embDim>0 && !ftsAvailable" branch.
+func TestRAGSearch_VectorOnly_WhenVecDataReadyButFTSUnavailable(t *testing.T) {
+	// This tests the defensive "embedderHealthy && HasVecData() && !ftsAvailable" branch.
 	// In practice ftsAvailable is always true with SQLite, but the code has this branch.
 	// We test indirectly by verifying the search strategy when FTS returns no results.
 	store := setupSQLiteStore(t)
