@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // register SQLite driver (pure Go, FTS5 built-in)
+	_ "modernc.org/sqlite"     // register SQLite driver (pure Go, FTS5 built-in)
+	_ "modernc.org/sqlite/vec" // register sqlite-vec extension for vec0 virtual tables
 )
 
 // Chunk represents a text chunk with its embedding and metadata.
@@ -147,6 +148,24 @@ func (s *Store) initSchema() error {
 		return fmt.Errorf("create rag_chunks_fts: %w", err)
 	}
 
+	// Create vec0 virtual table for vector similarity search
+	dim := s.embDim
+	if dim <= 0 {
+		dim = 1024
+	}
+	_, err = s.db.Exec(fmt.Sprintf(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS rag_vec USING vec0(
+			embedding float[%d] distance_metric=cosine,
+			project_path TEXT,
+			backend TEXT,
+			role TEXT,
+			session_id TEXT
+		)
+	`, dim))
+	if err != nil {
+		return fmt.Errorf("create rag_vec: %w", err)
+	}
+
 	return nil
 }
 
@@ -213,6 +232,19 @@ func (s *Store) InsertChunks(chunks []Chunk) error {
 		if err != nil {
 			return fmt.Errorf("insert fts entry for chunk %d: %w", chunkID, err)
 		}
+
+		// Insert into vec0 if embedding available
+		if c.HasEmbedding && c.Embedding != nil {
+			vecBlob := serializeFloat32(float64ToFloat32(c.Embedding))
+			_, err = tx.Exec(
+				`INSERT INTO rag_vec(rowid, embedding, project_path, backend, role, session_id)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				chunkID, vecBlob, c.ProjectPath, c.Backend, c.Role, c.SessionID,
+			)
+			if err != nil {
+				return fmt.Errorf("insert vec entry for chunk %d: %w", chunkID, err)
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -222,8 +254,90 @@ func (s *Store) InsertChunks(chunks []Chunk) error {
 	return nil
 }
 
-// SearchSimple performs vector similarity search.
-// TODO: Will be replaced by SearchVector using vec0 in Task 3.
+// SearchVector performs vector similarity search using sqlite-vec KNN.
+func (s *Store) SearchVector(queryEmbedding []float64, limit int, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime string) ([]SearchHit, error) {
+	if err := validateEmbedding(queryEmbedding); err != nil {
+		return nil, fmt.Errorf("query embedding validation: %w", err)
+	}
+
+	vecBlob := serializeFloat32(float64ToFloat32(queryEmbedding))
+
+	// Build KNN query with metadata filters
+	query := `
+		SELECT v.rowid, v.distance,
+		       c.chunk_text, c.session_id, c.message_id, c.role,
+		       c.project_path, c.backend, c.created_at
+		FROM rag_vec v
+		JOIN rag_chunks c ON c.id = v.rowid
+		WHERE v.embedding MATCH ? AND v.k = ?`
+	args := []any{vecBlob, limit * 2} // over-fetch for post-filtering
+
+	if projectPath != "" {
+		query += " AND v.project_path = ?"
+		args = append(args, projectPath)
+	}
+	if backend != "" {
+		query += " AND v.backend = ?"
+		args = append(args, backend)
+	}
+	if role != "" {
+		query += " AND v.role = ?"
+		args = append(args, role)
+	}
+	if sessionID != "" {
+		query += " AND v.session_id = ?"
+		args = append(args, sessionID)
+	}
+	if excludeSessionID != "" {
+		query += " AND v.session_id != ?"
+		args = append(args, excludeSessionID)
+	}
+	if fromTime != "" {
+		query += " AND c.created_at >= ?"
+		args = append(args, fromTime)
+	}
+	if toTime != "" {
+		query += " AND c.created_at <= ?"
+		args = append(args, toTime)
+	}
+
+	query += " ORDER BY v.distance LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("vector search query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var hits []SearchHit
+	for rows.Next() {
+		var h SearchHit
+		if err := rows.Scan(&h.ChunkID, &h.Score, &h.ChunkText, &h.SessionID,
+			&h.MessageID, &h.Role, &h.ProjectPath, &h.Backend, &h.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan vector hit: %w", err)
+		}
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return hits, nil
+}
+
+// HasVecData returns true if the vec0 table contains any vectors.
+func (s *Store) HasVecData() bool {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM rag_chunks WHERE has_embedding = 1").Scan(&count)
+	if err != nil {
+		return false
+	}
+	return count > 0
+}
+
+// SearchSimple is a deprecated stub that always returns an error.
+// Use SearchVector instead for vector similarity search.
 func (s *Store) SearchSimple(queryEmbedding []float64, limit int, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime string) ([]SearchHit, error) {
 	return nil, fmt.Errorf("SearchSimple: not implemented, use SearchVector")
 }
@@ -316,7 +430,7 @@ func (s *Store) SearchFTS(queryText string, limit int, projectPath, backend, rol
 // poolSize is how many candidates each source returns before fusion.
 func (s *Store) SearchHybrid(queryEmbedding []float64, queryText string, poolSize, limit int, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime string) ([]SearchHit, error) {
 	// Run both searches
-	vecHits, vecErr := s.SearchSimple(queryEmbedding, poolSize, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime)
+	vecHits, vecErr := s.SearchVector(queryEmbedding, poolSize, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime)
 	ftsHits, ftsErr := s.SearchFTS(queryText, poolSize, projectPath, backend, role, sessionID, excludeSessionID, fromTime, toTime)
 
 	// If one source fails completely, fall back to the other
@@ -399,7 +513,7 @@ func (s *Store) GetPendingEmbeddings(limit int) ([]PendingChunk, error) {
 }
 
 // UpdateEmbedding updates the embedding for a specific chunk (for backfill).
-// Unlike the DuckDB version, this uses a simple UPDATE (no DELETE+INSERT workaround needed).
+// Also inserts the vector into the vec0 index.
 func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 	// Validate embedding
 	if err := validateEmbedding(embedding); err != nil {
@@ -416,6 +530,28 @@ func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update embedding: %w", err)
+	}
+
+	// Fetch chunk metadata for vec0 insert
+	var projectPath, backend, role, sessionID string
+	err = s.db.QueryRow(
+		`SELECT project_path, backend, role, session_id FROM rag_chunks WHERE id = ?`,
+		chunkID,
+	).Scan(&projectPath, &backend, &role, &sessionID)
+	if err != nil {
+		return fmt.Errorf("fetch chunk metadata for vec insert: %w", err)
+	}
+
+	// Upsert into vec0 (delete old + insert new)
+	_, _ = s.db.Exec(`DELETE FROM rag_vec WHERE rowid = ?`, chunkID)
+	vecBlob := serializeFloat32(float64ToFloat32(embedding))
+	_, err = s.db.Exec(
+		`INSERT INTO rag_vec(rowid, embedding, project_path, backend, role, session_id)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		chunkID, vecBlob, projectPath, backend, role, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("insert vec entry: %w", err)
 	}
 
 	return nil
@@ -450,7 +586,7 @@ func (s *Store) SetEmbeddingDim(dim int) bool {
 	return true
 }
 
-// ResetForDimensionMismatch clears all chunks and FTS when dimension changes.
+// ResetForDimensionMismatch clears all chunks, FTS, and vec0 when dimension changes.
 func (s *Store) ResetForDimensionMismatch(newDim int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -458,7 +594,13 @@ func (s *Store) ResetForDimensionMismatch(newDim int) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Delete FTS entries first
+	// Delete vec0 entries first
+	_, err = tx.Exec("DELETE FROM rag_vec")
+	if err != nil {
+		return fmt.Errorf("delete vec entries: %w", err)
+	}
+
+	// Delete FTS entries
 	_, err = tx.Exec("DELETE FROM rag_chunks_fts")
 	if err != nil {
 		return fmt.Errorf("delete fts: %w", err)
@@ -509,7 +651,13 @@ func (s *Store) DeleteChunksBySessionIDs(sessionIDs []string) (int64, error) {
 		args[i] = id
 	}
 
-	// Delete FTS entries first (uses subquery to find IDs)
+	// Delete vec0 entries first
+	_, err = tx.Exec("DELETE FROM rag_vec WHERE rowid IN (SELECT id FROM rag_chunks WHERE session_id IN ("+placeholders+"))", args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete vec entries: %w", err)
+	}
+
+	// Delete FTS entries (uses subquery to find IDs)
 	_, err = tx.Exec("DELETE FROM rag_chunks_fts WHERE rowid IN (SELECT id FROM rag_chunks WHERE session_id IN ("+placeholders+"))", args...)
 	if err != nil {
 		return 0, fmt.Errorf("delete fts entries: %w", err)

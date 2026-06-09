@@ -2,6 +2,8 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -126,11 +128,14 @@ func TestRAGSearch_EmbDimZero_FallbackToFTS(t *testing.T) {
 // ---------- RAGSearch with real embedder (mock HTTP server) ----------
 
 func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {
-	// Create a mock embedding server that returns 4-dim vectors
+	// Create a mock embedding server that returns 1024-dim vectors (matching the store's default dimension)
+	mockEmb := makeTestEmbedding()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/embeddings" {
+			// Build a JSON array from the mock embedding
+			embJSON, _ := json.Marshal(mockEmb)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2,0.3,0.4],"index":0}]}`))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"embedding":%s,"index":0}]}`, embJSON)))
 			return
 		}
 		if r.URL.Path == "/v1/models" {
@@ -144,28 +149,29 @@ func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {
 
 	embedder := NewEmbeddingClient(server.URL, "test-model", "")
 
-	// Create store with 4-dim embeddings
+	// Create store with default 1024-dim embeddings
 	store := setupSQLiteStore(t)
-	store.embDim = 4
 
-	// Insert chunk with 4-dim embedding
+	// Insert chunk with 1024-dim embedding
 	chunk := Chunk{
 		SessionID: "sess-1", MessageID: 1, ChunkText: "database search test",
 		ChunkTextSegmented: "database search test", ChunkIndex: 0,
-		TokenCount: 3, Embedding: []float64{0.1, 0.2, 0.3, 0.4}, HasEmbedding: true,
+		TokenCount: 3, Embedding: makeTestEmbedding(), HasEmbedding: true,
 		ProjectPath: testProjectPath, Backend: testBackendClaude, Role: testRoleAssistant,
 		CreatedAt: time.Now().Truncate(time.Millisecond),
 	}
 	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
 
-	// Now search with embedder — SearchSimple is stubbed so hybrid falls back to FTS
+	// Reload embDim from DB after insert (InsertChunks writes embedding_dim but doesn't update store.embDim)
+	store.loadEmbeddingDimFromDB()
+
+	// Now search with embedder — SearchVector is implemented so hybrid should work
 	SetEmbedderHealthy(true)
 	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{
 		Query:       "database",
 		ProjectPath: testProjectPath,
 	}, 5, 20)
 	require.NoError(t, err)
-	// SearchSimple is stubbed, so hybrid vector part fails → falls back to FTS within hybrid
 	assert.Equal(t, SearchModeHybrid, result.Mode)
 	assert.NotEmpty(t, result.Results)
 }

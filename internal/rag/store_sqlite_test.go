@@ -270,7 +270,117 @@ func TestSQLiteStore_SearchFTS_FiltersByProject(t *testing.T) {
 	assert.Equal(t, "/project/a", hits[0].ProjectPath)
 }
 
-// ---------- SearchSimple (stub) ----------
+// ---------- SearchVector (vec0 KNN) ----------
+
+func TestStore_SearchVector_Basic(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	// Insert chunks with embeddings
+	chunks := []Chunk{
+		makeTestChunk("session1", 1, 0, "hello world"),
+		makeTestChunk("session1", 2, 1, "goodbye world"),
+		makeTestChunk("session2", 3, 0, "hello foo"),
+	}
+	require.NoError(t, store.InsertChunks(chunks))
+
+	// Search with a query embedding
+	queryEmb := makeTestEmbedding()
+	hits, err := store.SearchVector(queryEmb, 10, testProjectPath, "", "", "", "", "", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "should find results")
+	// Results should be sorted by distance (ascending = most similar first)
+	for i := 1; i < len(hits); i++ {
+		require.GreaterOrEqual(t, hits[i].Score, hits[i-1].Score, "results should be sorted by distance ascending")
+	}
+}
+
+func TestStore_SearchVector_ProjectFilter(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	chunks := []Chunk{
+		makeTestChunk("s1", 1, 0, "hello"),
+		makeTestChunk("s2", 2, 0, "hello"),
+	}
+	chunks[1].ProjectPath = "other-project"
+	require.NoError(t, store.InsertChunks(chunks))
+
+	hits, err := store.SearchVector(makeTestEmbedding(), 10, testProjectPath, "", "", "", "", "", "")
+	require.NoError(t, err)
+	for _, h := range hits {
+		require.Equal(t, testProjectPath, h.ProjectPath)
+	}
+}
+
+func TestStore_SearchVector_EmptyDB(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	hits, err := store.SearchVector(makeTestEmbedding(), 10, "", "", "", "", "", "", "")
+	require.NoError(t, err)
+	require.Empty(t, hits)
+}
+
+func TestStore_SearchVector_ExcludeSessionID(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	chunks := []Chunk{
+		makeTestChunk("s1", 1, 0, "hello"),
+		makeTestChunk("s2", 2, 0, "hello"),
+	}
+	require.NoError(t, store.InsertChunks(chunks))
+
+	hits, err := store.SearchVector(makeTestEmbedding(), 10, testProjectPath, "", "", "", "s1", "", "")
+	require.NoError(t, err)
+	for _, h := range hits {
+		require.NotEqual(t, "s1", h.SessionID)
+	}
+}
+
+func TestStore_SearchVector_RejectsInvalidEmbedding(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	infEmb := makeTestEmbedding()
+	infEmb[0] = math.Inf(1)
+	_, err := store.SearchVector(infEmb, 10, "", "", "", "", "", "", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "non-finite")
+}
+
+// ---------- HasVecData ----------
+
+func TestStore_HasVecData(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	assert.False(t, store.HasVecData(), "empty store should have no vec data")
+
+	chunks := []Chunk{makeTestChunk("s1", 1, 0, "hello")}
+	require.NoError(t, store.InsertChunks(chunks))
+
+	assert.True(t, store.HasVecData(), "store with embedded chunks should have vec data")
+}
+
+func TestStore_HasVecData_NoEmbedding(t *testing.T) {
+	store := setupSQLiteStore(t)
+	defer store.Close()
+
+	chunk := Chunk{
+		SessionID: "s1", MessageID: 1, ChunkText: "no embedding",
+		ChunkTextSegmented: "no embedding", ChunkIndex: 0,
+		TokenCount: 2, Embedding: nil, HasEmbedding: false,
+		ProjectPath: testProjectPath, Backend: testBackendClaude, Role: testRoleAssistant,
+		CreatedAt: time.Now().Truncate(time.Millisecond),
+	}
+	require.NoError(t, store.InsertChunks([]Chunk{chunk}))
+
+	assert.False(t, store.HasVecData(), "store with only non-embedded chunks should have no vec data")
+}
+
+// ---------- SearchSimple (deprecated stub) ----------
 
 func TestSQLiteStore_SearchSimple_ReturnsError(t *testing.T) {
 	store := setupSQLiteStore(t)
@@ -298,9 +408,9 @@ func TestSQLiteStore_SearchHybrid_CombinesSources(t *testing.T) {
 		makeTestEmbedding(), "chunk text", 20, 5,
 		"", "", "", "", "", "", "",
 	)
-	// SearchSimple is stubbed, so it returns error; hybrid falls back to FTS
+	// SearchVector is now implemented, so hybrid combines vector + FTS results
 	assert.NoError(t, err)
-	assert.NotEmpty(t, hits, "hybrid search should fall back to FTS when vector fails")
+	assert.NotEmpty(t, hits, "hybrid search should combine vector and FTS results")
 }
 
 // ---------- Dimension mismatch ----------
@@ -692,7 +802,7 @@ func TestSQLiteStore_SearchHybrid_VectorOnlyFallback(t *testing.T) {
 	insertTestChunksSQLite(t, store, 3)
 
 	// Use a query that won't match FTS but vector search would return results
-	// Since SearchSimple is stubbed, it returns error and hybrid falls back to FTS
+	// Vector search returns results, FTS doesn't match — hybrid still works
 	_, err := store.SearchHybrid(
 		makeTestEmbedding(), "nonexistent_xyz_12345", 20, 5,
 		"", "", "", "", "", "", "",

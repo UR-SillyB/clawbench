@@ -113,12 +113,12 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		if err != nil {
 			return nil, fmt.Errorf("embed query: %w", err)
 		}
-		hits, err = store.SearchSimple(queryEmbedding, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
+		hits, err = store.SearchVector(queryEmbedding, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
 	case embedderHealthy && !cacheReady:
 		// Embedder available but cache not loaded yet — degrade to FTS-only
 		mode = SearchModeFTS
-		slog.Warn("rag: VectorCache not ready, falling back to FTS-only")
+		slog.Warn("rag: vec0 not ready, falling back to FTS-only")
 		hits, err = store.SearchFTS(params.Query, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
 	default:
