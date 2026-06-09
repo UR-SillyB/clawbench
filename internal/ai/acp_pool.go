@@ -353,8 +353,8 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCa
 // message (no session yet). Session-level current values are empty.
 func (m *ACPConnManager) GetCachedStateByAgentID(agentID string) ACPCachedState {
 	reg := GetAgentCapabilityRegistry()
-	cap := reg.Get(agentID)
-	if cap == nil || !cap.HasData() {
+	agentCap := reg.Get(agentID)
+	if agentCap == nil || !agentCap.HasData() {
 		return ACPCachedState{}
 	}
 	return ACPCachedState{
@@ -638,9 +638,12 @@ func (c *ACPConn) reapplyConfigOption(ctx context.Context, acpSID, configID, val
 	if value == "" || !c.alive || !c.isAliveLocked() {
 		return
 	}
+	reapplyStart := time.Now()
+	slog.Info("acp conn: reapplyConfigOption starting", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
 	c.mu.Unlock()
 	c.setSessionConfigOption(ctx, acpSID, configID, value)
 	c.mu.Lock()
+	slog.Info("acp conn: reapplyConfigOption done", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(reapplyStart))
 	if c.alive {
 		c.markConfigSet(configID, value)
 		slog.Info("acp conn: re-applied config after resume", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
@@ -868,6 +871,8 @@ func (c *ACPConn) AgentID() string {
 }
 
 // Prompt sends a prompt on the ACP session and forwards events to streamCh.
+//
+//nolint:gocyclo // Prompt has a long switch over ACP response types; the inline branching is clearer than extracting a dispatch table
 func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamCh chan<- StreamEvent, req ChatRequest) error {
 	// Clear stale plan state from the previous turn — a new prompt starts
 	// a fresh execution cycle and the old plan entries are no longer relevant.
@@ -888,6 +893,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 
 	// Register the stream channel so SessionUpdate callbacks are forwarded
 	if client != nil {
+		slog.Info("acp conn: RegisterSession starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
 		client.RegisterSession(acpSID, streamCh)
 		defer client.UnregisterSession(acpSID)
 	}
@@ -897,7 +903,10 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	// If the call kills the connection (agent crashed), abort early —
 	// the retry path in ACPBackend.ExecuteStream will handle respawn.
 	if req.Model != "" && c.shouldSetConfig("model", req.Model) {
+		configStart := time.Now()
+		slog.Info("acp conn: set_config_option(model) starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model)
 		c.setSessionConfigOption(ctx, acpSID, "model", req.Model)
+		slog.Info("acp conn: set_config_option(model) done", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model, "elapsed", time.Since(configStart))
 		if !c.IsAlive() {
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(model) killed connection",
@@ -909,11 +918,16 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			return err
 		}
 		c.markConfigSet("model", req.Model)
+	} else if req.Model != "" {
+		slog.Debug("acp conn: set_config_option(model) skipped (unchanged)", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "model", req.Model)
 	}
 
 	// Set thinking effort if configured AND changed since last set (non-fatal).
 	if req.ThinkingEffort != "" && c.shouldSetConfig("thinkingEffort", req.ThinkingEffort) {
+		configStart := time.Now()
+		slog.Info("acp conn: set_config_option(thinkingEffort) starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort)
 		c.setSessionConfigOption(ctx, acpSID, "thinkingEffort", req.ThinkingEffort)
+		slog.Info("acp conn: set_config_option(thinkingEffort) done", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort, "elapsed", time.Since(configStart))
 		if !c.IsAlive() {
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(thinkingEffort) killed connection",
@@ -925,11 +939,16 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			return err
 		}
 		c.markConfigSet("thinkingEffort", req.ThinkingEffort)
+	} else if req.ThinkingEffort != "" {
+		slog.Debug("acp conn: set_config_option(thinkingEffort) skipped (unchanged)", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "thinking_effort", req.ThinkingEffort)
 	}
 
 	// Set mode if configured AND changed since last set (non-fatal).
 	if req.Mode != "" && c.shouldSetConfig("mode", req.Mode) {
+		configStart := time.Now()
+		slog.Info("acp conn: set_config_option(mode) starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode)
 		c.setSessionConfigOption(ctx, acpSID, "mode", req.Mode)
+		slog.Info("acp conn: set_config_option(mode) done", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode, "elapsed", time.Since(configStart))
 		if !c.IsAlive() {
 			diag := c.collectCrashDiagnostics()
 			slog.Error("acp conn: set_config_option(mode) killed connection",
@@ -945,13 +964,18 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		if !c.IsConfigUnsupported("mode") {
 			c.UpdateCachedCurrentMode(req.Mode)
 		}
+	} else if req.Mode != "" {
+		slog.Debug("acp conn: set_config_option(mode) skipped (unchanged)", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode)
 	}
 
 	// Send prompt
+	promptStart := time.Now()
+	slog.Info("acp conn: conn.Prompt starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
 	_, err := conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(acpSID),
 		Prompt:    prompt,
 	})
+	slog.Info("acp conn: conn.Prompt done", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "elapsed", time.Since(promptStart), "error", err)
 	if err != nil {
 		if ctx.Err() != nil {
 			slog.Info("acp conn: prompt cancelled", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
@@ -1139,11 +1163,11 @@ func readProcStatus(pid int) (ppid int, vmRSSKB int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "PPid:") {
-			_, _ = fmt.Sscanf(strings.TrimPrefix(line, "PPid:"), "%d", &ppid)
-		} else if strings.HasPrefix(line, "VmRSS:") {
-			_, _ = fmt.Sscanf(strings.TrimPrefix(line, "VmRSS:"), "%d", &vmRSSKB)
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "PPid:"); ok {
+			_, _ = fmt.Sscanf(rest, "%d", &ppid)
+		} else if rest, ok := strings.CutPrefix(line, "VmRSS:"); ok {
+			_, _ = fmt.Sscanf(rest, "%d", &vmRSSKB)
 		}
 	}
 	return ppid, vmRSSKB, nil
@@ -1739,12 +1763,14 @@ func SetACPStatePrefetchedCallback(fn func(string, ACPCachedState)) {
 // caches it, and broadcasts the result via the onACPStatePrefetched callback.
 // The connection is marked idle afterward and will be reaped by idleSweep.
 // This is a non-blocking operation — it spawns a background goroutine.
+//
+//nolint:gocognit,gocyclo // PrefetchACPState walks registry dedup → in-progress check → spawn → cleanup; inlining each branch hurts readability
 func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
 	prefetchSID := "_prefetch_" + agent.ID
 
 	// Check if registry already has data for this agent — no need to prefetch.
 	reg := GetAgentCapabilityRegistry()
-	if cap := reg.Get(agent.ID); cap != nil && cap.HasData() {
+	if agentCap := reg.Get(agent.ID); agentCap != nil && agentCap.HasData() {
 		return
 	}
 

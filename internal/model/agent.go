@@ -20,16 +20,16 @@ type Agent struct {
 	Specialty               string       `json:"specialty"`
 	Backend                 string       `json:"backend"`
 	Models                  []AgentModel `json:"models"`
-	Command                 string       `json:"command"`                                   // optional: custom command path for the AI backend CLI
-	ThinkingEffort          string       `json:"thinkingEffort"`                            // agent's default thinking effort; not modified by user preference
-	ThinkingEffortLevels    []string     `json:"thinkingEffortLevels"`                      // valid levels for this backend, e.g. ["low","medium","high","xhigh"]
-	PreferredModel          string       `json:"preferredModel"`                            // user's preferred model; empty = use BaseModelID()
-	PreferredThinkingEffort string       `json:"preferredThinkingEffort"`                   // user's preferred thinking effort; empty = use ThinkingEffort
+	Command                 string       `json:"command"`                 // optional: custom command path for the AI backend CLI
+	ThinkingEffort          string       `json:"thinkingEffort"`          // agent's default thinking effort; not modified by user preference
+	ThinkingEffortLevels    []string     `json:"thinkingEffortLevels"`    // valid levels for this backend, e.g. ["low","medium","high","xhigh"]
+	PreferredModel          string       `json:"preferredModel"`          // user's preferred model; empty = use BaseModelID()
+	PreferredThinkingEffort string       `json:"preferredThinkingEffort"` // user's preferred thinking effort; empty = use ThinkingEffort
 	SystemPrompt            string       `json:"systemPrompt"`
 
 	// ACP configuration (only used when Transport != "cli")
-	Transport  string `json:"transport"`              // "cli"(default) | "acp-stdio"
-	AcpCommand string `json:"acpCommand,omitempty"`   // acp-stdio: spawn command, e.g. "gemini --acp"
+	Transport  string `json:"transport"`            // "cli"(default) | "acp-stdio"
+	AcpCommand string `json:"acpCommand,omitempty"` // acp-stdio: spawn command, e.g. "gemini --acp"
 
 	// ModelsAutoDetected indicates whether Models were filled by auto-discovery
 	// (from cache) rather than user-defined. Used by AsyncRefreshModelCache

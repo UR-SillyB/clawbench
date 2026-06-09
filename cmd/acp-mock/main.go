@@ -62,6 +62,9 @@ const (
 	effortHighName   = "High"
 )
 
+// Config option types (ACP protocol field).
+const configOptionTypeSelect = "select"
+
 func (a *mockACPAgent) Initialize(ctx context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersionNumber,
@@ -103,7 +106,7 @@ func (a *mockACPAgent) NewSession(ctx context.Context, params acp.NewSessionRequ
 				Select: &acp.SessionConfigOptionSelect{
 					Id:           acp.SessionConfigId("mode"),
 					Name:         "Mode",
-					Type:         "select",
+					Type:         configOptionTypeSelect,
 					Category:     &modeCategory,
 					CurrentValue: acp.SessionConfigValueId(modeBypass),
 					Options: acp.SessionConfigSelectOptions{
@@ -119,7 +122,7 @@ func (a *mockACPAgent) NewSession(ctx context.Context, params acp.NewSessionRequ
 				Select: &acp.SessionConfigOptionSelect{
 					Id:           acp.SessionConfigId("thinkingEffort"),
 					Name:         "Thinking Effort",
-					Type:         "select",
+					Type:         configOptionTypeSelect,
 					Category:     &thoughtLevelCategory,
 					CurrentValue: acp.SessionConfigValueId(effortMedium),
 					Options: acp.SessionConfigSelectOptions{
@@ -171,7 +174,7 @@ func (a *mockACPAgent) ResumeSession(ctx context.Context, params acp.ResumeSessi
 				Select: &acp.SessionConfigOptionSelect{
 					Id:           acp.SessionConfigId("mode"),
 					Name:         "Mode",
-					Type:         "select",
+					Type:         configOptionTypeSelect,
 					Category:     &modeCategory,
 					CurrentValue: acp.SessionConfigValueId(s.mode),
 					Options: acp.SessionConfigSelectOptions{
@@ -187,7 +190,7 @@ func (a *mockACPAgent) ResumeSession(ctx context.Context, params acp.ResumeSessi
 				Select: &acp.SessionConfigOptionSelect{
 					Id:           acp.SessionConfigId("thinkingEffort"),
 					Name:         "Thinking Effort",
-					Type:         "select",
+					Type:         configOptionTypeSelect,
 					Category:     &thoughtLevelCategory,
 					CurrentValue: acp.SessionConfigValueId(s.thinkingEffort),
 					Options: acp.SessionConfigSelectOptions{

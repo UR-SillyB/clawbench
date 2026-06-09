@@ -13,6 +13,8 @@ const mockSyncModelFromAgent = vi.fn().mockReturnValue({ modelId: 'default-model
 const mockGetEffectiveThinkingEffort = vi.fn().mockReturnValue(null)
 const mockAgentHeaderTitle = vi.fn().mockReturnValue('🤖 Test')
 
+const mockGetAgentThinkingEffortLevels = vi.fn().mockReturnValue([])
+
 vi.mock('@/composables/useAgents', () => ({
     useAgents: () => ({
         agents: ref([]),
@@ -21,6 +23,7 @@ vi.mock('@/composables/useAgents', () => ({
         getAgentModel: mockGetAgentModel,
         syncModelFromAgent: mockSyncModelFromAgent,
         getEffectiveThinkingEffort: mockGetEffectiveThinkingEffort,
+        getAgentThinkingEffortLevels: mockGetAgentThinkingEffortLevels,
         agentHeaderTitle: mockAgentHeaderTitle,
     }),
 }))
@@ -794,6 +797,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     modeId: 'code',
                     modeState: {
                         currentModeId: 'code',
@@ -828,6 +832,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     modeState: {
                         currentModeId: 'architect',
                         availableModes: [
@@ -857,6 +862,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     modeState: {
                         currentModeId: 'code',
                         availableModes: [],
@@ -884,6 +890,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     thinkingEffort: 'high',
                     thinkingEffortState: {
                         currentId: 'high',
@@ -918,6 +925,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     thinkingEffortState: {
                         currentId: 'medium',
                         availableLevels: [
@@ -947,6 +955,7 @@ describe('useSessionIdentity', () => {
                 json: () => Promise.resolve({
                     sessionId: 'api-session',
                     agentId: 'agent-1',
+                    transport: 'acp-stdio',
                     thinkingEffortState: {
                         currentId: 'high',
                         availableLevels: [],

@@ -170,6 +170,8 @@ func PermissionKey(sessionID, toolCallID string) string {
 // via the HTTP API, or the context is cancelled (session cancelled/disconnected).
 // The ACP SDK dispatches inbound requests on dedicated goroutines, so blocking
 // here is safe — it won't deadlock the transport.
+//
+//nolint:gocyclo // RequestPermission has many branches (no-options / known-tool / default / cancelled / allowed) that are clearer inline than factored out
 func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	if len(p.Options) == 0 {
 		return acp.RequestPermissionResponse{

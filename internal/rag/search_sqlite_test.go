@@ -153,7 +153,7 @@ func TestRAGSearch_HasVecDataFalse_FTSFallback(t *testing.T) {
 		if r.URL.Path == "/v1/embeddings" {
 			embJSON, _ := json.Marshal(mockEmb)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"embedding":%s,"index":0}]}`, embJSON)))
+			_, _ = fmt.Fprintf(w, `{"data":[{"embedding":%s,"index":0}]}`, embJSON)
 			return
 		}
 		if r.URL.Path == "/v1/models" {
@@ -188,7 +188,7 @@ func TestRAGSearch_Hybrid_WithMockEmbedder(t *testing.T) {
 			// Build a JSON array from the mock embedding
 			embJSON, _ := json.Marshal(mockEmb)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"embedding":%s,"index":0}]}`, embJSON)))
+			_, _ = fmt.Fprintf(w, `{"data":[{"embedding":%s,"index":0}]}`, embJSON)
 			return
 		}
 		if r.URL.Path == "/v1/models" {

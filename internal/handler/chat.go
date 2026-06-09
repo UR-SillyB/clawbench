@@ -204,8 +204,8 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				// Fall back to agent-level registry so mode/thinking/command chips
 				// appear immediately without requiring the first message.
 				reg := ai.GetAgentCapabilityRegistry()
-				cap := reg.Get(sessionAgentID)
-				if cap != nil && cap.HasData() {
+				agentCap := reg.Get(sessionAgentID)
+				if agentCap != nil && agentCap.HasData() {
 					if ms := reg.GetModeState(sessionAgentID, ""); ms != nil {
 						modeState = ms
 					}

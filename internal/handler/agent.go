@@ -35,6 +35,7 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
+//nolint:gocyclo // serveAgentsGet fan-outs across ACP/CLI transport branches and registry lookups; restructuring breaks readability
 func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	configMutex.RLock()
 	agents := make([]*model.Agent, len(model.AgentList))
@@ -58,8 +59,8 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	for _, a := range agents {
 		if a.Transport == transportACP {
 			// ACP agents: populate from AgentCapabilityRegistry
-			cap := reg.Get(a.ID)
-			if cap == nil || !cap.HasData() {
+			agentCap := reg.Get(a.ID)
+			if agentCap == nil || !agentCap.HasData() {
 				continue
 			}
 

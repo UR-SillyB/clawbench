@@ -7,6 +7,8 @@ import (
 
 	"clawbench/internal/model"
 
+	// Blank import registers the sqlite-vec virtual table extension so vec0
+	// vector search is available on every RAG store connection.
 	_ "modernc.org/sqlite/vec"
 )
 

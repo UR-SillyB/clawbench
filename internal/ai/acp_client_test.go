@@ -831,7 +831,7 @@ func TestRequestPermission_AutoApprove(t *testing.T) {
 
 	// Should have emitted tool_use and tool_result events
 	var toolUseFound, toolResultFound bool
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case evt := <-ch:
 			if evt.Type == "tool_use" && evt.Tool.Name == "PermissionApproval" {

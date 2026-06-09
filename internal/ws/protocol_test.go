@@ -159,7 +159,7 @@ func TestACPStateUpdateDataJSON(t *testing.T) {
 		d := ACPStateUpdateData{
 			AgentID: "claude",
 			ModeState: map[string]any{
-				"currentModeId": "code",
+				"currentModeId":  "code",
 				"availableModes": []map[string]string{{"id": "code", "name": "Code"}},
 			},
 			ThinkingEffortState: map[string]any{

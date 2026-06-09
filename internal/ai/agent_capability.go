@@ -74,15 +74,15 @@ func (r *AgentCapabilityRegistry) Get(agentID string) *AgentCapability {
 
 // Update updates the capability for an agent and persists to DB.
 // Only non-nil/non-empty fields are overwritten; others are preserved.
-func (r *AgentCapabilityRegistry) Update(agentID string, cap *AgentCapability) {
+func (r *AgentCapabilityRegistry) Update(agentID string, agentCap *AgentCapability) {
 	r.mu.Lock()
 	existing, ok := r.caps[agentID]
 	if !ok || existing == nil {
-		r.caps[agentID] = cap
+		r.caps[agentID] = agentCap
 		r.mu.Unlock()
 	} else {
 		r.mu.Unlock()
-		r.merge(agentID, cap)
+		r.merge(agentID, agentCap)
 	}
 	r.persistAsync(agentID)
 }
@@ -146,7 +146,7 @@ func (r *AgentCapabilityRegistry) UpdateConfigState(agentID string, state *Confi
 // first session — the ACP response is the authoritative source of truth.
 // Returns true if the update was applied, false if skipped because the current
 // process instance already refreshed this agent.
-func (r *AgentCapabilityRegistry) ForceUpdate(agentID string, cap *AgentCapability) bool {
+func (r *AgentCapabilityRegistry) ForceUpdate(agentID string, agentCap *AgentCapability) bool {
 	r.mu.Lock()
 	existing, ok := r.caps[agentID]
 	if ok && existing != nil && existing.refreshedInProcess {
@@ -154,16 +154,16 @@ func (r *AgentCapabilityRegistry) ForceUpdate(agentID string, cap *AgentCapabili
 		slog.Debug("acp capability: skipping ForceUpdate, already refreshed in this process", "agent", agentID)
 		return false
 	}
-	cap.UpdatedAt = time.Now()
-	cap.refreshedInProcess = true
-	r.caps[agentID] = cap
+	agentCap.UpdatedAt = time.Now()
+	agentCap.refreshedInProcess = true
+	r.caps[agentID] = agentCap
 	r.mu.Unlock()
 	r.persistAsync(agentID)
 	slog.Info("acp capability: ForceUpdate applied", "agent", agentID,
-		"modes", len(cap.AvailableModes),
-		"efforts", len(cap.AvailableThinkingEfforts),
-		"models", len(cap.AvailableModels),
-		"commands", len(cap.AvailableCommands))
+		"modes", len(agentCap.AvailableModes),
+		"efforts", len(agentCap.AvailableThinkingEfforts),
+		"models", len(agentCap.AvailableModels),
+		"commands", len(agentCap.AvailableCommands))
 	return true
 }
 
@@ -197,20 +197,20 @@ func (r *AgentCapabilityRegistry) ForceUpdateIfNeeded(agentID string, modes []Mo
 // with the session-level current mode ID.
 func (r *AgentCapabilityRegistry) GetModeState(agentID, currentModeID string) *ModeState {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil {
+	if !ok || agentCap == nil {
 		return nil
 	}
-	if len(cap.AvailableModes) > 0 {
+	if len(agentCap.AvailableModes) > 0 {
 		return &ModeState{
 			CurrentModeID:  currentModeID,
-			AvailableModes: cap.AvailableModes,
+			AvailableModes: agentCap.AvailableModes,
 		}
 	}
 	// ACP v2 agents (like OpenCode) report modes via ConfigOptionState
 	// with Category "mode" instead of the legacy Modes field.
-	if ms := modeStateFromConfigState(cap.ConfigOptionState); ms != nil {
+	if ms := modeStateFromConfigState(agentCap.ConfigOptionState); ms != nil {
 		if currentModeID != "" {
 			ms.CurrentModeID = currentModeID
 		}
@@ -223,14 +223,14 @@ func (r *AgentCapabilityRegistry) GetModeState(agentID, currentModeID string) *M
 // available levels with the session-level current ID.
 func (r *AgentCapabilityRegistry) GetThinkingEffortState(agentID, currentID string) *ThinkingEffortState {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableThinkingEfforts) == 0 {
+	if !ok || agentCap == nil || len(agentCap.AvailableThinkingEfforts) == 0 {
 		return nil
 	}
 	return &ThinkingEffortState{
 		CurrentID:       currentID,
-		AvailableLevels: cap.AvailableThinkingEfforts,
+		AvailableLevels: agentCap.AvailableThinkingEfforts,
 	}
 }
 
@@ -238,14 +238,14 @@ func (r *AgentCapabilityRegistry) GetThinkingEffortState(agentID, currentID stri
 // models with the session-level current model ID.
 func (r *AgentCapabilityRegistry) GetModelListState(agentID, currentModelID string) *ModelListState {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableModels) == 0 {
+	if !ok || agentCap == nil || len(agentCap.AvailableModels) == 0 {
 		return nil
 	}
 	return &ModelListState{
 		CurrentModelID: currentModelID,
-		Models:         cap.AvailableModels,
+		Models:         agentCap.AvailableModels,
 	}
 }
 
@@ -253,30 +253,30 @@ func (r *AgentCapabilityRegistry) GetModelListState(agentID, currentModelID stri
 func (r *AgentCapabilityRegistry) GetCommands(agentID string) []AvailableCommandInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	cap, ok := r.caps[agentID]
-	if !ok || cap == nil {
+	agentCap, ok := r.caps[agentID]
+	if !ok || agentCap == nil {
 		return nil
 	}
-	return cap.AvailableCommands
+	return agentCap.AvailableCommands
 }
 
 // GetConfigState returns the config option state for an agent.
 func (r *AgentCapabilityRegistry) GetConfigState(agentID string) *ConfigOptionState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	cap, ok := r.caps[agentID]
-	if !ok || cap == nil {
+	agentCap, ok := r.caps[agentID]
+	if !ok || agentCap == nil {
 		return nil
 	}
-	return cap.ConfigOptionState
+	return agentCap.ConfigOptionState
 }
 
 // HasAvailableModes checks whether an agent has available modes in the registry.
 func (r *AgentCapabilityRegistry) HasAvailableModes(agentID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	cap, ok := r.caps[agentID]
-	return ok && cap != nil && len(cap.AvailableModes) > 0
+	agentCap, ok := r.caps[agentID]
+	return ok && agentCap != nil && len(agentCap.AvailableModes) > 0
 }
 
 // IsModeAvailable checks whether a specific mode ID exists in the agent's
@@ -284,11 +284,11 @@ func (r *AgentCapabilityRegistry) HasAvailableModes(agentID string) bool {
 func (r *AgentCapabilityRegistry) IsModeAvailable(agentID, modeID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	cap, ok := r.caps[agentID]
-	if !ok || cap == nil {
+	agentCap, ok := r.caps[agentID]
+	if !ok || agentCap == nil {
 		return false
 	}
-	for _, m := range cap.AvailableModes {
+	for _, m := range agentCap.AvailableModes {
 		if m.ID == modeID {
 			return true
 		}
@@ -300,13 +300,13 @@ func (r *AgentCapabilityRegistry) IsModeAvailable(agentID, modeID string) bool {
 // not present in the registry's available modes for this agent.
 func (r *AgentCapabilityRegistry) HasNewAvailableModes(agentID string, newModes []ModeDef) bool {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableModes) == 0 {
+	if !ok || agentCap == nil || len(agentCap.AvailableModes) == 0 {
 		return len(newModes) > 0
 	}
-	seen := make(map[string]struct{}, len(cap.AvailableModes))
-	for _, m := range cap.AvailableModes {
+	seen := make(map[string]struct{}, len(agentCap.AvailableModes))
+	for _, m := range agentCap.AvailableModes {
 		seen[m.ID] = struct{}{}
 	}
 	for _, m := range newModes {
@@ -321,13 +321,13 @@ func (r *AgentCapabilityRegistry) HasNewAvailableModes(agentID string, newModes 
 // IDs not present in the registry.
 func (r *AgentCapabilityRegistry) HasNewAvailableThinkingEfforts(agentID string, newLevels []ThinkingEffortDef) bool {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableThinkingEfforts) == 0 {
+	if !ok || agentCap == nil || len(agentCap.AvailableThinkingEfforts) == 0 {
 		return len(newLevels) > 0
 	}
-	seen := make(map[string]struct{}, len(cap.AvailableThinkingEfforts))
-	for _, l := range cap.AvailableThinkingEfforts {
+	seen := make(map[string]struct{}, len(agentCap.AvailableThinkingEfforts))
+	for _, l := range agentCap.AvailableThinkingEfforts {
 		seen[l.ID] = struct{}{}
 	}
 	for _, l := range newLevels {
@@ -342,13 +342,13 @@ func (r *AgentCapabilityRegistry) HasNewAvailableThinkingEfforts(agentID string,
 // not present in the registry.
 func (r *AgentCapabilityRegistry) HasNewAvailableModels(agentID string, newModels []model.AgentModel) bool {
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil || len(cap.AvailableModels) == 0 {
+	if !ok || agentCap == nil || len(agentCap.AvailableModels) == 0 {
 		return len(newModels) > 0
 	}
-	seen := make(map[string]struct{}, len(cap.AvailableModels))
-	for _, m := range cap.AvailableModels {
+	seen := make(map[string]struct{}, len(agentCap.AvailableModels))
+	for _, m := range agentCap.AvailableModels {
 		seen[m.ID] = struct{}{}
 	}
 	for _, m := range newModels {
@@ -391,36 +391,38 @@ func (r *AgentCapabilityRegistry) persistAsync(agentID string) {
 	}
 
 	r.mu.RLock()
-	cap, ok := r.caps[agentID]
+	agentCap, ok := r.caps[agentID]
 	r.mu.RUnlock()
-	if !ok || cap == nil {
+	if !ok || agentCap == nil {
 		return
 	}
 
 	go func() {
-		if err := r.saveToDB(db, agentID, cap); err != nil {
+		if err := r.saveToDB(db, agentID, agentCap); err != nil {
 			slog.Warn("failed to persist agent capability to DB", "agent", agentID, "error", err)
 		}
 	}()
 }
 
 // saveToDB persists capabilities for a single agent to the agents table.
-func (r *AgentCapabilityRegistry) saveToDB(db *sql.DB, agentID string, cap *AgentCapability) error {
-	modesJSON, _ := json.Marshal(cap.AvailableModes)
+//
+//nolint:noctx // saveToDB runs in a background goroutine spawned from persistAsync; no caller-provided context is available, so the context-free Exec is intentional
+func (r *AgentCapabilityRegistry) saveToDB(db *sql.DB, agentID string, agentCap *AgentCapability) error {
+	modesJSON, _ := json.Marshal(agentCap.AvailableModes)
 	if string(modesJSON) == "null" {
 		modesJSON = []byte("[]")
 	}
-	effortsJSON, _ := json.Marshal(cap.AvailableThinkingEfforts)
+	effortsJSON, _ := json.Marshal(agentCap.AvailableThinkingEfforts)
 	if string(effortsJSON) == "null" {
 		effortsJSON = []byte("[]")
 	}
-	cmdsJSON, _ := json.Marshal(cap.AvailableCommands)
+	cmdsJSON, _ := json.Marshal(agentCap.AvailableCommands)
 	if string(cmdsJSON) == "null" {
 		cmdsJSON = []byte("[]")
 	}
 	var configJSON string
-	if cap.ConfigOptionState != nil {
-		b, _ := json.Marshal(cap.ConfigOptionState)
+	if agentCap.ConfigOptionState != nil {
+		b, _ := json.Marshal(agentCap.ConfigOptionState)
 		configJSON = string(b)
 	}
 
@@ -437,6 +439,8 @@ func (r *AgentCapabilityRegistry) saveToDB(db *sql.DB, agentID string, cap *Agen
 }
 
 // LoadFromDB loads persisted capabilities from the agents table on startup.
+//
+//nolint:gocyclo,noctx // LoadFromDB branches on each capability field (modes/efforts/commands/config); a switch adds boilerplate without clarity. Query without context runs once during startup where cancellation is not relevant
 func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 	rows, err := db.Query(`
 		SELECT id, acp_available_modes, acp_available_thinking_efforts,
@@ -449,6 +453,9 @@ func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 		return
 	}
 	defer func() { _ = rows.Close() }()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		slog.Warn("agent capability rows error", "error", rowsErr)
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -460,41 +467,41 @@ func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 			continue
 		}
 
-		cap := &AgentCapability{}
+		agentCap := &AgentCapability{}
 
 		if modesJSON != "" && modesJSON != "[]" {
 			var modes []ModeDef
 			if err := json.Unmarshal([]byte(modesJSON), &modes); err == nil {
-				cap.AvailableModes = modes
+				agentCap.AvailableModes = modes
 			}
 		}
 		if effortsJSON != "" && effortsJSON != "[]" {
 			var efforts []ThinkingEffortDef
 			if err := json.Unmarshal([]byte(effortsJSON), &efforts); err == nil {
-				cap.AvailableThinkingEfforts = efforts
+				agentCap.AvailableThinkingEfforts = efforts
 			}
 		}
 		if cmdsJSON != "" && cmdsJSON != "[]" {
 			var cmds []AvailableCommandInfo
 			if err := json.Unmarshal([]byte(cmdsJSON), &cmds); err == nil {
-				cap.AvailableCommands = cmds
+				agentCap.AvailableCommands = cmds
 			}
 		}
 		if configJSON != "" {
 			var config ConfigOptionState
 			if err := json.Unmarshal([]byte(configJSON), &config); err == nil {
-				cap.ConfigOptionState = &config
+				agentCap.ConfigOptionState = &config
 			}
 		}
 
-		if cap.HasData() {
-			cap.UpdatedAt = time.Now()
-			r.caps[agentID] = cap
+		if agentCap.HasData() {
+			agentCap.UpdatedAt = time.Now()
+			r.caps[agentID] = agentCap
 			slog.Info("loaded agent capability from DB",
 				"agent", agentID,
-				"modes", len(cap.AvailableModes),
-				"efforts", len(cap.AvailableThinkingEfforts),
-				"commands", len(cap.AvailableCommands))
+				"modes", len(agentCap.AvailableModes),
+				"efforts", len(agentCap.AvailableThinkingEfforts),
+				"commands", len(agentCap.AvailableCommands))
 		}
 	}
 }

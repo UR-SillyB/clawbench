@@ -234,15 +234,18 @@ func ServeAISessionUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.ModelID != "" {
+		//nolint:errcheck,gosec // best-effort persistence; failure is non-fatal for an idempotent update
 		service.UpdateSessionModel(sessionID, req.ModelID)
 	}
 	if req.Transport != "" {
+		//nolint:errcheck,gosec // best-effort persistence; failure is non-fatal for an idempotent update
 		service.UpdateSessionTransport(sessionID, req.Transport)
 		if req.Transport == "cli" {
 			ai.GetACPConnManager().CloseConn(sessionID)
 		}
 	}
 	if req.AutoApprove != nil {
+		//nolint:errcheck,gosec // best-effort persistence; failure is non-fatal for an idempotent update
 		service.UpdateSessionAutoApprove(sessionID, *req.AutoApprove)
 		// Sync to ACPConn runtime state
 		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
