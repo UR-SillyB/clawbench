@@ -117,7 +117,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         // the onerror non-recoverable path (see ISS-xxx comment there).
         pollUntilDone()
       }
-    }, STREAM_TIMEOUT_MS)
+    }, timeoutMs)
   }
 
   function disconnectStream(calledFromCleanup = false) {

@@ -1038,9 +1038,13 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 	// turns this can take many minutes — that's expected, because content
 	// streams to the frontend in real time via SessionUpdate notifications.
 	//
-	// Do NOT add a hard timeout here: a deadline would kill the stream
-	// mid-output while the agent is still working. Instead, rely on the
-	// parent ctx for cancellation (user presses Cancel → ctx cancelled).
+	// DO NOT add a hard timeout here. A deadline would kill the stream
+	// mid-output while the agent is still actively working (e.g., long
+	// refactoring tasks that take 30+ minutes). The parent ctx handles
+	// user-initiated cancellation; adding a separate timeout here will
+	// silently murder long-running agent turns and lose all progress.
+	// Previous attempt to add a 30-minute timeout here caused real user
+	// tasks to be killed — do NOT repeat that mistake.
 	promptStart := time.Now()
 	slog.Info("acp conn: conn.Prompt starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
 	_, err := conn.Prompt(ctx, acp.PromptRequest{
