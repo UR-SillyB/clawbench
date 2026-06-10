@@ -23,8 +23,12 @@ import { ChatPage } from '../pages/chat.page'
  * SERIAL: Tests must run serially because the ACP mock agent is a single
  * subprocess. Concurrent Prompt requests on the same agent process can
  * cause the JSON-RPC stream to become corrupted.
+ *
+ * CHROMIUM ONLY: ACP serial tests share server state (session mode/thinking)
+ * that would be corrupted by cross-browser execution.
  */
 test.describe.serial('ACP Config Latency & Non-Blocking', () => {
+  test.skip(({ browserName }) => browserName !== 'chromium', 'ACP serial tests run on Chromium only')
   test.setTimeout(120000)
 
   let chat: ChatPage

@@ -226,7 +226,9 @@ export class ChatPage {
           const resp = await fetch('/api/ai/chat?limit=1')
           if (!resp.ok) return { modeId: '' }
           const data = await resp.json()
-          return { modeId: data.modeId || '' }
+          // modeState is an object: { currentModeId: "plan", availableModes: [...], ... }
+          const current = data.modeState?.currentModeId || ''
+          return { modeId: current }
         }, expectedModeId)
         if (result.modeId === expectedModeId) return
       } catch {
@@ -249,7 +251,9 @@ export class ChatPage {
           const resp = await fetch('/api/ai/chat?limit=1')
           if (!resp.ok) return { effort: '' }
           const data = await resp.json()
-          return { effort: data.thinkingEffort || '' }
+          // thinkingEffortState is an object: { currentId: "high", availableLevels: [...], ... }
+          const current = data.thinkingEffortState?.currentId || ''
+          return { effort: current }
         }, expectedEffort)
         if (result.effort === expectedEffort) return
       } catch {

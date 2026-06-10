@@ -542,6 +542,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// 1. Detect installed CLIs and write new agents to DB
 	present := model.SyncDiscoverAgentsDB(service.DB)
 
+	// 1a. Load manually-defined agents from config/agents/*.yaml (e.g., acp-mock for E2E)
+	model.LoadYamlAgents(service.DB, filepath.Dir(configPath))
+
 	// 2. Synchronous model discovery (run when agents may have empty model lists)
 	discoveredModels := model.SyncDiscoverModels()
 

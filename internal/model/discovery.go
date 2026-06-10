@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"clawbench/internal/platform"
+
+	"gopkg.in/yaml.v3"
 )
 
 // BackendSpec defines a known AI backend for auto-discovery.
@@ -1491,6 +1493,102 @@ func saveAgentToDB(db *sql.DB, agent *Agent) error {
 		agent.SystemPrompt, string(modelsJSON), agent.ModelsAutoDetected, agent.Source, agent.SortOrder,
 		transport, agent.AcpCommand)
 	return err
+}
+
+// yamlAgent represents the YAML structure for agent config files in config/agents/.
+// This supports manually-defined agents (e.g., acp-mock for E2E testing) that are
+// not in BackendRegistry and thus not auto-discovered by SyncDiscoverAgentsDB.
+type yamlAgent struct {
+	ID                      string          `yaml:"id"`
+	Name                    string          `yaml:"name"`
+	Icon                    string          `yaml:"icon"`
+	Specialty               string          `yaml:"specialty"`
+	Backend                 string          `yaml:"backend"`
+	Command                 string          `yaml:"command"`
+	ThinkingEffort          string          `yaml:"thinking_effort"`
+	ThinkingEffortLevels    []string        `yaml:"thinking_effort_levels"`
+	PreferredModel          string          `yaml:"preferred_model"`
+	PreferredThinkingEffort string          `yaml:"preferred_thinking_effort"`
+	SystemPrompt            string          `yaml:"system_prompt"`
+	Transport               string          `yaml:"transport"`
+	AcpCommand              string          `yaml:"acp_command"`
+	Models                  []AgentModel    `yaml:"models"`
+	SortOrder               int             `yaml:"sort_order"`
+}
+
+// LoadYamlAgents reads agent definitions from config/agents/*.yaml and inserts
+// them into the database if they don't already exist. This allows manually-defined
+// agents (e.g., acp-mock for E2E testing) to be loaded without requiring an entry
+// in BackendRegistry.
+func LoadYamlAgents(db *sql.DB, configDir string) {
+	agentsDir := filepath.Join(configDir, "agents")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read agents config dir", "path", agentsDir, "error", err)
+		}
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(agentsDir, entry.Name()))
+		if err != nil {
+			slog.Warn("failed to read agent yaml", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		var ya yamlAgent
+		if err := yaml.Unmarshal(data, &ya); err != nil {
+			slog.Warn("failed to parse agent yaml", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		if ya.ID == "" || ya.Backend == "" {
+			slog.Warn("agent yaml missing id or backend", "file", entry.Name())
+			continue
+		}
+
+		// Check if agent already exists in DB
+		var count int
+		err = db.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ?", ya.ID).Scan(&count)
+		if err != nil {
+			slog.Warn("failed to query agents table", "id", ya.ID, "error", err)
+			continue
+		}
+		if count > 0 {
+			continue // Don't overwrite existing DB records
+		}
+
+		agent := &Agent{
+			ID:                      ya.ID,
+			Name:                    ya.Name,
+			Icon:                    ya.Icon,
+			Specialty:               ya.Specialty,
+			Backend:                 ya.Backend,
+			Command:                 ya.Command,
+			ThinkingEffort:          ya.ThinkingEffort,
+			ThinkingEffortLevels:    ya.ThinkingEffortLevels,
+			PreferredModel:          ya.PreferredModel,
+			PreferredThinkingEffort: ya.PreferredThinkingEffort,
+			SystemPrompt:            ya.SystemPrompt,
+			Transport:               ya.Transport,
+			AcpCommand:              ya.AcpCommand,
+			Models:                  ya.Models,
+			SortOrder:               ya.SortOrder,
+			Source:                  "manual",
+			ModelsAutoDetected:      len(ya.Models) == 0,
+		}
+
+		if err := saveAgentToDB(db, agent); err != nil {
+			slog.Warn("failed to insert yaml agent to DB", "id", ya.ID, "error", err)
+			continue
+		}
+		slog.Info("loaded agent from yaml config", "id", ya.ID, "file", entry.Name())
+	}
 }
 
 // MergeDiscoveredDataDB is the DB-based replacement for MergeDiscoveredData.
