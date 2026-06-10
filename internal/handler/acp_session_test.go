@@ -94,6 +94,64 @@ func TestServeACPSessions_NoAliveConnection(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 
+// TestServeACPSessions_SpawnOnDemandWhenNoCapabilityRegistered verifies that
+// when no capability is registered yet (no prior connection), the handler
+// attempts to spawn an ACP connection via GetOrCreateConnNoSession to discover
+// capabilities. If the spawn fails (agent binary not a real ACP agent), we
+// should get 501 (capability not supported) rather than 503, because the
+// spawn was attempted but couldn't confirm capability support.
+func TestServeACPSessions_SpawnOnDemandWhenNoCapabilityRegistered(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-spawn-ondemand"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// No capabilities registered — this is the "fresh startup" state
+	// where the user hasn't sent any message yet.
+	// The handler should attempt to spawn a connection to discover capabilities.
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	// Spawn fails because "echo" is not a real ACP agent, and no capability
+	// was discovered — so we get 501 (not implemented), not 503.
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// TestServeACPSessions_CapabilityFromDBPersistence verifies that when
+// capabilities are persisted in the DB (from a prior connection), the
+// handler can check them even without an active connection. If the
+// capability is supported but no connection can be established, we get 503.
+func TestServeACPSessions_CapabilityFromDBPersistence(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-db-cap"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// Simulate DB-persisted capabilities (from a previous session)
+	reg := ai.GetAgentCapabilityRegistry()
+	ls := true
+	lss := true
+	reg.Update(agentID, &ai.AgentCapability{LoadSession: &ls, ListSessions: &lss})
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	// Capability is known (from registry), but no alive connection → 503
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
 // --- ServeACPLoadSession ---
 
 func TestServeACPLoadSession_InvalidRequestBody(t *testing.T) {

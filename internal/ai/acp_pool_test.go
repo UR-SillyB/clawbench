@@ -540,3 +540,32 @@ func TestACPConn_GetAndClearLoadSessionResp_ClearsAfterRead(t *testing.T) {
 	resp2 := conn.GetAndClearLoadSessionResp()
 	assert.Nil(t, resp2)
 }
+
+// --- ACPConnManager.GetOrCreateConnNoSession ---
+
+func TestACPConnManager_GetOrCreateConnNoSession_FailedSpawn(t *testing.T) {
+	mgr := GetACPConnManager()
+
+	// "echo" is not a real ACP agent, so Initialize will fail
+	agent := &model.Agent{ID: "test-nosession-fail", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := mgr.GetOrCreateConnNoSession(context.Background(), agent)
+	assert.Nil(t, conn, "should return nil when agent binary fails Initialize")
+}
+
+func TestACPConnManager_GetOrCreateConnNoSession_UsesSpecialKey(t *testing.T) {
+	mgr := GetACPConnManager()
+
+	agent := &model.Agent{ID: "test-nosession-key", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	// Even though spawn fails, a conn entry with the special key should
+	// have been created (then cleaned up on failure)
+	conn := mgr.GetOrCreateConnNoSession(context.Background(), agent)
+	assert.Nil(t, conn)
+
+	// Verify no stale entry was left behind
+	key := "__list_sessions__:test-nosession-key"
+	mgr.mu.Lock()
+	_, exists := mgr.conns[key]
+	mgr.mu.Unlock()
+	assert.False(t, exists, "failed connection should be cleaned up from conns map")
+}

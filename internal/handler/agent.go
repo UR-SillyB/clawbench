@@ -345,6 +345,21 @@ func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reg := ai.GetAgentCapabilityRegistry()
+
+	// Try to get an existing alive connection first.
+	mgr := ai.GetACPConnManager()
+	conn := mgr.GetConnByAgentID(agentID)
+
+	// If no alive connection exists, try to spawn one to discover capabilities.
+	// This solves the chicken-and-egg problem: GetListSessions is only populated
+	// after Initialize, which requires spawning a connection. We use EnsureAlive
+	// which spawns without creating a session.
+	if conn == nil {
+		conn = mgr.GetOrCreateConnNoSession(r.Context(), agent)
+	}
+
+	// Check capabilities — they may have been populated by the EnsureAlive
+	// call above (via spawnLocked → Initialize), or from DB persistence.
 	loadSession := reg.GetLoadSession(agentID)
 	listSessions := reg.GetListSessions(agentID)
 
@@ -362,24 +377,11 @@ func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get or create an alive connection for this agent.
-	// If no connection exists yet (pool not initialized), try to get one
-	// via GetOrCreateConn which will spawn the agent process if needed.
-	mgr := ai.GetACPConnManager()
-	conn := mgr.GetConnByAgentID(agentID)
+	// We know the agent supports ListSessions but couldn't get a connection.
 	if conn == nil {
-		// No existing connection — spawn one on-demand so we can call ListSessions.
-		// Use a dummy clawbenchSID since we just need the connection alive.
-		configMutex.RLock()
-		a := model.Agents[agentID]
-		configMutex.RUnlock()
-		var err error
-		conn, _, err = mgr.GetOrCreateConn(r.Context(), a, "", "")
-		if err != nil {
-			slog.Warn("handler: failed to spawn ACP connection for ListSessions", "agent", agentID, "error", err)
-			writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "ServiceUnavailable")
-			return
-		}
+		slog.Warn("handler: failed to spawn ACP connection for ListSessions", "agent", agentID)
+		writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "ServiceUnavailable")
+		return
 	}
 
 	cursor := r.URL.Query().Get("cursor")

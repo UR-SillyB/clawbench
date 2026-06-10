@@ -217,6 +217,39 @@ func (m *ACPConnManager) SetSessionRunningChecker(fn func(sessionID string) bool
 	m.isSessionRunning = fn
 }
 
+// GetOrCreateConnNoSession returns an alive ACPConn for the given agent without
+// creating an ACP session. It spawns the agent process and runs Initialize (which
+// populates capabilities in the registry), but does NOT call NewSession or
+// ResumeSession. Used by ServeACPSessions which needs an alive connection for
+// ListSessions but no session.
+// Returns nil if the connection could not be established.
+func (m *ACPConnManager) GetOrCreateConnNoSession(ctx context.Context, agent *model.Agent) *ACPConn {
+	// Use a special key that won't collide with real session IDs.
+	// This connection is shared across all ListSessions calls for this agent
+	// until a real chat session claims it.
+	connKey := "__list_sessions__:" + agent.ID
+
+	m.mu.Lock()
+	conn, ok := m.conns[connKey]
+	if !ok {
+		conn = newACPConn(agent, connKey)
+		m.conns[connKey] = conn
+	}
+	m.mu.Unlock()
+
+	if err := conn.EnsureAlive(ctx, ""); err != nil {
+		slog.Warn("acp: GetOrCreateConnNoSession failed", "agent", agent.ID, "error", err)
+		// Clean up the failed connection entry
+		m.mu.Lock()
+		if c, exists := m.conns[connKey]; exists && c == conn {
+			delete(m.conns, connKey)
+		}
+		m.mu.Unlock()
+		return nil
+	}
+	return conn
+}
+
 // GetOrCreateConn returns the ACPConn for a ClawBench session, creating one if needed.
 // If the existing connection is dead, it respawns and tries to recover the session
 // via ResumeSession. If recovery fails or there's no prior session, it creates a new one.
