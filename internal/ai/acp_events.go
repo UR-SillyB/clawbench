@@ -1285,3 +1285,9 @@ func forwardACPEvent(ch chan<- StreamEvent, event StreamEvent) {
 		slog.Warn("acp: stream channel full, dropping event", "type", event.Type)
 	}
 }
+
+// MapACPSessionUpdateForTest exports mapACPSessionUpdate for use in handler-level
+// tests that verify LoadSession replay parsing. Production code must not use this.
+func MapACPSessionUpdateForTest(update acp.SessionUpdate, ch chan<- StreamEvent) {
+	mapACPSessionUpdate(update, ch, nil, nil, nil)
+}
