@@ -565,12 +565,23 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		return false, c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
 	}
 
-	// No prior session — first message ever, create new session
-	sessResp, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
+	// No prior session — first message ever, create new session.
+	// Timeout prevents blocking forever if the agent binary hangs during
+	// session creation (e.g., bridge adapter waiting for claude CLI init).
+	newSessCtx, newSessCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer newSessCancel()
+
+	sessResp, err := c.conn.NewSession(newSessCtx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
 	})
 	if err != nil {
+		// Mark connection dead so the next request triggers a fresh spawn
+		// instead of reusing a connection whose agent process is in an
+		// unknown state (e.g., hung during session creation).
+		c.mu.Lock()
+		c.alive = false
+		c.mu.Unlock()
 		return false, fmt.Errorf("acp: session/new: %w", err)
 	}
 
@@ -599,7 +610,11 @@ func (c *ACPConn) snapshotCachedConfig() cachedConfigSnapshot {
 
 // recoverViaResumeSession recovers a session via ResumeSession and re-applies config.
 func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID string, prevConfig cachedConfigSnapshot) error {
-	resumeResp, err := c.conn.ResumeSession(ctx, acp.ResumeSessionRequest{
+	// Timeout prevents blocking forever if the agent is unresponsive during resume.
+	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer resumeCancel()
+
+	resumeResp, err := c.conn.ResumeSession(resumeCtx, acp.ResumeSessionRequest{
 		SessionId:  acp.SessionId(acpSID),
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
@@ -609,6 +624,10 @@ func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID strin
 			"clawbench_sid", c.clawbenchSID,
 			"acp_sid", acpSID,
 			"error", err)
+		// Mark connection dead so the next request triggers a fresh spawn.
+		c.mu.Lock()
+		c.alive = false
+		c.mu.Unlock()
 		return fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
 	}
 	c.acpSID = acpSID
@@ -737,7 +756,12 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	conn := acp.NewClientSideConnection(client, stdinPipe, stdoutPipe)
 	conn.SetLogger(slog.Default())
 
-	initResp, err := conn.Initialize(ctx, acp.InitializeRequest{
+	// Initialize the ACP connection with a timeout so that an unresponsive
+	// agent binary doesn't block the entire chat goroutine indefinitely.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer initCancel()
+
+	initResp, err := conn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs: acp.FileSystemCapabilities{
@@ -968,10 +992,17 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		slog.Debug("acp conn: set_config_option(mode) skipped (unchanged)", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode)
 	}
 
-	// Send prompt
+	// Send prompt with a timeout. The Prompt RPC should return quickly (it
+	// just delivers the prompt to the agent; content streams back via
+	// SessionUpdate notifications). If it blocks, the agent's internal
+	// subprocess is likely hung. Use the parent ctx for cancellation (user
+	// cancel) but add a deadline as a safety net.
+	promptCtx, promptCancel := context.WithTimeout(ctx, 120*time.Second)
+	defer promptCancel()
+
 	promptStart := time.Now()
 	slog.Info("acp conn: conn.Prompt starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
-	_, err := conn.Prompt(ctx, acp.PromptRequest{
+	_, err := conn.Prompt(promptCtx, acp.PromptRequest{
 		SessionId: acp.SessionId(acpSID),
 		Prompt:    prompt,
 	})
@@ -1239,7 +1270,15 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 
 	slog.Info("acp conn: sending set_config_option", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID, "acp_sid", acpSessionID)
 
-	_, err := conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+	// Apply a timeout so set_config_option doesn't block forever if the agent
+	// is unresponsive (e.g., bridge adapter's internal subprocess crashed).
+	// The parent ctx has no deadline (context.WithCancel(context.Background())),
+	// so without this timeout a hung agent would block the entire chat goroutine
+	// indefinitely — no SSE events, no logs, just a stuck session.
+	configCtx, configCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer configCancel()
+
+	_, err := conn.SetSessionConfigOption(configCtx, acp.SetSessionConfigOptionRequest{
 		ValueId: &acp.SetSessionConfigOptionValueId{
 			SessionId: acp.SessionId(acpSessionID),
 			ConfigId:  acp.SessionConfigId(configID),
@@ -1266,6 +1305,16 @@ func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, conf
 			c.alive = false
 			c.mu.Unlock()
 			slog.Info("acp conn: set_config_option detected peer disconnect, marking dead", "config_id", configID, "value", value)
+		}
+		// A timeout indicates the agent is unresponsive — mark dead so the
+		// retry path in ExecuteStream can respawn + ResumeSession.
+		if configCtx.Err() == context.DeadlineExceeded {
+			c.mu.Lock()
+			c.alive = false
+			c.mu.Unlock()
+			slog.Warn("acp conn: set_config_option timed out, marking connection dead",
+				"config_id", configID, "value", value,
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSessionID)
 		}
 	} else {
 		slog.Info("acp conn: set_config_option completed", "config_id", configID, "value", value)
