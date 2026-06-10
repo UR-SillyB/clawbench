@@ -345,7 +345,19 @@ func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reg := ai.GetAgentCapabilityRegistry()
-	if !reg.GetLoadSession(agentID) || !reg.GetListSessions(agentID) {
+	loadSession := reg.GetLoadSession(agentID)
+	listSessions := reg.GetListSessions(agentID)
+
+	// If neither capability is supported, return 501
+	if !loadSession && !listSessions {
+		writeLocalizedErrorf(w, r, http.StatusNotImplemented, "NotImplemented")
+		return
+	}
+
+	// If ListSessions is not supported, return 501 — the drawer shows
+	// "not supported" message. The user can still use @resume with a
+	// known session ID if LoadSession is supported.
+	if !listSessions {
 		writeLocalizedErrorf(w, r, http.StatusNotImplemented, "NotImplemented")
 		return
 	}

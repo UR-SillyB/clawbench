@@ -17,6 +17,7 @@ export interface UseAcpSessionOptions {
 const acpSessions = ref<AcpSessionInfo[]>([])
 const acpSessionsLoading = ref(false)
 const acpResuming = ref(false)
+const acpSessionsNotSupported = ref(false)
 const nextCursor = ref<string | null>(null)
 const lastAgentId = ref('')
 
@@ -32,6 +33,7 @@ export function useAcpSession(options: UseAcpSessionOptions) {
     if (!append && aid !== lastAgentId.value) {
       acpSessions.value = []
       nextCursor.value = null
+      acpSessionsNotSupported.value = false
       lastAgentId.value = aid
     }
 
@@ -43,8 +45,10 @@ export function useAcpSession(options: UseAcpSessionOptions) {
       }
       const resp = await fetch(url)
       if (!resp.ok) {
-        // 501 = capability not supported — silently ignore
-        if (resp.status !== 501) {
+        // 501 = ListSessions not supported by this agent
+        if (resp.status === 501) {
+          acpSessionsNotSupported.value = true
+        } else {
           toast.show(gt('chat.acpSession.loadFailed'), { type: 'error', icon: '⚠️' })
         }
         return
@@ -102,6 +106,7 @@ export function useAcpSession(options: UseAcpSessionOptions) {
   function clearAcpSessions(): void {
     acpSessions.value = []
     nextCursor.value = null
+    acpSessionsNotSupported.value = false
     lastAgentId.value = ''
   }
 
@@ -109,6 +114,7 @@ export function useAcpSession(options: UseAcpSessionOptions) {
     acpSessions,
     acpSessionsLoading,
     acpResuming,
+    acpSessionsNotSupported,
     nextCursor,
     loadAcpSessions,
     acpLoadSession,

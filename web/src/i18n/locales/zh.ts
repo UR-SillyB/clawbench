@@ -105,6 +105,7 @@ export default {
       title: 'ACP 会话',
       loading: '加载中...',
       empty: '暂无会话',
+      notSupported: '该智能体不支持列出会话',
       untitled: '未命名会话',
       loadMore: '加载更多',
       loadFailed: '加载 ACP 会话失败',

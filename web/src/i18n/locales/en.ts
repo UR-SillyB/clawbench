@@ -105,6 +105,7 @@ export default {
       title: 'ACP Sessions',
       loading: 'Loading sessions...',
       empty: 'No sessions found',
+      notSupported: 'This agent does not support listing sessions',
       untitled: 'Untitled Session',
       loadMore: 'Load more',
       loadFailed: 'Failed to load ACP session',

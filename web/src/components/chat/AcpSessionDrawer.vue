@@ -9,6 +9,9 @@
       <div v-if="acpSessionsLoading && acpSessions.length === 0" class="acp-session-empty">
         {{ t('chat.acpSession.loading') }}
       </div>
+      <div v-else-if="acpSessionsNotSupported" class="acp-session-empty">
+        {{ t('chat.acpSession.notSupported') }}
+      </div>
       <div v-else-if="acpSessions.length === 0" class="acp-session-empty">
         {{ t('chat.acpSession.empty') }}
       </div>
@@ -60,6 +63,7 @@ const {
   acpSessions,
   acpSessionsLoading,
   acpResuming,
+  acpSessionsNotSupported,
   nextCursor,
   loadAcpSessions,
   acpLoadSession,
