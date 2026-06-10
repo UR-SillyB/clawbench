@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -547,7 +548,12 @@ type ACPConn struct {
 	// loadSessionActive indicates that a LoadSession replay is in progress.
 	// During replay, SessionUpdate messages are collected in the client's
 	// loadSessionBuf instead of being routed to SSE stream channels.
-	loadSessionActive bool
+	// Uses atomic to avoid deadlocking: ensureAliveWithSession holds mu while
+	// calling NewSession/LoadSession, which triggers SessionUpdate callbacks
+	// that read loadSessionActive via IsLoadSessionActive(). If IsLoadSessionActive
+	// also needed mu, it would deadlock since the goroutine processing notifications
+	// is the same one that must complete before NewSession/LoadSession can return.
+	loadSessionActive atomic.Bool
 
 	// liveness
 	lastUsed  time.Time
@@ -675,7 +681,7 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		loadCtx, loadCancel := context.WithTimeout(ctx, 60*time.Second)
 		defer loadCancel()
 
-		c.loadSessionActive = true
+		c.loadSessionActive.Store(true)
 		loadStart := time.Now()
 		loadResp, err := c.conn.LoadSession(loadCtx, acp.LoadSessionRequest{
 			SessionId:  acp.SessionId(loadSID),
@@ -683,7 +689,7 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 			McpServers: []acp.McpServer{},
 		})
 		slog.Info("acp perf: ensureAliveWithSession.LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID, "elapsed", time.Since(loadStart), "error", err)
-		c.loadSessionActive = false
+		c.loadSessionActive.Store(false)
 
 		if err != nil {
 			c.alive = false

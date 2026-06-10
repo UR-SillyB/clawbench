@@ -468,10 +468,7 @@ func TestACPConn_LoadSessionActive_DefaultFalse(t *testing.T) {
 	agent := &model.Agent{ID: "test-load-active", Backend: "acp-stdio", AcpCommand: "echo"}
 	conn := newACPConn(agent, "session-load-active")
 
-	conn.mu.Lock()
-	active := conn.loadSessionActive
-	conn.mu.Unlock()
-	assert.False(t, active)
+	assert.False(t, conn.loadSessionActive.Load())
 }
 
 func TestACPConnManager_GetOrCreateConnForLoad_SetsLoadTarget(t *testing.T) {

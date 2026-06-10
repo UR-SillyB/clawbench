@@ -112,14 +112,12 @@ func (c *ClawBenchACPClient) GetCommands() []acp.AvailableCommand {
 }
 
 // IsLoadSessionActive returns whether a LoadSession replay is in progress.
+// Uses atomic load to avoid deadlocking with ACPConn.mu (see loadSessionActive docs).
 func (c *ClawBenchACPClient) IsLoadSessionActive() bool {
 	if c.connRef == nil {
 		return false
 	}
-	c.connRef.mu.Lock()
-	active := c.connRef.loadSessionActive
-	c.connRef.mu.Unlock()
-	return active
+	return c.connRef.loadSessionActive.Load()
 }
 
 // GetAndClearLoadSessionBuf returns all collected SessionUpdate notifications
