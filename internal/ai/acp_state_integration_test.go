@@ -198,7 +198,7 @@ func TestACPState_AllAgents_ModeThinkingCommandsModel(t *testing.T) {
 					// Check cached state — if cached, the event may have been
 					// consumed before we started listening.
 					if conn != nil {
-						if ms := conn.GetCachedModeState(); ms != nil && len(ms.AvailableModes) > 0 {
+						if ms := cachedModeState(sessionID); ms != nil && len(ms.AvailableModes) > 0 {
 							t.Logf("No mode_update/config_update(mode) SSE event, but cached ModeState exists: current=%q, available=%d",
 								ms.CurrentModeID, len(ms.AvailableModes))
 							return
@@ -213,7 +213,7 @@ func TestACPState_AllAgents_ModeThinkingCommandsModel(t *testing.T) {
 				if conn == nil {
 					t.Skip("Connection not available (agent may have disconnected)")
 				}
-				modeState := conn.GetCachedModeState()
+				modeState := cachedModeState(sessionID)
 				require.NotNil(t, modeState, "Agent %s: cached ModeState should not be nil after prompt", spec.ID)
 
 				assert.NotEmpty(t, modeState.CurrentModeID,
@@ -247,7 +247,7 @@ func TestACPState_AllAgents_ModeThinkingCommandsModel(t *testing.T) {
 				if conn == nil {
 					t.Skip("Connection not available")
 				}
-				effortState := conn.GetCachedThinkingEffortState()
+				effortState := cachedThinkingEffortState(sessionID)
 
 				if effortState == nil && !spec.HasThinking {
 					t.Logf("Agent %s: no thinking effort state (expected — not listed in BackendRegistry)", spec.ID)
@@ -332,7 +332,7 @@ func TestACPState_AllAgents_ModeThinkingCommandsModel(t *testing.T) {
 				if conn == nil {
 					t.Skip("Connection not available")
 				}
-				modelListState := conn.GetCachedModelListState()
+				modelListState := cachedModelListState(sessionID)
 
 				if modelListState == nil {
 					if len(modelUpdates) > 0 {
@@ -351,9 +351,7 @@ func TestACPState_AllAgents_ModeThinkingCommandsModel(t *testing.T) {
 			})
 
 			// ── Summary ────────────────────────────────────────────────
-			if conn != nil {
-				t.Logf("Full state: %s", fmtACPStateSummary(conn))
-			}
+			t.Logf("Full state: %s", fmtACPStateSummary(sessionID))
 		})
 	}
 }
@@ -403,7 +401,7 @@ func TestACPState_AllAgents_StateReemittedOnSecondPrompt(t *testing.T) {
 
 			conn := env.mgr.GetConn(sessionID)
 			if conn != nil {
-				modeState := conn.GetCachedModeState()
+				modeState := cachedModeState(sessionID)
 				if modeState != nil && len(modeState.AvailableModes) > 0 {
 					// Cached mode exists — second prompt should re-emit it.
 					if len(modeUpdates2) == 0 && !hasConfigMode2 {
@@ -419,7 +417,7 @@ func TestACPState_AllAgents_StateReemittedOnSecondPrompt(t *testing.T) {
 			// Thinking effort should be re-emitted.
 			effortUpdates2 := findThinkingEffortUpdateEvents(events2)
 			if conn != nil {
-				effortState := conn.GetCachedThinkingEffortState()
+				effortState := cachedThinkingEffortState(sessionID)
 				if effortState != nil && len(effortState.AvailableLevels) > 0 {
 					if len(effortUpdates2) == 0 {
 						t.Errorf("Agent %s: thinking effort state exists in cache but was NOT re-emitted on second prompt. "+

@@ -238,20 +238,36 @@ func extractACPCaptureID(t *testing.T, events []StreamEvent) string {
 }
 
 // fmtACPStateSummary returns a summary of cached state for logging.
-func fmtACPStateSummary(conn *ACPConn) string {
+func fmtACPStateSummary(sessionID string) string {
+	state := GetACPConnManager().GetCachedStateByClawbenchSID(sessionID)
 	mode := "<nil>"
-	if ms := conn.GetCachedModeState(); ms != nil {
-		mode = ms.CurrentModeID
+	if state.Mode != nil {
+		mode = state.Mode.CurrentModeID
 	}
 	model := "<nil>"
-	if ml := conn.GetCachedModelListState(); ml != nil {
-		model = ml.CurrentModelID
+	if state.ModelList != nil {
+		model = state.ModelList.CurrentModelID
 	}
 	effort := "<nil>"
-	if es := conn.GetCachedThinkingEffortState(); es != nil {
-		effort = es.CurrentID
+	if state.Effort != nil {
+		effort = state.Effort.CurrentID
 	}
 	return fmt.Sprintf("mode=%s model=%s effort=%s", mode, model, effort)
+}
+
+// cachedModeState returns the cached ModeState for the given ClawBench session.
+func cachedModeState(sessionID string) *ModeState {
+	return GetACPConnManager().GetCachedStateByClawbenchSID(sessionID).Mode
+}
+
+// cachedModelListState returns the cached ModelListState for the given ClawBench session.
+func cachedModelListState(sessionID string) *ModelListState {
+	return GetACPConnManager().GetCachedStateByClawbenchSID(sessionID).ModelList
+}
+
+// cachedThinkingEffortState returns the cached ThinkingEffortState for the given ClawBench session.
+func cachedThinkingEffortState(sessionID string) *ThinkingEffortState {
+	return GetACPConnManager().GetCachedStateByClawbenchSID(sessionID).Effort
 }
 
 // cleanupConn closes the connection for the given session after the test.
@@ -298,7 +314,7 @@ func TestACPIntegration_NewSession_CreateAndCapture(t *testing.T) {
 	// Cache should be populated on the connection
 	conn := env.mgr.GetConn(sessionID)
 	if conn != nil {
-		t.Logf("State after first prompt: %s", fmtACPStateSummary(conn))
+		t.Logf("State after first prompt: %s", fmtACPStateSummary(sessionID))
 	}
 }
 
@@ -356,7 +372,7 @@ func TestACPIntegration_ProcessCrash_AutoResume(t *testing.T) {
 	// Record state before crash
 	conn := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn, "should have a connection after first prompt")
-	stateBefore := fmtACPStateSummary(conn)
+	stateBefore := fmtACPStateSummary(sessionID)
 	t.Logf("State before crash: %s", stateBefore)
 
 	// Kill the agent process to simulate a crash
@@ -374,7 +390,7 @@ func TestACPIntegration_ProcessCrash_AutoResume(t *testing.T) {
 	conn2 := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn2, "should have a connection after resume")
 	assert.True(t, conn2.IsAlive(), "connection should be alive after resume")
-	t.Logf("State after resume: %s", fmtACPStateSummary(conn2))
+	t.Logf("State after resume: %s", fmtACPStateSummary(sessionID))
 }
 
 // A4: Agent crashes during prompt → isACPPeerDisconnected → auto-retry with respawn
@@ -571,7 +587,7 @@ func TestACPIntegration_ModeSwitch_CodeToPlan(t *testing.T) {
 	if len(modeUpdates) > 0 && modeUpdates[0].Mode != nil {
 		initialMode = modeUpdates[0].Mode.CurrentModeID
 	}
-	t.Logf("Initial mode: %q, full state: %s", initialMode, fmtACPStateSummary(conn))
+	t.Logf("Initial mode: %q, full state: %s", initialMode, fmtACPStateSummary(sessionID))
 
 	// Try switching mode
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -587,7 +603,7 @@ func TestACPIntegration_ModeSwitch_CodeToPlan(t *testing.T) {
 	}
 
 	// After successful switch, cache should reflect "plan"
-	modeState := conn.GetCachedModeState()
+	modeState := cachedModeState(sessionID)
 	require.NotNil(t, modeState, "mode state should be cached after switch")
 	assert.Equal(t, "plan", modeState.CurrentModeID, "cached mode should be 'plan'")
 	t.Logf("Mode after switch: %q", modeState.CurrentModeID)
@@ -611,7 +627,7 @@ func TestACPIntegration_ModelSwitch_ChangeModel(t *testing.T) {
 	conn := mgr.GetConn(sessionID)
 	require.NotNil(t, conn)
 
-	modelList := conn.GetCachedModelListState()
+	modelList := cachedModelListState(sessionID)
 	var targetModel string
 	if modelList != nil && len(modelList.Models) > 1 {
 		for _, m := range modelList.Models {
@@ -635,7 +651,7 @@ func TestACPIntegration_ModelSwitch_ChangeModel(t *testing.T) {
 		t.Skip("Model switch caused connection death")
 	}
 
-	modelList2 := conn.GetCachedModelListState()
+	modelList2 := cachedModelListState(sessionID)
 	require.NotNil(t, modelList2)
 	assert.Equal(t, targetModel, modelList2.CurrentModelID, "cached model should be updated")
 	t.Logf("Model after switch: %q", modelList2.CurrentModelID)
@@ -662,7 +678,7 @@ func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 	require.NotNil(t, conn)
 
 	// Verify thinking effort state was READ from ACP protocol (not SET by us).
-	effortState := conn.GetCachedThinkingEffortState()
+	effortState := cachedThinkingEffortState(sessionID)
 	if effortState == nil {
 		// Agent didn't report thinking effort in NewSession config_options —
 		// this is valid (e.g., agent doesn't support thought_level at all).
@@ -706,7 +722,7 @@ func TestACPIntegration_ThinkingEffortSwitch(t *testing.T) {
 	}
 
 	if conn.IsAlive() {
-		effortAfterSet := conn.GetCachedThinkingEffortState()
+		effortAfterSet := cachedThinkingEffortState(sessionID)
 		require.NotNil(t, effortAfterSet)
 		assert.Equal(t, "high", effortAfterSet.CurrentID, "cached thinking effort should be 'high' after set")
 	}
@@ -757,7 +773,7 @@ func TestACPIntegration_ConfigDedup_NoResend(t *testing.T) {
 	require.NotNil(t, conn)
 
 	// Set a model, then set the same model again
-	modelList := conn.GetCachedModelListState()
+	modelList := cachedModelListState(sessionID)
 	if modelList == nil || modelList.CurrentModelID == "" {
 		t.Skip("No model to test dedup")
 	}
@@ -844,7 +860,7 @@ func TestACPIntegration_ResumeAfterCrash_ModePreserved(t *testing.T) {
 		t.Skip("Mode switch caused connection death (may not be supported)")
 	}
 
-	modeBefore := conn.GetCachedModeState()
+	modeBefore := cachedModeState(sessionID)
 	require.NotNil(t, modeBefore, "mode state should be cached before crash")
 	t.Logf("Mode before crash: %q", modeBefore.CurrentModeID)
 
@@ -859,7 +875,7 @@ func TestACPIntegration_ResumeAfterCrash_ModePreserved(t *testing.T) {
 	conn2 := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn2, "should have a connection after resume")
 
-	modeAfter := conn2.GetCachedModeState()
+	modeAfter := cachedModeState(sessionID)
 	require.NotNil(t, modeAfter, "mode state should be cached after resume")
 
 	assert.Equal(t, modeBefore.CurrentModeID, modeAfter.CurrentModeID,
@@ -889,7 +905,7 @@ func TestACPIntegration_ResumeAfterCrash_ModelPreserved(t *testing.T) {
 	conn := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn)
 
-	modelList := conn.GetCachedModelListState()
+	modelList := cachedModelListState(sessionID)
 	var targetModel string
 	if modelList != nil && len(modelList.Models) > 1 {
 		for _, m := range modelList.Models {
@@ -912,7 +928,7 @@ func TestACPIntegration_ResumeAfterCrash_ModelPreserved(t *testing.T) {
 		t.Skip("Model switch caused connection death")
 	}
 
-	modelBefore := conn.GetCachedModelListState()
+	modelBefore := cachedModelListState(sessionID)
 	require.NotNil(t, modelBefore)
 	t.Logf("Model before crash: %q", modelBefore.CurrentModelID)
 
@@ -927,7 +943,7 @@ func TestACPIntegration_ResumeAfterCrash_ModelPreserved(t *testing.T) {
 	conn2 := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn2)
 
-	modelAfter := conn2.GetCachedModelListState()
+	modelAfter := cachedModelListState(sessionID)
 	require.NotNil(t, modelAfter, "model list state should be cached after resume")
 
 	assert.Equal(t, modelBefore.CurrentModelID, modelAfter.CurrentModelID,
@@ -966,7 +982,7 @@ func TestACPIntegration_ResumeAfterCrash_ThinkingPreserved(t *testing.T) {
 		t.Skip("Thinking effort switch caused connection death (may not be supported)")
 	}
 
-	effortBefore := conn.GetCachedThinkingEffortState()
+	effortBefore := cachedThinkingEffortState(sessionID)
 	require.NotNil(t, effortBefore)
 	t.Logf("Thinking effort before crash: %q", effortBefore.CurrentID)
 
@@ -981,7 +997,7 @@ func TestACPIntegration_ResumeAfterCrash_ThinkingPreserved(t *testing.T) {
 	conn2 := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn2)
 
-	effortAfter := conn2.GetCachedThinkingEffortState()
+	effortAfter := cachedThinkingEffortState(sessionID)
 	require.NotNil(t, effortAfter, "thinking effort state should be cached after resume")
 
 	assert.Equal(t, effortBefore.CurrentID, effortAfter.CurrentID,
@@ -1064,7 +1080,7 @@ func TestACPIntegration_ResumeAfterCrash_ConfigDedupReset(t *testing.T) {
 	conn := env.mgr.GetConn(sessionID)
 	require.NotNil(t, conn)
 
-	modelList := conn.GetCachedModelListState()
+	modelList := cachedModelListState(sessionID)
 	if modelList == nil || modelList.CurrentModelID == "" {
 		t.Skip("No model available for switching")
 	}
@@ -1160,8 +1176,8 @@ func TestACPIntegration_SSEDisconnect_DrainAndContinue(t *testing.T) {
 	assert.True(t, conn.IsAlive(), "connection should be alive after prompt completes")
 
 	// Step 3: Get cached state
-	modeBefore := conn.GetCachedModeState()
-	effortBefore := conn.GetCachedThinkingEffortState()
+	modeBefore := cachedModeState(sessionID)
+	effortBefore := cachedThinkingEffortState(sessionID)
 	t.Logf("State before reconnect: mode=%v, effort=%v",
 		modeBefore != nil, effortBefore != nil)
 
@@ -1257,7 +1273,7 @@ func TestACPIntegration_LongRunning_MultipleTurns(t *testing.T) {
 	require.NotNil(t, conn)
 	assert.True(t, conn.IsAlive(), "connection should still be alive after 5 turns")
 
-	t.Logf("State after 5 turns: %s", fmtACPStateSummary(conn))
+	t.Logf("State after 5 turns: %s", fmtACPStateSummary(sessionID))
 
 	pid := conn.ProcessPID()
 	assert.NotZero(t, pid, "should have a valid PID after 5 turns")
@@ -1297,7 +1313,7 @@ func TestACPIntegration_LongRunning_ConfigStateConsistency(t *testing.T) {
 		}
 
 		// Verify cache was updated
-		es := conn.GetCachedThinkingEffortState()
+		es := cachedThinkingEffortState(sessionID)
 		if es != nil && es.CurrentID == effort {
 			lastSuccessfulEffort = effort
 			t.Logf("Turn %d: thinkingEffort=%q succeeded", i+1, effort)
@@ -1305,7 +1321,7 @@ func TestACPIntegration_LongRunning_ConfigStateConsistency(t *testing.T) {
 	}
 
 	if lastSuccessfulEffort != "" {
-		effortState := conn.GetCachedThinkingEffortState()
+		effortState := cachedThinkingEffortState(sessionID)
 		require.NotNil(t, effortState, "thinking effort state should be cached")
 		assert.Equal(t, lastSuccessfulEffort, effortState.CurrentID,
 			"final thinking effort should match last successful switch: expected=%q, got=%q",
