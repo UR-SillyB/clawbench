@@ -2,11 +2,13 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
@@ -222,15 +224,27 @@ func ServeAISessionUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ModeID != "" {
-		// Forward mode change to ACP agent so it updates its runtime state
+		// Forward mode change to ACP agent so it updates its runtime state.
+		// Run asynchronously — the RPC can block for up to 30s if the agent
+		// is slow (e.g., Claude bridge adapter starting its CLI subprocess).
+		// Blocking the HTTP handler would tie up a browser HTTP/1.1 connection
+		// and prevent other requests (like session list) from being served.
 		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
-			conn.SetSessionConfigOption(r.Context(), "mode", req.ModeID)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				conn.SetSessionConfigOption(ctx, "mode", req.ModeID)
+			}()
 		}
 	}
 	if req.ThinkingEffort != "" {
-		// Forward thinking effort change to ACP agent so it updates its runtime state
+		// Forward thinking effort change to ACP agent — same async pattern as mode.
 		if conn := ai.GetACPConnManager().GetConn(sessionID); conn != nil {
-			conn.SetSessionConfigOption(r.Context(), "thinkingEffort", req.ThinkingEffort)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				conn.SetSessionConfigOption(ctx, "thinkingEffort", req.ThinkingEffort)
+			}()
 		}
 	}
 	if req.ModelID != "" {

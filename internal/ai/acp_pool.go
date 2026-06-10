@@ -565,12 +565,26 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	}
 
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
+	// If ResumeSession fails (e.g., session deleted), fall back to NewSession.
 	acpSID := getExternalSessionID(c.clawbenchSID)
 	if acpSID != "" {
-		return false, c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
+		err := c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
+		if err == nil {
+			return false, nil // recovered successfully
+		}
+		// ResumeSession failed — the old session is gone (deleted, expired, etc.).
+		// Fall through to create a new session instead of returning the error.
+		slog.Warn("acp conn: ResumeSession failed, falling back to NewSession",
+			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
+		// The process may be in a bad state after a failed resume; kill it
+		// and respawn a fresh one for the new session.
+		c.killProcessLocked()
+		if err := c.spawnLocked(ctx); err != nil {
+			return false, err
+		}
 	}
 
-	// No prior session — first message ever, create new session.
+	// No prior session (or ResumeSession failed) — create new session.
 	// Timeout prevents blocking forever if the agent binary hangs during
 	// session creation (e.g., bridge adapter waiting for claude CLI init).
 	// Use the parent context's deadline if available, otherwise default 60s.
@@ -585,9 +599,8 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		// Mark connection dead so the next request triggers a fresh spawn
 		// instead of reusing a connection whose agent process is in an
 		// unknown state (e.g., hung during session creation).
-		c.mu.Lock()
+		// Note: caller (ensureAliveWithSession) already holds c.mu, so no Lock here.
 		c.alive = false
-		c.mu.Unlock()
 		return false, fmt.Errorf("acp: session/new: %w", err)
 	}
 
@@ -632,9 +645,8 @@ func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID strin
 			"acp_sid", acpSID,
 			"error", err)
 		// Mark connection dead so the next request triggers a fresh spawn.
-		c.mu.Lock()
+		// Note: caller (ensureAliveWithSession) already holds c.mu, so no Lock here.
 		c.alive = false
-		c.mu.Unlock()
 		return fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
 	}
 	c.acpSID = acpSID
@@ -687,6 +699,27 @@ func (c *ACPConn) isAliveLocked() bool {
 	default:
 		return true
 	}
+}
+
+// killProcessLocked kills the agent subprocess and waits for it to exit.
+// Must be called with c.mu held; temporarily releases c.mu during Wait()
+// to avoid blocking if the process is unresponsive.
+func (c *ACPConn) killProcessLocked() {
+	if c.cmd == nil || c.cmd.Process == nil {
+		return
+	}
+	_ = c.cmd.Process.Kill()
+	oldCmd := c.cmd
+	c.mu.Unlock()
+	_ = oldCmd.Wait()
+	c.mu.Lock()
+	if c.cmd == oldCmd {
+		c.cmd = nil
+	}
+	c.alive = false
+	c.conn = nil
+	c.client = nil
+	c.acpSID = ""
 }
 
 // spawnLocked spawns the agent process and initializes the connection (must hold c.mu).
@@ -1227,6 +1260,13 @@ func (c *ACPConn) CancelTurn(ctx context.Context) {
 // SetSessionConfigOption sets a config option for this session.
 // Also updates cached state so re-emitted SSE events reflect the new value.
 func (c *ACPConn) SetSessionConfigOption(ctx context.Context, configID, value string) {
+	// Skip redundant RPCs — if the value was already set (e.g., by Prompt()),
+	// don't send a duplicate set_config_option that would block and conflict.
+	if !c.shouldSetConfig(configID, value) {
+		slog.Debug("acp conn: SetSessionConfigOption skipped (unchanged)", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
+		return
+	}
+
 	c.mu.Lock()
 	acpSID := c.acpSID
 	c.mu.Unlock()
@@ -1257,10 +1297,13 @@ func (c *ACPConn) SetSessionConfigOption(ctx context.Context, configID, value st
 	switch configID {
 	case "mode":
 		c.UpdateCachedCurrentMode(value)
+		c.markConfigSet("mode", value)
 	case "thinking_effort", "thought_level":
 		c.UpdateCachedCurrentThinkingEffort(value)
+		c.markConfigSet("thinkingEffort", value)
 	case "model":
 		c.UpdateCachedCurrentModel(value)
+		c.markConfigSet("model", value)
 	}
 }
 
