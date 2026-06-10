@@ -492,6 +492,18 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 	}
 
+	// Migrate: add ACP LoadSession/ListSessions capability columns to agents table.
+	var hasLoadSessionCol int
+	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='acp_load_session'").Scan(&hasLoadSessionCol)
+	if hasLoadSessionCol == 0 {
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_load_session BOOLEAN NOT NULL DEFAULT false"); err != nil {
+			return fmt.Errorf("failed to add acp_load_session column: %w", err)
+		}
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN acp_list_sessions BOOLEAN NOT NULL DEFAULT false"); err != nil {
+			return fmt.Errorf("failed to add acp_list_sessions column: %w", err)
+		}
+	}
+
 	// Migrate: extract metadata from chat_history.content into chat_metadata table.
 	// This is a one-time migration for existing data; new messages are saved
 	// to chat_metadata automatically via SaveMetadata().

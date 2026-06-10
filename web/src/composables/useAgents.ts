@@ -173,6 +173,12 @@ export function getAgentThinkingEffortLevels(agentId: string): string[] {
     return agent?.thinkingEffortLevels || []
 }
 
+/** Check if an agent supports @resume (LoadSession + ListSessions capabilities). */
+export function agentCanResume(agentId: string): boolean {
+    const state = acpStatesCache[agentId]
+    return !!(state?.loadSession && state?.listSessions)
+}
+
 /** Check if an agent supports thinking effort selection (has levels defined). */
 function hasThinkingEffortLevels(agentId: string): boolean {
     return getAgentThinkingEffortLevels(agentId).length > 0
@@ -308,6 +314,7 @@ export function useAgents() {
         getEffectiveThinkingEffort,
         updateAgentField,
         canRefreshModels,
+        agentCanResume,
         supportsDualTransport,
         getAgentTransport,
         invalidateACPStateCache,

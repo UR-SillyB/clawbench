@@ -591,6 +591,13 @@ func CreateSession(projectPath, backend, title, agentID, modelName, agentSource,
 	return sessionID, nil
 }
 
+// UpdateSessionSourceID sets the source_session_id for a chat session.
+// Used by acp-load to track the ACP session origin (format: "acp:{acpSessionId}").
+func UpdateSessionSourceID(sessionID, sourceSessionID string) error {
+	_, err := DB.Exec("UPDATE chat_sessions SET source_session_id = ? WHERE id = ?", sourceSessionID, sessionID)
+	return err
+}
+
 // DeleteSession soft-deletes a chat session.
 // Sets deleted=1 on the session record and updates updated_at so it serves as the deletion timestamp.
 // Messages in chat_history are NOT soft-deleted — session-level soft-delete is sufficient

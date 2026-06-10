@@ -270,7 +270,7 @@ func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 
 	// Force-update agent-level registry (full overwrite, once per process instance)
 	agentID := conn.AgentID()
-	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState)
+	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, false, false)
 }
 
 // mergeResumedSessionState merges state from a ResumeSessionResponse, preserving
@@ -332,7 +332,7 @@ func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 
 	// Force-update agent-level registry (full overwrite, once per process instance)
 	agentID := conn.AgentID()
-	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState)
+	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, false, false)
 }
 
 // emitSessionStateEvents emits mode_update, thinking_effort_update, and model_list_update

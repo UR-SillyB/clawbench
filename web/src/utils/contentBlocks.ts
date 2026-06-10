@@ -198,7 +198,7 @@ export function scheduledTaskKeys(
 // ────────────────────────────────────────────────────────────
 
 /** Match @ command prefix at start of text: @chatsearch or @task followed by space */
-const AT_COMMAND_RE = /^(@chatsearch|@task)(\s[\s\S]*)?$/
+const AT_COMMAND_RE = /^(@chatsearch|@task|@resume)(\s[\s\S]*)?$/
 
 export interface AtCommandBadge {
   command: string    // e.g. "@chatsearch"

@@ -236,12 +236,97 @@ func (m *ACPConnManager) GetOrCreateConn(ctx context.Context, agent *model.Agent
 	return conn, isNew, nil
 }
 
+// GetOrCreateConnForLoad creates an ACPConn for a LoadSession operation.
+// Unlike GetOrCreateConn, this sets loadTargetSID so that ensureAliveWithSession
+// calls LoadSession instead of NewSession/ResumeSession.
+// Returns (conn, error).
+func (m *ACPConnManager) GetOrCreateConnForLoad(ctx context.Context, agent *model.Agent, clawbenchSID, acpSessionID, cwd string) (*ACPConn, error) {
+	m.mu.Lock()
+	conn, ok := m.conns[clawbenchSID]
+	if !ok {
+		conn = newACPConn(agent, clawbenchSID)
+		m.conns[clawbenchSID] = conn
+	}
+	m.mu.Unlock()
+
+	conn.mu.Lock()
+	conn.loadTargetSID = acpSessionID
+	conn.mu.Unlock()
+
+	_, err := conn.ensureAliveWithSession(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// EnsureAlive ensures the connection has a live agent process and initialized
+// ACP connection, but does NOT create/resume a session. Used by ListSessions
+// which needs an alive connection but no session.
+func (c *ACPConn) EnsureAlive(ctx context.Context, cwd string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.alive && c.isAliveLocked() {
+		c.lastUsed = time.Now()
+		return nil
+	}
+
+	return c.spawnLocked(ctx)
+}
+
+// ListSessions calls the ACP ListSessions RPC on this connection's client.
+func (c *ACPConn) ListSessions(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+	c.mu.Lock()
+	if !c.alive || c.conn == nil {
+		c.mu.Unlock()
+		return nil, nil, fmt.Errorf("acp: connection not alive for ListSessions")
+	}
+	conn := c.conn
+	c.mu.Unlock()
+
+	req := acp.ListSessionsRequest{}
+	if cursor != nil {
+		req.Cursor = cursor
+	}
+	resp, err := conn.ListSessions(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acp: ListSessions: %w", err)
+	}
+	return resp.Sessions, resp.NextCursor, nil
+}
+
+// GetAndClearLoadSessionResp returns the last LoadSessionResponse and clears it.
+func (c *ACPConn) GetAndClearLoadSessionResp() *acp.LoadSessionResponse {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp := c.lastLoadSessionResp
+	c.lastLoadSessionResp = nil
+	return resp
+}
+
 // GetConn returns the ACPConn for the given ClawBench session ID.
 // Returns nil if no connection exists.
 func (m *ACPConnManager) GetConn(clawbenchSID string) *ACPConn {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.conns[clawbenchSID]
+}
+
+// GetConnByAgentID returns an alive ACPConn for the given agent ID.
+// Returns nil if no alive connection exists for this agent.
+func (m *ACPConnManager) GetConnByAgentID(agentID string) *ACPConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, conn := range m.conns {
+		conn.mu.Lock()
+		matched := conn.agent != nil && conn.agent.ID == agentID && conn.alive
+		conn.mu.Unlock()
+		if matched {
+			return conn
+		}
+	}
+	return nil
 }
 
 // CancelTurn sends an ACP Cancel notification for the given ClawBench session.
@@ -450,6 +535,20 @@ type ACPConn struct {
 	// session/resume so ExecuteStream can extract mode/config state. Cleared after reading.
 	lastResumeSessionResp *acp.ResumeSessionResponse
 
+	// lastLoadSessionResp stores the LoadSessionResponse from the most recent
+	// session/load so the handler can extract mode/config state. Cleared after reading.
+	lastLoadSessionResp *acp.LoadSessionResponse
+
+	// loadTargetSID is the ACP session ID to load via LoadSession.
+	// When non-empty, ensureAliveWithSession calls LoadSession instead of
+	// NewSession/ResumeSession. Set by GetOrCreateConnForLoad.
+	loadTargetSID string
+
+	// loadSessionActive indicates that a LoadSession replay is in progress.
+	// During replay, SessionUpdate messages are collected in the client's
+	// loadSessionBuf instead of being routed to SSE stream channels.
+	loadSessionActive bool
+
 	// liveness
 	lastUsed  time.Time
 	alive     bool
@@ -562,6 +661,36 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// Need to spawn or respawn
 	if err := c.spawnLocked(ctx); err != nil {
 		return false, err
+	}
+
+	// LoadSession branch: if loadTargetSID is set, call LoadSession instead
+	// of ResumeSession/NewSession. This replays the full conversation history
+	// via SessionUpdate notifications. The RPC blocks until replay is complete.
+	if c.loadTargetSID != "" {
+		loadSID := c.loadTargetSID
+		c.loadTargetSID = "" // clear to prevent reuse on next call
+
+		loadCtx, loadCancel := context.WithTimeout(ctx, 60*time.Second)
+		defer loadCancel()
+
+		c.loadSessionActive = true
+		loadResp, err := c.conn.LoadSession(loadCtx, acp.LoadSessionRequest{
+			SessionId:  acp.SessionId(loadSID),
+			Cwd:        cwd,
+			McpServers: []acp.McpServer{},
+		})
+		c.loadSessionActive = false
+
+		if err != nil {
+			c.alive = false
+			return false, fmt.Errorf("acp: session/load: %w", err)
+		}
+
+		c.acpSID = loadSID
+		c.lastLoadSessionResp = &loadResp
+		c.lastUsed = time.Now()
+		slog.Info("acp conn: loaded session via LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID)
+		return true, nil
 	}
 
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
@@ -822,6 +951,19 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	}
 
 	slog.Info("acp conn: agent initialized", "agent_id", c.agent.ID, "protocol_version", initResp.ProtocolVersion)
+
+	// Extract LoadSession and ListSessions capabilities from the Initialize response.
+	// These are agent-level capabilities that persist across sessions.
+	if c.agent != nil && c.agent.ID != "" {
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateLoadSession(c.agent.ID, initResp.AgentCapabilities.LoadSession)
+		listSessions := initResp.AgentCapabilities.SessionCapabilities.List != nil
+		reg.UpdateListSessions(c.agent.ID, listSessions)
+		slog.Info("acp conn: extracted capabilities from Initialize",
+			"agent_id", c.agent.ID,
+			"loadSession", initResp.AgentCapabilities.LoadSession,
+			"listSessions", listSessions)
+	}
 
 	c.cmd = cmd
 	c.conn = conn

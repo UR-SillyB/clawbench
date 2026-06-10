@@ -235,7 +235,7 @@ func TestRegistry_ForceUpdateIfNeeded_Delegates(t *testing.T) {
 	models := []model.AgentModel{{ID: "m1"}}
 	cmds := []AvailableCommandInfo{{Name: "init"}}
 	cfg := &ConfigOptionState{ConfigID: "mode"}
-	applied := reg.ForceUpdateIfNeeded("a1", modes, efforts, models, cmds, cfg)
+	applied := reg.ForceUpdateIfNeeded("a1", modes, efforts, models, cmds, cfg, false, false)
 	assert.True(t, applied)
 
 	got := reg.Get("a1")
@@ -512,6 +512,131 @@ func TestRegistry_PersistAsync_NotInRegistry(t *testing.T) {
 	reg.persistAsync("missing-agent")
 	// Give goroutine time to not run anything
 	time.Sleep(20 * time.Millisecond)
+}
+
+// ── LoadSession / ListSessions capabilities ─────────────────────────────────
+
+func TestAgentCapability_HasData_WithLoadSession(t *testing.T) {
+	v := true
+	c := &AgentCapability{LoadSession: &v}
+	assert.True(t, c.HasData())
+}
+
+func TestAgentCapability_HasData_WithListSessions(t *testing.T) {
+	v := true
+	c := &AgentCapability{ListSessions: &v}
+	assert.True(t, c.HasData())
+}
+
+func TestRegistry_GetLoadSession(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	t.Run("NoCapability", func(t *testing.T) {
+		assert.False(t, reg.GetLoadSession("missing"))
+	})
+	t.Run("FalseByDefault", func(t *testing.T) {
+		reg.Update("a1", &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+		assert.False(t, reg.GetLoadSession("a1"))
+	})
+	t.Run("True", func(t *testing.T) {
+		v := true
+		reg.Update("a2", &AgentCapability{LoadSession: &v})
+		assert.True(t, reg.GetLoadSession("a2"))
+	})
+}
+
+func TestRegistry_GetListSessions(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	t.Run("NoCapability", func(t *testing.T) {
+		assert.False(t, reg.GetListSessions("missing"))
+	})
+	t.Run("FalseByDefault", func(t *testing.T) {
+		reg.Update("a1", &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+		assert.False(t, reg.GetListSessions("a1"))
+	})
+	t.Run("True", func(t *testing.T) {
+		v := true
+		reg.Update("a2", &AgentCapability{ListSessions: &v})
+		assert.True(t, reg.GetListSessions("a2"))
+	})
+}
+
+func TestRegistry_UpdateLoadSession(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	reg.Update("a1", &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+	assert.False(t, reg.GetLoadSession("a1"))
+
+	reg.UpdateLoadSession("a1", true)
+	assert.True(t, reg.GetLoadSession("a1"))
+
+	reg.UpdateLoadSession("a1", false)
+	assert.False(t, reg.GetLoadSession("a1"))
+}
+
+func TestRegistry_UpdateListSessions(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	reg.Update("a1", &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+	assert.False(t, reg.GetListSessions("a1"))
+
+	reg.UpdateListSessions("a1", true)
+	assert.True(t, reg.GetListSessions("a1"))
+
+	reg.UpdateListSessions("a1", false)
+	assert.False(t, reg.GetListSessions("a1"))
+}
+
+func TestRegistry_Merge_PreservesLoadSession(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	v := true
+	reg.Update("a1", &AgentCapability{LoadSession: &v, AvailableModes: []ModeDef{{ID: "code"}}})
+
+	// Merge with non-LoadSession fields — LoadSession must be preserved
+	reg.Update("a1", &AgentCapability{AvailableCommands: []AvailableCommandInfo{{Name: "init"}}})
+	assert.True(t, reg.GetLoadSession("a1"))
+}
+
+func TestRegistry_Merge_OverwritesListSessions(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	v := false
+	reg.Update("a1", &AgentCapability{ListSessions: &v, AvailableModes: []ModeDef{{ID: "code"}}})
+
+	// Merge with ListSessions=true — must overwrite
+	tv := true
+	reg.Update("a1", &AgentCapability{ListSessions: &tv})
+	assert.True(t, reg.GetListSessions("a1"))
+}
+
+func TestRegistry_ForceUpdateIfNeeded_WithLoadListSession(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	modes := []ModeDef{{ID: "ask"}}
+	efforts := []ThinkingEffortDef{{ID: "low"}}
+	models := []model.AgentModel{{ID: "m1"}}
+	cmds := []AvailableCommandInfo{{Name: "init"}}
+	cfg := &ConfigOptionState{ConfigID: "mode"}
+	applied := reg.ForceUpdateIfNeeded("a1", modes, efforts, models, cmds, cfg, true, true)
+	assert.True(t, applied)
+
+	got := reg.Get("a1")
+	require.NotNil(t, got)
+	assert.Equal(t, modes, got.AvailableModes)
+	require.NotNil(t, got.LoadSession)
+	assert.True(t, *got.LoadSession)
+	require.NotNil(t, got.ListSessions)
+	assert.True(t, *got.ListSessions)
+}
+
+func TestRegistry_ForceUpdateIfNeeded_DefaultsFalse(t *testing.T) {
+	reg := resetGlobalRegistryForTest(t)
+	applied := reg.ForceUpdateIfNeeded("a1", nil, nil, nil, nil, nil, false, false)
+	assert.True(t, applied)
+
+	got := reg.Get("a1")
+	require.NotNil(t, got)
+	if got.LoadSession != nil {
+		assert.False(t, *got.LoadSession)
+	}
+	if got.ListSessions != nil {
+		assert.False(t, *got.ListSessions)
+	}
 }
 
 // ── Singleton behavior ──────────────────────────────────────────────────────

@@ -10,6 +10,17 @@ import (
 	"clawbench/internal/model"
 )
 
+// boolPtrVal returns the dereferenced bool value, or "<nil>" if nil.
+func boolPtrVal(p *bool) string {
+	if p == nil {
+		return "<nil>"
+	}
+	if *p {
+		return "true"
+	}
+	return "false"
+}
+
 // AgentCapability holds agent-level ACP capabilities that are shared
 // across all sessions of the same agent. These are inherent to the
 // agent binary (e.g., Claude's available modes: [ask, architect, code])
@@ -20,6 +31,8 @@ type AgentCapability struct {
 	AvailableModels          []model.AgentModel
 	AvailableCommands        []AvailableCommandInfo
 	ConfigOptionState        *ConfigOptionState
+	LoadSession              *bool // AgentCapabilities.LoadSession from ACP Initialize (nil = not yet set)
+	ListSessions             *bool // SessionCapabilities.List != nil from ACP Initialize (nil = not yet set)
 	UpdatedAt                time.Time
 
 	// refreshedInProcess marks whether this capability has already been
@@ -37,7 +50,9 @@ func (c *AgentCapability) HasData() bool {
 		len(c.AvailableThinkingEfforts) > 0 ||
 		len(c.AvailableModels) > 0 ||
 		len(c.AvailableCommands) > 0 ||
-		c.ConfigOptionState != nil
+		c.ConfigOptionState != nil ||
+		c.LoadSession != nil ||
+		c.ListSessions != nil
 }
 
 // AgentCapabilityRegistry stores agent-level capabilities, keyed by agent ID.
@@ -113,6 +128,12 @@ func (r *AgentCapabilityRegistry) merge(agentID string, src *AgentCapability) {
 	if src.ConfigOptionState != nil {
 		existing.ConfigOptionState = src.ConfigOptionState
 	}
+	if src.LoadSession != nil {
+		existing.LoadSession = src.LoadSession
+	}
+	if src.ListSessions != nil {
+		existing.ListSessions = src.ListSessions
+	}
 	existing.UpdatedAt = time.Now()
 }
 
@@ -141,6 +162,16 @@ func (r *AgentCapabilityRegistry) UpdateConfigState(agentID string, state *Confi
 	r.Update(agentID, &AgentCapability{ConfigOptionState: state})
 }
 
+// UpdateLoadSession updates only the LoadSession capability flag.
+func (r *AgentCapabilityRegistry) UpdateLoadSession(agentID string, val bool) {
+	r.Update(agentID, &AgentCapability{LoadSession: &val})
+}
+
+// UpdateListSessions updates only the ListSessions capability flag.
+func (r *AgentCapabilityRegistry) UpdateListSessions(agentID string, val bool) {
+	r.Update(agentID, &AgentCapability{ListSessions: &val})
+}
+
 // ForceUpdate replaces all capability fields for an agent (full overwrite, not merge)
 // and persists to DB asynchronously. Used when a new agent process establishes its
 // first session — the ACP response is the authoritative source of truth.
@@ -163,7 +194,9 @@ func (r *AgentCapabilityRegistry) ForceUpdate(agentID string, agentCap *AgentCap
 		"modes", len(agentCap.AvailableModes),
 		"efforts", len(agentCap.AvailableThinkingEfforts),
 		"models", len(agentCap.AvailableModels),
-		"commands", len(agentCap.AvailableCommands))
+		"commands", len(agentCap.AvailableCommands),
+		"loadSession", boolPtrVal(agentCap.LoadSession),
+		"listSessions", boolPtrVal(agentCap.ListSessions))
 	return true
 }
 
@@ -183,13 +216,15 @@ func (r *AgentCapabilityRegistry) MarkStale(agentID string) {
 // response and calls ForceUpdate. This is the single entry point for full capability
 // refresh — called once when an ACP connection first establishes a session.
 // The update is synchronous on the registry but DB persistence is async.
-func (r *AgentCapabilityRegistry) ForceUpdateIfNeeded(agentID string, modes []ModeDef, efforts []ThinkingEffortDef, models []model.AgentModel, cmds []AvailableCommandInfo, configState *ConfigOptionState) bool {
+func (r *AgentCapabilityRegistry) ForceUpdateIfNeeded(agentID string, modes []ModeDef, efforts []ThinkingEffortDef, models []model.AgentModel, cmds []AvailableCommandInfo, configState *ConfigOptionState, loadSession, listSessions bool) bool {
 	return r.ForceUpdate(agentID, &AgentCapability{
 		AvailableModes:           modes,
 		AvailableThinkingEfforts: efforts,
 		AvailableModels:          models,
 		AvailableCommands:        cmds,
 		ConfigOptionState:        configState,
+		LoadSession:              &loadSession,
+		ListSessions:             &listSessions,
 	})
 }
 
@@ -269,6 +304,22 @@ func (r *AgentCapabilityRegistry) GetConfigState(agentID string) *ConfigOptionSt
 		return nil
 	}
 	return agentCap.ConfigOptionState
+}
+
+// GetLoadSession returns whether the agent supports LoadSession.
+func (r *AgentCapabilityRegistry) GetLoadSession(agentID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	agentCap, ok := r.caps[agentID]
+	return ok && agentCap != nil && agentCap.LoadSession != nil && *agentCap.LoadSession
+}
+
+// GetListSessions returns whether the agent supports ListSessions.
+func (r *AgentCapabilityRegistry) GetListSessions(agentID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	agentCap, ok := r.caps[agentID]
+	return ok && agentCap != nil && agentCap.ListSessions != nil && *agentCap.ListSessions
 }
 
 // HasAvailableModes checks whether an agent has available modes in the registry.
@@ -426,15 +477,26 @@ func (r *AgentCapabilityRegistry) saveToDB(db *sql.DB, agentID string, agentCap 
 		configJSON = string(b)
 	}
 
+	var loadSessionVal, listSessionsVal bool
+	if agentCap.LoadSession != nil {
+		loadSessionVal = *agentCap.LoadSession
+	}
+	if agentCap.ListSessions != nil {
+		listSessionsVal = *agentCap.ListSessions
+	}
+
 	_, err := db.Exec(`
 		UPDATE agents SET
 			acp_available_modes = ?,
 			acp_available_thinking_efforts = ?,
 			acp_available_commands = ?,
 			acp_config_options = ?,
+			acp_load_session = ?,
+			acp_list_sessions = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
-		string(modesJSON), string(effortsJSON), string(cmdsJSON), configJSON, agentID)
+		string(modesJSON), string(effortsJSON), string(cmdsJSON), configJSON,
+		loadSessionVal, listSessionsVal, agentID)
 	return err
 }
 
@@ -444,7 +506,8 @@ func (r *AgentCapabilityRegistry) saveToDB(db *sql.DB, agentID string, agentCap 
 func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 	rows, err := db.Query(`
 		SELECT id, acp_available_modes, acp_available_thinking_efforts,
-		       acp_available_commands, acp_config_options
+		       acp_available_commands, acp_config_options,
+		       acp_load_session, acp_list_sessions
 		FROM agents
 		WHERE transport = 'acp-stdio'
 	`)
@@ -462,7 +525,8 @@ func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 
 	for rows.Next() {
 		var agentID, modesJSON, effortsJSON, cmdsJSON, configJSON string
-		if err := rows.Scan(&agentID, &modesJSON, &effortsJSON, &cmdsJSON, &configJSON); err != nil {
+		var loadSession, listSessions bool
+		if err := rows.Scan(&agentID, &modesJSON, &effortsJSON, &cmdsJSON, &configJSON, &loadSession, &listSessions); err != nil {
 			slog.Warn("failed to scan agent capability row", "error", err)
 			continue
 		}
@@ -493,6 +557,9 @@ func (r *AgentCapabilityRegistry) LoadFromDB(db *sql.DB) {
 				agentCap.ConfigOptionState = &config
 			}
 		}
+
+		agentCap.LoadSession = &loadSession
+		agentCap.ListSessions = &listSessions
 
 		if agentCap.HasData() {
 			agentCap.UpdatedAt = time.Now()

@@ -70,6 +70,9 @@ func (a *mockACPAgent) Initialize(ctx context.Context, params acp.InitializeRequ
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentCapabilities: acp.AgentCapabilities{
 			LoadSession: true,
+			SessionCapabilities: acp.SessionCapabilities{
+				List: &acp.SessionListCapabilities{},
+			},
 		},
 	}, nil
 }
@@ -143,7 +146,121 @@ func (a *mockACPAgent) CloseSession(ctx context.Context, params acp.CloseSession
 }
 
 func (a *mockACPAgent) ListSessions(ctx context.Context, params acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
-	return acp.ListSessionsResponse{}, acp.NewMethodNotFound(acp.AgentMethodSessionList)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	sessions := make([]acp.SessionInfo, 0, len(a.sessions))
+	for sid, s := range a.sessions {
+		title := "Mock session " + sid[:8]
+		updatedAt := time.Now().Format(time.RFC3339)
+		_ = s // just iterate
+		sessions = append(sessions, acp.SessionInfo{
+			SessionId: acp.SessionId(sid),
+			Title:     &title,
+			Cwd:       "/project",
+			UpdatedAt: &updatedAt,
+		})
+	}
+
+	return acp.ListSessionsResponse{
+		Sessions: sessions,
+	}, nil
+}
+
+// LoadSession implements acp.AgentLoader. It replays mock messages via
+// SessionUpdate notifications and returns session configuration.
+func (a *mockACPAgent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	sid := string(params.SessionId)
+
+	// Ensure the session exists
+	a.mu.Lock()
+	if _, ok := a.sessions[sid]; !ok {
+		a.sessions[sid] = &mockSession{mode: modeCode, thinkingEffort: effortMedium}
+	}
+	a.mu.Unlock()
+
+	// Replay mock messages via SessionUpdate notifications
+	// 1. Send a user message chunk
+	if err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: acp.SessionId(sid),
+		Update:    acp.UpdateUserMessageText("Hello, this is a replayed user message from the loaded session."),
+	}); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+	if err := pause(ctx, 50*time.Millisecond); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+
+	// 2. Send an agent message chunk
+	if err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: acp.SessionId(sid),
+		Update:    acp.UpdateAgentMessageText("Hello! This is a replayed assistant response from the loaded session."),
+	}); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+	if err := pause(ctx, 50*time.Millisecond); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+
+	// 3. Send available commands
+	if err := a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: acp.SessionId(sid),
+		Update: acp.SessionUpdate{
+			AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+				AvailableCommands: mockCommands,
+			},
+		},
+	}); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
+
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	thoughtLevelCategory := acp.SessionConfigOptionCategoryThoughtLevel
+
+	return acp.LoadSessionResponse{
+		Modes: &acp.SessionModeState{
+			AvailableModes: []acp.SessionMode{
+				{Id: acp.SessionModeId(modeCode), Name: modeCodeName},
+				{Id: acp.SessionModeId(modePlan), Name: modePlanName},
+				{Id: acp.SessionModeId(modeBypass), Name: modeBypassName},
+			},
+			CurrentModeId: acp.SessionModeId(modeCode),
+		},
+		ConfigOptions: []acp.SessionConfigOption{
+			{
+				Select: &acp.SessionConfigOptionSelect{
+					Id:           acp.SessionConfigId("mode"),
+					Name:         "Mode",
+					Type:         configOptionTypeSelect,
+					Category:     &modeCategory,
+					CurrentValue: acp.SessionConfigValueId(modeCode),
+					Options: acp.SessionConfigSelectOptions{
+						Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+							acp.SessionConfigSelectOption{Name: modeCodeName, Value: acp.SessionConfigValueId(modeCode)},
+							acp.SessionConfigSelectOption{Name: modePlanName, Value: acp.SessionConfigValueId(modePlan)},
+							acp.SessionConfigSelectOption{Name: modeBypassName, Value: acp.SessionConfigValueId(modeBypass)},
+						},
+					},
+				},
+			},
+			{
+				Select: &acp.SessionConfigOptionSelect{
+					Id:           acp.SessionConfigId("thinkingEffort"),
+					Name:         "Thinking Effort",
+					Type:         configOptionTypeSelect,
+					Category:     &thoughtLevelCategory,
+					CurrentValue: acp.SessionConfigValueId(effortMedium),
+					Options: acp.SessionConfigSelectOptions{
+						Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+							acp.SessionConfigSelectOption{Name: effortLowName, Value: acp.SessionConfigValueId(effortLow)},
+							acp.SessionConfigSelectOption{Name: effortMediumName, Value: acp.SessionConfigValueId(effortMedium)},
+							acp.SessionConfigSelectOption{Name: effortHighName, Value: acp.SessionConfigValueId(effortHigh)},
+						},
+					},
+				},
+			},
+		},
+	}, nil
 }
 
 func (a *mockACPAgent) ResumeSession(ctx context.Context, params acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {

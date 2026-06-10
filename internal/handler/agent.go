@@ -18,6 +18,10 @@ func ServeAgentSubRoutes(w http.ResponseWriter, r *http.Request) {
 		ServeAgentRefreshModels(w, r)
 		return
 	}
+	if strings.HasSuffix(path, "/acp-sessions") && r.Method == http.MethodGet {
+		ServeACPSessions(w, r)
+		return
+	}
 	writeLocalizedErrorf(w, r, http.StatusNotFound, "NotFound")
 }
 
@@ -47,11 +51,13 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	// extra API calls. State comes from the AgentCapabilityRegistry (agent-level)
 	// so it persists across connection lifecycle.
 	type acpState struct {
-		Mode      *ai.ModeState             `json:"modeState,omitempty"`
-		Effort    *ai.ThinkingEffortState   `json:"thinkingEffortState,omitempty"`
-		Commands  []ai.AvailableCommandInfo `json:"commands,omitempty"`
-		ModelList *ai.ModelListState        `json:"modelListState,omitempty"`
-		Plan      *ai.PlanState             `json:"planState,omitempty"`
+		Mode         *ai.ModeState             `json:"modeState,omitempty"`
+		Effort       *ai.ThinkingEffortState   `json:"thinkingEffortState,omitempty"`
+		Commands     []ai.AvailableCommandInfo `json:"commands,omitempty"`
+		ModelList    *ai.ModelListState        `json:"modelListState,omitempty"`
+		Plan         *ai.PlanState             `json:"planState,omitempty"`
+		LoadSession  bool                      `json:"loadSession"`
+		ListSessions bool                      `json:"listSessions"`
 	}
 	states := make(map[string]*acpState, len(agents))
 	reg := ai.GetAgentCapabilityRegistry()
@@ -80,7 +86,12 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
-				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
+				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml,
+					LoadSession: reg.GetLoadSession(a.ID), ListSessions: reg.GetListSessions(a.ID)}
+			}
+			// Even without mode/effort/commands/model, include LoadSession/ListSessions
+			if states[a.ID] == nil && (reg.GetLoadSession(a.ID) || reg.GetListSessions(a.ID)) {
+				states[a.ID] = &acpState{LoadSession: reg.GetLoadSession(a.ID), ListSessions: reg.GetListSessions(a.ID)}
 			}
 		}
 	}
@@ -297,4 +308,63 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 // and returns the corresponding ProviderSpec.
 func findProviderSpecForAgent(agentID string) *model.ProviderSpec {
 	return service.FindProviderSpecForAgent(agentID)
+}
+
+// ServeACPSessions handles GET /api/agents/{id}/acp-sessions — lists ACP sessions
+// for an agent that supports LoadSession + ListSessions.
+func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
+	// Extract agent ID from path: /api/agents/{id}/acp-sessions
+	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
+	agentID := strings.TrimSuffix(path, "/acp-sessions")
+
+	if agentID == "" || strings.Contains(agentID, "/") {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+
+	configMutex.RLock()
+	agent, ok := model.Agents[agentID]
+	configMutex.RUnlock()
+
+	if !ok {
+		writeLocalizedErrorf(w, r, http.StatusNotFound, "AgentNotFound")
+		return
+	}
+
+	if agent.Transport != transportACP {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+
+	reg := ai.GetAgentCapabilityRegistry()
+	if !reg.GetLoadSession(agentID) || !reg.GetListSessions(agentID) {
+		writeLocalizedErrorf(w, r, http.StatusNotImplemented, "NotImplemented")
+		return
+	}
+
+	// Get or create an alive connection for this agent
+	mgr := ai.GetACPConnManager()
+	conn := mgr.GetConnByAgentID(agentID)
+	if conn == nil {
+		writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "ServiceUnavailable")
+		return
+	}
+
+	cursor := r.URL.Query().Get("cursor")
+	var cursorPtr *string
+	if cursor != "" {
+		cursorPtr = &cursor
+	}
+
+	sessions, nextCursor, err := conn.ListSessions(r.Context(), cursorPtr)
+	if err != nil {
+		slog.Error("handler: ListSessions failed", "agent", agentID, "error", err)
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions":   sessions,
+		"nextCursor": nextCursor,
+	})
 }

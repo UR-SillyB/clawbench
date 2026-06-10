@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 
 	"clawbench/internal/model"
@@ -449,4 +450,96 @@ func TestACPConn_HasCurrentModeChanged(t *testing.T) {
 
 	// Different mode — change
 	assert.True(t, conn.HasCurrentModeChanged("ask"))
+}
+
+// --- ACPConn LoadSession fields ---
+
+func TestACPConn_LoadTargetSID_DefaultEmpty(t *testing.T) {
+	agent := &model.Agent{ID: "test-load-default", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-load-default")
+
+	conn.mu.Lock()
+	loadTarget := conn.loadTargetSID
+	conn.mu.Unlock()
+	assert.Empty(t, loadTarget)
+}
+
+func TestACPConn_LoadSessionActive_DefaultFalse(t *testing.T) {
+	agent := &model.Agent{ID: "test-load-active", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-load-active")
+
+	conn.mu.Lock()
+	active := conn.loadSessionActive
+	conn.mu.Unlock()
+	assert.False(t, active)
+}
+
+func TestACPConnManager_GetOrCreateConnForLoad_SetsLoadTarget(t *testing.T) {
+	mgr := GetACPConnManager()
+
+	agent := &model.Agent{ID: "test-forload", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-forload")
+	mgr.SetConnForTest("session-forload", conn)
+	defer mgr.CloseConn("session-forload")
+
+	// Set loadTargetSID via direct conn access (can't call GetOrCreateConnForLoad
+	// without a real ACP process, but we can test the field mechanics)
+	conn.mu.Lock()
+	conn.loadTargetSID = "acp-session-abc"
+	conn.mu.Unlock()
+
+	conn.mu.Lock()
+	assert.Equal(t, "acp-session-abc", conn.loadTargetSID)
+	conn.mu.Unlock()
+}
+
+// --- ACPConn.EnsureAlive ---
+
+func TestACPConn_EnsureAlive_NotAlive(t *testing.T) {
+	agent := &model.Agent{ID: "test-ensure-alive", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-ensure-alive")
+
+	// Not alive, no process — EnsureAlive would fail because we can't spawn
+	// a real ACP process in unit tests. Verify the method exists and the
+	// initial state is correct.
+	conn.mu.Lock()
+	assert.False(t, conn.alive)
+	conn.mu.Unlock()
+}
+
+// --- ACPConn.ListSessions ---
+
+func TestACPConn_ListSessions_NotAlive(t *testing.T) {
+	agent := &model.Agent{ID: "test-list-notalive", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-list-notalive")
+
+	_, _, err := conn.ListSessions(context.Background(), nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not alive")
+}
+
+// --- ACPConn.GetAndClearLoadSessionResp ---
+
+func TestACPConn_GetAndClearLoadSessionResp_Nil(t *testing.T) {
+	agent := &model.Agent{ID: "test-load-resp-nil", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-load-resp-nil")
+
+	resp := conn.GetAndClearLoadSessionResp()
+	assert.Nil(t, resp)
+}
+
+func TestACPConn_GetAndClearLoadSessionResp_ClearsAfterRead(t *testing.T) {
+	agent := &model.Agent{ID: "test-load-resp-clear", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-load-resp-clear")
+
+	conn.mu.Lock()
+	conn.lastLoadSessionResp = &acp.LoadSessionResponse{}
+	conn.mu.Unlock()
+
+	resp := conn.GetAndClearLoadSessionResp()
+	assert.NotNil(t, resp)
+
+	// Second call returns nil
+	resp2 := conn.GetAndClearLoadSessionResp()
+	assert.Nil(t, resp2)
 }

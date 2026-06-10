@@ -48,6 +48,11 @@ type ClawBenchACPClient struct {
 	connRef           *ACPConn                      // reference to ACPConn for cache updates
 	debouncers        map[string]*toolCallDebouncer // acpSessionID → debouncer
 
+	// LoadSession replay buffer: during LoadSession, SessionUpdate messages
+	// are collected here instead of being routed to SSE stream channels.
+	loadSessionBuf   []acp.SessionNotification
+	loadSessionBufMu sync.Mutex
+
 	// Terminal sessions for ACP terminal/* methods
 	termMu    sync.Mutex
 	terminals map[string]*terminalSession // terminalId → session
@@ -106,6 +111,27 @@ func (c *ClawBenchACPClient) GetCommands() []acp.AvailableCommand {
 	return c.commands
 }
 
+// IsLoadSessionActive returns whether a LoadSession replay is in progress.
+func (c *ClawBenchACPClient) IsLoadSessionActive() bool {
+	if c.connRef == nil {
+		return false
+	}
+	c.connRef.mu.Lock()
+	active := c.connRef.loadSessionActive
+	c.connRef.mu.Unlock()
+	return active
+}
+
+// GetAndClearLoadSessionBuf returns all collected SessionUpdate notifications
+// from the LoadSession replay and clears the buffer.
+func (c *ClawBenchACPClient) GetAndClearLoadSessionBuf() []acp.SessionNotification {
+	c.loadSessionBufMu.Lock()
+	buf := c.loadSessionBuf
+	c.loadSessionBuf = nil
+	c.loadSessionBufMu.Unlock()
+	return buf
+}
+
 // GetCommandsAsInfo returns cached commands as AvailableCommandInfo slices
 // for JSON serialization to the frontend.
 func (c *ClawBenchACPClient) GetCommandsAsInfo() []AvailableCommandInfo {
@@ -143,6 +169,16 @@ func (c *ClawBenchACPClient) SessionUpdate(ctx context.Context, n acp.SessionNot
 		c.mu.Lock()
 		c.commands = n.Update.AvailableCommandsUpdate.AvailableCommands
 		c.mu.Unlock()
+	}
+
+	// During LoadSession replay, collect messages in buffer instead of
+	// routing to SSE stream channels. The load handler reads them after
+	// the LoadSession RPC returns.
+	if c.IsLoadSessionActive() {
+		c.loadSessionBufMu.Lock()
+		c.loadSessionBuf = append(c.loadSessionBuf, n)
+		c.loadSessionBufMu.Unlock()
+		return nil
 	}
 
 	c.mu.Lock()

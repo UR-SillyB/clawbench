@@ -181,6 +181,13 @@
           <span class="at-menu-desc">{{ cmd.description }}</span>
         </button>
       </PopupMenu>
+      <!-- ACP session resume drawer -->
+      <AcpSessionDrawer
+        :open="showAcpSessionDrawer"
+        :agent-id="currentAgentId"
+        @close="showAcpSessionDrawer = false"
+        @select="handleAcpSessionSelect"
+      />
     </div>
     <!-- Session info bar (model + mode + thinking + transport) -->
     <div class="chat-session-info" v-if="currentModelName || showModeInfo || showThinkingInfo || showTransportInfo">
@@ -215,7 +222,8 @@ import { useDialog } from '@/composables/useDialog.ts'
 import { useQuickSend } from '@/composables/useQuickSend'
 import { useChatKeyboard } from '@/composables/useChatKeyboard'
 import { useSessionIdentity } from '@/composables/useSessionIdentity'
-import { useAgents } from '@/composables/useAgents'
+import { useAgents, agentCanResume } from '@/composables/useAgents'
+import AcpSessionDrawer from '@/components/chat/AcpSessionDrawer.vue'
 
 const { t } = useI18n()
 const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport } = useSessionIdentity()
@@ -319,6 +327,7 @@ const emit = defineEmits([
   'switch-thinking-effort',
   'switch-mode',
   'switch-transport',
+  'acp-session-loaded',
 ])
 
 const inputText = ref('')
@@ -340,10 +349,18 @@ function openSettingsModal(tab) {
 
 // ── @ command autocomplete ──
 const showAtMenu = ref(false)
-const atCommands = [
-  { key: '@chatsearch', label: '@chatsearch', description: t('chat.atCommand.chatsearchDesc') },
-  { key: '@task', label: '@task', description: t('chat.atCommand.taskDesc') },
-]
+const showAcpSessionDrawer = ref(false)
+const atCommands = computed(() => {
+  const cmds = [
+    { key: '@chatsearch', label: '@chatsearch', description: t('chat.atCommand.chatsearchDesc') },
+    { key: '@task', label: '@task', description: t('chat.atCommand.taskDesc') },
+  ]
+  // @resume only shown when current agent supports LoadSession + ListSessions
+  if (props.currentAgentId && agentCanResume(props.currentAgentId)) {
+    cmds.push({ key: '@resume', label: '@resume', description: t('chat.atCommand.resumeDesc') })
+  }
+  return cmds
+})
 
 // ── Slash command autocomplete (ACP backend commands) ──
 const showSlashMenu = ref(false)
@@ -392,6 +409,13 @@ watch(inputText, () => {
 })
 
 function handleAtSelect(cmd) {
+  if (cmd.key === '@resume') {
+    // Open ACP session drawer instead of inserting text
+    showAcpSessionDrawer.value = true
+    showAtMenu.value = false
+    inputText.value = ''
+    return
+  }
   inputText.value = cmd.key + ' '
   showAtMenu.value = false
   nextTick(() => {
@@ -407,6 +431,10 @@ function handleSlashSelect(cmd) {
     const el = textareaRef.value
     if (el) el.focus()
   })
+}
+
+function handleAcpSessionSelect(sessionId) {
+  emit('acp-session-loaded', sessionId)
 }
 
 // Keyboard detection for iOS (no adjustResize) — activates visualViewport monitoring

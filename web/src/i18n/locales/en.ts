@@ -96,9 +96,22 @@ export default {
       title: 'ClawBench Commands',
       chatsearchDesc: 'Search chat history',
       taskDesc: 'Manage scheduled tasks',
+      resumeDesc: 'Resume ACP agent session',
     },
     slashCommand: {
       title: 'Agent Commands',
+    },
+    acpSession: {
+      title: 'ACP Sessions',
+      loading: 'Loading sessions...',
+      empty: 'No sessions found',
+      untitled: 'Untitled Session',
+      loadMore: 'Load more',
+      loadFailed: 'Failed to load ACP session',
+      justNow: 'Just now',
+      minutesAgo: '{n}m ago',
+      hoursAgo: '{n}h ago',
+      daysAgo: '{n}d ago',
     },
     actions: {
       session: 'Chat',

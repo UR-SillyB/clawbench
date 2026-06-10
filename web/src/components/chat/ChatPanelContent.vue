@@ -107,6 +107,7 @@
       @switch-thinking-effort="handleSwitchThinkingEffort"
       @switch-mode="handleSwitchMode"
       @switch-transport="handleSwitchTransport"
+      @acp-session-loaded="handleAcpSessionLoaded"
     />
 
   </div>
@@ -539,6 +540,11 @@ function handleSwitchTransport(transport) {
     identity.clearCommandState()
     identity.clearThinkingEffortState()
   }
+}
+
+function handleAcpSessionLoaded(sessionId) {
+  // After ACP LoadSession, switch to the new session (reuse existing switchSession logic)
+  manager.switchSession(sessionId)
 }
 
 /** Persist session-scoped settings (mode, thinkingEffort, model, transport)
