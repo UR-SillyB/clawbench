@@ -363,13 +363,13 @@ export async function initSessionFromAPI() {
           availableCommands.value = data.commands
         }
         // Initialize mode: from ACP state currentModeId
-        // Only populate mode state for ACP sessions — CLI backends don't support modes
-        if (currentTransport.value !== 'cli' && data.modeState?.currentModeId) {
+        // Only populate mode state for ACP-capable agents — CLI backends don't support modes
+        if (agentsApi.supportsDualTransport(data.agentId || '') && data.modeState?.currentModeId) {
           currentModeId.value = data.modeState.currentModeId
         }
         // Populate mode state from chat response — update available modes.
-        // Only for ACP sessions — CLI backends don't support modes
-        if (currentTransport.value !== 'cli' && data.modeState && data.modeState.availableModes?.length > 0) {
+        // Only for ACP-capable agents — CLI backends don't support modes
+        if (agentsApi.supportsDualTransport(data.agentId || '') && data.modeState && data.modeState.availableModes?.length > 0) {
           updateAvailableModes(data.modeState.availableModes)
           // Set mode name from available modes now that the list is populated
           if (currentModeId.value) {
@@ -379,10 +379,10 @@ export async function initSessionFromAPI() {
         }
         // Populate thinking effort state — update available levels.
         // currentThinkingEffort was already set above from ACP state.
-        // Only for ACP sessions — CLI backends don't support thinking effort
-        if (currentTransport.value !== 'cli' && data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
+        // Only for ACP-capable agents — CLI backends don't support thinking effort
+        if (agentsApi.supportsDualTransport(data.agentId || '') && data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
           updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
-        } else if (currentTransport.value !== 'cli' && data.agentId) {
+        } else if (agentsApi.supportsDualTransport(data.agentId || '') && data.agentId) {
           // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
           const agentLevels = agentsApi.getAgentThinkingEffortLevels(data.agentId)
           if (agentLevels.length > 0) {
@@ -613,5 +613,11 @@ export function useSessionIdentity() {
     toggleAutoApprove,
     // Mode state helpers
     updateModeState,
+    updateAvailableModes,
+    clearModeState,
+    updateCommandState,
+    clearCommandState,
+    updateAvailableThinkingEfforts,
+    clearThinkingEffortState,
   }
 }

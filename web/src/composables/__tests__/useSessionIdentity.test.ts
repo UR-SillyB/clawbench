@@ -25,6 +25,7 @@ vi.mock('@/composables/useAgents', () => ({
         getEffectiveThinkingEffort: mockGetEffectiveThinkingEffort,
         getAgentThinkingEffortLevels: mockGetAgentThinkingEffortLevels,
         agentHeaderTitle: mockAgentHeaderTitle,
+        supportsDualTransport: vi.fn().mockReturnValue(true),
     }),
 }))
 

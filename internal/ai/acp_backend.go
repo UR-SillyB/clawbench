@@ -256,8 +256,13 @@ func (b *ACPBackend) cacheNewSessionState(conn *ACPConn) {
 	conn.SetCurrentModelID(modelCurrentID)
 
 	// Force-update agent-level registry (full overwrite, once per process instance)
+	// Preserve loadSession/listSessions from spawnLocked's Initialize response —
+	// they're already stored in the registry and should not be overwritten with false.
 	agentID := conn.AgentID()
-	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, false, false)
+	reg := GetAgentCapabilityRegistry()
+	loadSession := reg.GetLoadSession(agentID)
+	listSessions := reg.GetListSessions(agentID)
+	reg.ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, loadSession, listSessions)
 }
 
 // mergeResumedSessionState merges state from a ResumeSessionResponse, preserving
@@ -318,8 +323,12 @@ func (b *ACPBackend) mergeResumedSessionState(conn *ACPConn) {
 	conn.SetCurrentModelID(modelCurrentID)
 
 	// Force-update agent-level registry (full overwrite, once per process instance)
+	// Preserve loadSession/listSessions from spawnLocked's Initialize response.
 	agentID := conn.AgentID()
-	GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, false, false)
+	reg := GetAgentCapabilityRegistry()
+	loadSession := reg.GetLoadSession(agentID)
+	listSessions := reg.GetListSessions(agentID)
+	reg.ForceUpdateIfNeeded(agentID, modes, efforts, models, nil, configState, loadSession, listSessions)
 }
 
 // emitSessionStateEvents emits mode_update, thinking_effort_update, and model_list_update
@@ -344,14 +353,32 @@ func (b *ACPBackend) emitSessionStateEvents(conn *ACPConn, ch chan<- StreamEvent
 }
 
 // emitCommandsUpdate re-emits cached slash commands as an SSE event.
-// Reads commands from the AgentCapabilityRegistry.
+// Reads commands from the AgentCapabilityRegistry first; if empty, falls back
+// to the ACP client's cached commands (which may arrive via available_commands_update
+// notifications after the NewSession RPC returns, bypassing the notification barrier).
 func (b *ACPBackend) emitCommandsUpdate(conn *ACPConn, ch chan<- StreamEvent) {
 	agentID := conn.AgentID()
 	cmds := GetAgentCapabilityRegistry().GetCommands(agentID)
 	if len(cmds) == 0 {
+		// Fallback: read commands cached by the ACP client from post-RPC notifications
+		if client := conn.GetClient(); client != nil {
+			clientCmds := client.GetCommandsAsInfo()
+			if len(clientCmds) > 0 {
+				cmds = clientCmds
+				// Also update the registry so future reads find them
+				GetAgentCapabilityRegistry().UpdateCommands(agentID, cmds)
+			}
+		}
+	}
+	if len(cmds) == 0 {
 		return
 	}
-	slog.Info("acp: re-emitting cached commands_update", "count", len(cmds))
+	slog.Info("acp: re-emitting cached commands_update", "count", len(cmds), "source", func() string {
+		if len(GetAgentCapabilityRegistry().GetCommands(agentID)) > 0 {
+			return "registry"
+		}
+		return "client_fallback"
+	}())
 	forwardACPEvent(ch, StreamEvent{Type: "commands_update", Commands: cmds})
 }
 

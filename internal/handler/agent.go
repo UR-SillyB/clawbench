@@ -66,6 +66,14 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 			// ACP agents: populate from AgentCapabilityRegistry
 			agentCap := reg.Get(a.ID)
 			if agentCap == nil || !agentCap.HasData() {
+				// Agent supports ACP but pool hasn't been initialized yet.
+				// Still include a minimal state so the frontend can show
+				// loadSession/listSessions capabilities from DB.
+				loadSession := reg.GetLoadSession(a.ID)
+				listSessions := reg.GetListSessions(a.ID)
+				if loadSession || listSessions {
+					states[a.ID] = &acpState{LoadSession: loadSession, ListSessions: listSessions}
+				}
 				continue
 			}
 

@@ -173,8 +173,8 @@
           <span class="at-menu-desc">{{ cmd.description }}</span>
         </button>
       </PopupMenu>
-      <!-- Slash command autocomplete menu (ACP backend commands) -->
-      <PopupMenu v-if="availableCommands.length > 0" v-model:show="showSlashMenu" :target-element="textareaRef" anchor="left" :max-width="300" :max-height="240" :menu-items-count="slashMenuItems.length">
+      <!-- Slash command autocomplete menu (ACP backend commands — only in acp-stdio transport) -->
+      <PopupMenu v-if="isACPTransport && availableCommands.length > 0" v-model:show="showSlashMenu" :target-element="textareaRef" anchor="left" :max-width="300" :max-height="240" :menu-items-count="slashMenuItems.length">
         <div class="at-menu-title">{{ t('chat.slashCommand.title') }}</div>
         <button v-for="cmd in slashMenuItems" :key="cmd.key" class="at-menu-item" @mousedown.prevent="handleSlashSelect(cmd)">
           <span class="at-menu-label slash-label">{{ cmd.label }}</span>
@@ -229,7 +229,15 @@ const { t } = useI18n()
 const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport } = useSessionIdentity()
 const { supportsDualTransport, hasThinkingEffortLevels } = useAgents()
 
-const isACP = computed(() => {
+// isACP: true when the current agent supports ACP (has acpCommand).
+// Used for mode chips, thinking effort chips — these are ACP features
+// that apply regardless of the current session's transport mode.
+const isACP = computed(() => supportsDualTransport(props.currentAgentId || ''))
+
+// isACPTransport: true when the current session is using ACP transport.
+// Slash commands are only available in ACP transport mode — even if the
+// agent supports dual transport, CLI sessions don't have slash commands.
+const isACPTransport = computed(() => {
   if (sessionTransport.value) return sessionTransport.value === 'acp-stdio'
   return props.currentTransport === 'acp-stdio'
 })
@@ -369,8 +377,9 @@ const atMenuItems = computed(() => {
   const text = inputText.value
   if (!text.startsWith('@')) return []
   const query = text.toLowerCase().slice(1) // strip leading '@'
-  if (!query) return atCommands // empty query → show all
-  return atCommands.filter(cmd => cmd.key.toLowerCase().includes(query))
+  const cmds = atCommands.value // unwrap computed ref
+  if (!query) return cmds // empty query → show all
+  return cmds.filter(cmd => cmd.key.toLowerCase().includes(query))
 })
 
 const slashMenuItems = computed(() => {
