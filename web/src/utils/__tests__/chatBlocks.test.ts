@@ -325,6 +325,15 @@ describe('toolCallSummary', () => {
   it('ignores non-string first value', () => {
     expect(toolCallSummary({ input: { count: 42 } })).toBe('')
   })
+
+  it('returns empty when input is a string (partial JSON from streaming)', () => {
+    expect(toolCallSummary({ input: '{' })).toBe('')
+    expect(toolCallSummary({ input: '{"command":"ls"}' })).toBe('')
+  })
+
+  it('returns empty when input is an array', () => {
+    expect(toolCallSummary({ input: ['a', 'b'] })).toBe('')
+  })
 })
 
 // ── hasImagesInContent ──

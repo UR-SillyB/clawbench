@@ -154,7 +154,12 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 					if event.Tool.Input != "" {
 						json.Unmarshal([]byte(event.Tool.Input), &input)
 					}
-					if input == nil {
+					// Ensure input is always a JSON object (map), never a string or
+					// other primitive. Partial JSON streaming may produce string values
+					// (e.g., input_json_delta's first chunk "{") that would be sent as
+					// raw strings to the frontend, causing toolCallSummary to display
+					// "{" as the tool summary instead of the actual tool description.
+					if _, ok := input.(map[string]any); !ok {
 						input = map[string]any{}
 					}
 					payload := map[string]any{
@@ -182,7 +187,9 @@ func AIChatStream(w http.ResponseWriter, r *http.Request) {
 					if event.Tool.Input != "" {
 						var input any
 						if json.Unmarshal([]byte(event.Tool.Input), &input) == nil {
-							payload["input"] = input
+							if _, ok := input.(map[string]any); ok {
+								payload["input"] = input
+							}
 						}
 					}
 					if event.Tool.Name != "" {

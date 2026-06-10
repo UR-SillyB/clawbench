@@ -74,7 +74,7 @@ export function parseAssistantContent(content: string) {
  * Shows full content — no artificial truncation.
  */
 export function toolCallSummary(block: { input?: any; name?: string }): string {
-  if (!block.input) return ''
+  if (!block.input || typeof block.input !== 'object' || Array.isArray(block.input)) return ''
   const name = (block.name || '').toLowerCase()
   if (name === 'askuserquestion' && Array.isArray(block.input.questions) && block.input.questions.length > 0) {
     const q = block.input.questions[0]

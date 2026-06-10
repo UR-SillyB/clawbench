@@ -360,6 +360,41 @@ func TestAIChatStream_ToolUseEvent_EmptyInput(t *testing.T) {
 	assert.Empty(t, input)
 }
 
+func TestAIChatStream_ToolUseEvent_StringInput(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID := "stream-tooluse-string-input"
+	ch := setupStreamSession(sessionID)
+	defer cleanupStreamSession(sessionID)
+
+	go func() {
+		// Tool call with input that deserializes to a string (e.g., partial JSON
+		// from input_json_delta's first chunk "{"). The SSE handler must coerce
+		// this to an empty object so the frontend toolCallSummary doesn't display
+		// "{" as the tool summary.
+		ch <- ai.StreamEvent{
+			Type: "tool_use",
+			Tool: &ai.ToolCall{Name: "Bash", ID: "t3", Input: `"<partial>"`, Done: false},
+		}
+		ch <- ai.StreamEvent{Type: "done"}
+	}()
+
+	req := newRequest(t, http.MethodGet, "/api/ai/chat/stream?session_id="+sessionID, nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := callHandler(AIChatStream, req)
+
+	events := parseSSEEvents(w.Body.String())
+	assert.Equal(t, "tool_use", events[0]["event"])
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(events[0]["data"]), &data))
+	// Input must be an object (map), never a string — prevents frontend from
+	// showing "{" or other partial JSON as the tool summary title
+	input, ok := data["input"].(map[string]any)
+	assert.True(t, ok, "input should be a JSON object, got %T: %v", data["input"], data["input"])
+	assert.Empty(t, input)
+}
+
 func TestAIChatStream_ToolUseEvent_NilTool(t *testing.T) {
 	env, teardown := setupTestEnv(t)
 	defer teardown()
