@@ -80,25 +80,25 @@
   </div>
 
   <!-- Floating scroll buttons — outside scroll container, inside relative wrapper -->
+  <!-- Floating scroll buttons — always at bottom -->
   <Transition name="scroll-fab">
-    <div v-if="scrolledUp" class="scroll-fab-group scroll-fab-top">
-      <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
-        <ChevronsUp :size="18" />
-      </button>
-      <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
-        <ArrowUp :size="18" />
-      </button>
-    </div>
-  </Transition>
-
-  <Transition name="scroll-fab">
-    <div v-if="scrolledDown" class="scroll-fab-group scroll-fab-bottom">
-      <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
-        <ChevronsDown :size="18" />
-      </button>
-      <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
-        <ArrowDown :size="18" />
-      </button>
+    <div v-if="scrolledUp || scrolledDown" class="scroll-fab-group scroll-fab-bottom">
+      <template v-if="scrolledUp">
+        <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
+          <ChevronsUp :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
+          <ArrowUp :size="18" />
+        </button>
+      </template>
+      <template v-if="scrolledDown">
+        <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
+          <ChevronsDown :size="18" />
+        </button>
+        <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
+          <ArrowDown :size="18" />
+        </button>
+      </template>
     </div>
   </Transition>
 
@@ -648,10 +648,6 @@ defineExpose({
   padding: 6px 0;
 }
 
-.scroll-fab-top {
-  top: 0;
-}
-
 .scroll-fab-bottom {
   bottom: 0;
 }
@@ -698,14 +694,6 @@ defineExpose({
 }
 .scroll-fab-leave-active {
   transition: opacity 0.15s ease-in, transform 0.15s ease-in;
-}
-.scroll-fab-top.scroll-fab-enter-from {
-  opacity: 0;
-  transform: translateY(-12px);
-}
-.scroll-fab-top.scroll-fab-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
 }
 .scroll-fab-bottom.scroll-fab-enter-from {
   opacity: 0;
