@@ -1033,17 +1033,17 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		slog.Debug("acp conn: set_config_option(mode) skipped (unchanged)", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "mode", req.Mode)
 	}
 
-	// Send prompt with a timeout. The Prompt RPC should return quickly (it
-	// just delivers the prompt to the agent; content streams back via
-	// SessionUpdate notifications). If it blocks, the agent's internal
-	// subprocess is likely hung. Use the parent ctx for cancellation (user
-	// cancel) but add a deadline as a safety net.
-	promptCtx, promptCancel := context.WithTimeout(ctx, 120*time.Second)
-	defer promptCancel()
-
+	// Send prompt. The Prompt RPC blocks until the agent's turn completes
+	// (all tool calls finish and the agent yields control back). For long
+	// turns this can take many minutes — that's expected, because content
+	// streams to the frontend in real time via SessionUpdate notifications.
+	//
+	// Do NOT add a hard timeout here: a deadline would kill the stream
+	// mid-output while the agent is still working. Instead, rely on the
+	// parent ctx for cancellation (user presses Cancel → ctx cancelled).
 	promptStart := time.Now()
 	slog.Info("acp conn: conn.Prompt starting", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
-	_, err := conn.Prompt(promptCtx, acp.PromptRequest{
+	_, err := conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(acpSID),
 		Prompt:    prompt,
 	})
@@ -1058,20 +1058,30 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 			return ctx.Err()
 		}
 
-		// Peer disconnected — collect crash diagnostics (stderr, exit code)
-		// and mark the connection as dead for respawn on retry.
-		diag := c.collectCrashDiagnostics()
-		c.mu.Lock()
-		c.alive = false
-		c.mu.Unlock()
+		// Check if the agent process is actually dead or still alive.
+		// The Prompt RPC can fail with timeout/internal errors without the
+		// process actually crashing — in that case we should NOT mark the
+		// connection dead, as the agent may still be usable for the next turn.
+		if !c.IsAlive() {
+			// Agent process is dead — collect crash diagnostics and mark dead.
+			diag := c.collectCrashDiagnostics()
+			c.mu.Lock()
+			c.alive = false
+			c.mu.Unlock()
 
-		slog.Error("acp conn: prompt failed (peer disconnected)",
-			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID,
-			"exit_code", diag.ExitCode, "signal", diag.Signal,
-			"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
-			"stderr_tail", diag.StderrTail)
+			slog.Error("acp conn: prompt failed (peer disconnected)",
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID,
+				"exit_code", diag.ExitCode, "signal", diag.Signal,
+				"ppid", diag.ParentPID, "rss_mb", diag.VMRSSKB/1024, "fds", diag.FDCount,
+				"stderr_tail", diag.StderrTail)
 
-		return fmt.Errorf("acp: prompt: %w%s", err, diag.String())
+			return fmt.Errorf("acp: prompt: %w%s", err, diag.String())
+		}
+
+		// Agent is still alive but Prompt returned an error (e.g., internal error,
+		// request cancelled by agent). Log it but don't kill the connection.
+		slog.Warn("acp conn: prompt failed but agent still alive",
+			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
 	}
 
 	return nil
