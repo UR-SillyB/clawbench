@@ -1179,7 +1179,8 @@ describe('loadHistory', () => {
     await session.loadHistory(true, false, false)
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/api/ai/chat?session_id=current-s1')
+      expect.stringContaining('/api/ai/chat?session_id=current-s1'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
     expect(mockIdentity.currentSessionTitle).toBe('Test Session')
     expect(mockIdentity.currentBackend).toBe('claude')
@@ -2313,7 +2314,8 @@ describe('startMsgCountPolling / stopMsgCountPolling', () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining('/api/ai/chat?session_id=current-s1')
+      expect.stringContaining('/api/ai/chat?session_id=current-s1'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
 
     session.stopMsgCountPolling()
@@ -2430,7 +2432,8 @@ describe('handleVisibilityChange', () => {
     })
     expect(onStopPolling).toHaveBeenCalled()
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/api/ai/chat?session_id=s1')
+      expect.stringContaining('/api/ai/chat?session_id=s1'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
 
     vi.restoreAllMocks()
@@ -3207,9 +3210,9 @@ describe('loadHistory session_id recovery', () => {
     // Should have made two fetch calls: recovery + full load
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
     // First call: recovery with limit=1
-    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, expect.stringContaining('limit=1'))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, expect.stringContaining('limit=1'), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     // Second call: full load with explicit session_id
-    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('session_id=recovered-s1'))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('session_id=recovered-s1'), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     // currentSessionId should be set from recovery
     expect(currentSessionId.value).toBe('recovered-s1')
     expect(mockIdentity.currentSessionTitle).toBe('Recovered Session')

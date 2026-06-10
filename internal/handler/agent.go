@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"clawbench/internal/ai"
-	"clawbench/internal/middleware"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
 )
@@ -84,28 +83,6 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml}
 			}
 		}
-	}
-
-	// For acp-stdio agents with no registry data, trigger background prefetch
-	// to discover mode/command/thinking state by creating a temporary ACP connection.
-	// The frontend will receive the state via WS "acp_state_update" event once ready.
-	projectPath := middleware.GetProjectFromCookie(r)
-	for _, a := range agents {
-		if a.Transport != transportACP {
-			continue
-		}
-		if _, hasState := states[a.ID]; hasState {
-			continue
-		}
-		spec := model.FindSpecByBackend(a.Backend)
-		if spec == nil || spec.AcpCommand == "" {
-			continue
-		}
-		cwd := projectPath
-		if cwd == "" {
-			cwd = "/" // fallback: agent may still work without a project
-		}
-		go ai.GetACPConnManager().PrefetchACPState(a, cwd)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

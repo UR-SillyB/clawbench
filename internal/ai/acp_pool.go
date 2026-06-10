@@ -322,7 +322,12 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCa
 		return ACPCachedState{}
 	}
 
-	conn.mu.Lock()
+	// Use TryLock to avoid blocking if ensureAliveWithSession holds conn.mu
+	// (e.g., during GetOrCreateConn for a new session). In that case return
+	// empty state — the next request will find the connection ready.
+	if !conn.mu.TryLock() {
+		return ACPCachedState{}
+	}
 	currentModeID := conn.currentModeID
 	currentThinkingEffortID := conn.currentThinkingEffortID
 	currentModelID := conn.currentModelID
@@ -568,7 +573,8 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// No prior session — first message ever, create new session.
 	// Timeout prevents blocking forever if the agent binary hangs during
 	// session creation (e.g., bridge adapter waiting for claude CLI init).
-	newSessCtx, newSessCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use the parent context's deadline if available, otherwise default 60s.
+	newSessCtx, newSessCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer newSessCancel()
 
 	sessResp, err := c.conn.NewSession(newSessCtx, acp.NewSessionRequest{
@@ -611,7 +617,8 @@ func (c *ACPConn) snapshotCachedConfig() cachedConfigSnapshot {
 // recoverViaResumeSession recovers a session via ResumeSession and re-applies config.
 func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID string, prevConfig cachedConfigSnapshot) error {
 	// Timeout prevents blocking forever if the agent is unresponsive during resume.
-	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use the parent context's deadline if available, otherwise default 60s.
+	resumeCtx, resumeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer resumeCancel()
 
 	resumeResp, err := c.conn.ResumeSession(resumeCtx, acp.ResumeSessionRequest{
@@ -758,7 +765,8 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 
 	// Initialize the ACP connection with a timeout so that an unresponsive
 	// agent binary doesn't block the entire chat goroutine indefinitely.
-	initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use the parent context's deadline if available, otherwise default 60s.
+	initCtx, initCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer initCancel()
 
 	initResp, err := conn.Initialize(initCtx, acp.InitializeRequest{
@@ -1778,135 +1786,28 @@ func (m *ACPConnManager) GetPendingApprovalSessionIDs() map[string]bool {
 
 	result := make(map[string]bool)
 	for sid, conn := range m.conns {
-		conn.mu.Lock()
+		// Use TryLock to avoid blocking if ensureAliveWithSession is
+		// holding conn.mu. A busy connection won't have pending
+		// approvals visible to this read path anyway (they arrive via
+		// SSE events, not polled here).
+		if !conn.mu.TryLock() {
+			continue
+		}
 		if conn.client != nil {
-			conn.client.mu.Lock()
-			for _, pp := range conn.client.pendingPermission {
-				// pp.SessionID is the ACP session ID; map it to ClawBenchSID
-				// Since we're iterating conns keyed by clawbenchSID, use sid directly
-				if pp.SessionID == conn.acpSID {
-					result[sid] = true
+			if conn.client.mu.TryLock() {
+				for _, pp := range conn.client.pendingPermission {
+					// pp.SessionID is the ACP session ID; map it to ClawBenchSID
+					// Since we're iterating conns keyed by clawbenchSID, use sid directly
+					if pp.SessionID == conn.acpSID {
+						result[sid] = true
+					}
 				}
+				conn.client.mu.Unlock()
 			}
-			conn.client.mu.Unlock()
 		}
 		conn.mu.Unlock()
 	}
 	return result
-}
-
-// onACPStatePrefetched is called when a prefetch operation successfully
-// discovers ACP state for an agent. Set by the application startup layer
-// (which has access to the ws package) to broadcast the state to the frontend.
-var onACPStatePrefetched = func(agentID string, state ACPCachedState) {}
-
-// SetACPStatePrefetchedCallback sets the callback invoked when ACP state
-// is prefetched for an agent. Must be called once during startup.
-func SetACPStatePrefetchedCallback(fn func(string, ACPCachedState)) {
-	onACPStatePrefetched = fn
-}
-
-// PrefetchACPState proactively creates an ACP connection for an agent that
-// has no cached state (e.g., never sent a message). It spawns the agent
-// process, creates a new ACP session to discover mode/command/thinking state,
-// caches it, and broadcasts the result via the onACPStatePrefetched callback.
-// The connection is marked idle afterward and will be reaped by idleSweep.
-// This is a non-blocking operation — it spawns a background goroutine.
-//
-//nolint:gocognit,gocyclo // PrefetchACPState walks registry dedup → in-progress check → spawn → cleanup; inlining each branch hurts readability
-func (m *ACPConnManager) PrefetchACPState(agent *model.Agent, cwd string) {
-	prefetchSID := "_prefetch_" + agent.ID
-
-	// Check if registry already has data for this agent — no need to prefetch.
-	reg := GetAgentCapabilityRegistry()
-	if agentCap := reg.Get(agent.ID); agentCap != nil && agentCap.HasData() {
-		return
-	}
-
-	m.mu.Lock()
-	if conn, exists := m.conns[prefetchSID]; exists {
-		conn.mu.Lock()
-		alive := conn.alive && conn.isAliveLocked()
-		conn.mu.Unlock()
-		if alive {
-			m.mu.Unlock()
-			return // already in progress
-		}
-		// Stale prefetch entry — remove so we can retry
-		delete(m.conns, prefetchSID)
-	}
-
-	conn := newACPConn(agent, prefetchSID)
-	m.conns[prefetchSID] = conn
-	m.mu.Unlock()
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		isNew, err := conn.ensureAliveWithSession(ctx, cwd)
-		if err != nil {
-			slog.Warn("acp prefetch: failed to create session", "agent", agent.ID, "error", err)
-			// Clean up the failed prefetch connection
-			m.mu.Lock()
-			if c, ok := m.conns[prefetchSID]; ok && c == conn {
-				delete(m.conns, prefetchSID)
-			}
-			m.mu.Unlock()
-			return
-		}
-
-		// Cache state from NewSession response and force-update the agent capability registry.
-		if isNew {
-			sessResp := conn.GetAndClearNewSessionResp()
-			if sessResp != nil {
-				var modes []ModeDef
-				var modeCurrentID string
-				if modeState := extractACPModeState(sessResp); modeState != nil {
-					modes = modeState.AvailableModes
-					modeCurrentID = modeState.CurrentModeID
-					slog.Info("acp prefetch: extracted mode", "agent", agent.ID, "current", modeState.CurrentModeID, "available", len(modeState.AvailableModes))
-				}
-				var configState *ConfigOptionState
-				if cs := extractACPConfigOptions(sessResp); cs != nil {
-					configState = cs
-				}
-				var efforts []ThinkingEffortDef
-				var effortCurrentID string
-				if effortState := extractACPThinkingEffort(sessResp); effortState != nil {
-					efforts = effortState.AvailableLevels
-					effortCurrentID = effortState.CurrentID
-					slog.Info("acp prefetch: extracted thinking effort", "agent", agent.ID, "current", effortState.CurrentID, "available", len(effortState.AvailableLevels))
-				}
-				var models []model.AgentModel
-				var modelCurrentID string
-				if modelList := extractACPModelList(sessResp); modelList != nil {
-					models = modelList.Models
-					modelCurrentID = modelList.CurrentModelID
-					slog.Info("acp prefetch: extracted model list", "agent", agent.ID, "current", modelList.CurrentModelID, "available", len(modelList.Models))
-				}
-
-				// Set session-level current values on conn
-				conn.SetCurrentModeID(modeCurrentID)
-				conn.SetCurrentThinkingEffortID(effortCurrentID)
-				conn.SetCurrentModelID(modelCurrentID)
-
-				// Force-update registry (full overwrite)
-				GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agent.ID, modes, efforts, models, nil, configState)
-			}
-		}
-
-		slog.Info("acp prefetch: got state", "agent", agent.ID)
-
-		// Notify the application layer (which can broadcast via WS)
-		state := m.GetCachedStateByAgentID(agent.ID)
-		if state.Mode != nil || state.Effort != nil || state.ModelList != nil {
-			onACPStatePrefetched(agent.ID, state)
-		}
-
-		// Mark idle so sweep can clean it up after the timeout
-		m.MarkIdle(prefetchSID)
-	}()
 }
 
 // GetClient returns the ClawBenchACPClient for the given agent ID.

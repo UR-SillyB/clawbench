@@ -51,12 +51,3 @@ type SummaryUpdateData struct {
 	SessionID   string `json:"sessionID,omitempty"`
 }
 
-// ACPStateUpdateData is the data payload for "acp_state_update" events.
-// Broadcast when ACP state is prefetched for an agent that previously had no cached state.
-type ACPStateUpdateData struct {
-	AgentID             string `json:"agentId"`
-	ModeState           any    `json:"modeState,omitempty"`
-	ThinkingEffortState any    `json:"thinkingEffortState,omitempty"`
-	Commands            any    `json:"commands,omitempty"`
-	ModelListState      any    `json:"modelListState,omitempty"`
-}

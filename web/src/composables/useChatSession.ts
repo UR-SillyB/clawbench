@@ -242,7 +242,24 @@ export function useChatSession(options: UseChatSessionOptions) {
         // Recover session from backend — this sets currentSessionId from the
         // cookie-aware /api/ai/chat endpoint, but using limit=1 to avoid loading
         // all messages twice (the full load happens below after recovery).
-        const recoverResp = await fetch(`/api/ai/chat?limit=1`)
+        // AbortController timeout is a safety net only; the backend itself has
+        // ACP RPC timeouts (60s) so 60s gives ample room even for slow remote
+        // connections. On abort, we catch and bail gracefully (no toast error).
+        const recoverCtrl = new AbortController()
+        const recoverTimer = setTimeout(() => recoverCtrl.abort(), 60000)
+        let recoverResp: Response
+        try {
+          recoverResp = await fetch(`/api/ai/chat?limit=1`, { signal: recoverCtrl.signal })
+        } catch (e) {
+          clearTimeout(recoverTimer)
+          if (recoverCtrl.signal.aborted) {
+            // Timeout — bail without error toast, let retry handle it
+            switching.value = false
+            return
+          }
+          throw e
+        }
+        clearTimeout(recoverTimer)
         if (loadHistorySeq !== mySeq) { switching.value = false; return }
         if (recoverResp.ok) {
           const recoverData = await recoverResp.json()
@@ -267,7 +284,24 @@ export function useChatSession(options: UseChatSessionOptions) {
         }
       }
       const url = `/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=${limit}`
-      const resp = await fetch(url)
+      const fetchCtrl = new AbortController()
+      const fetchTimer = setTimeout(() => fetchCtrl.abort(), 60000)
+      let resp: Response
+      try {
+        resp = await fetch(url, { signal: fetchCtrl.signal })
+      } catch (e) {
+        clearTimeout(fetchTimer)
+        if (fetchCtrl.signal.aborted) {
+          // Timeout — bail without error toast
+          switching.value = false
+          loadHistoryInProgress = false
+          resolveDeferred!()
+          loadHistoryDeferred = null
+          return
+        }
+        throw e
+      }
+      clearTimeout(fetchTimer)
       // If another loadHistory or switchSession started while we were fetching, discard our results
       if (loadHistorySeq !== mySeq) { switching.value = false; return }
       if (!resp.ok) {

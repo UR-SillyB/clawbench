@@ -295,11 +295,17 @@ export function registerSessionDrawerRef(drawerRef: any) {
 export async function initSessionFromAPI() {
   const agentsApi = useAgents()
   try {
+    const initCtrl = new AbortController()
+    const initTimer = setTimeout(() => initCtrl.abort(), 60000)
     const [chatResp] = await Promise.all([
-      fetch('/api/ai/chat?limit=1'),
+      fetch('/api/ai/chat?limit=1', { signal: initCtrl.signal }).catch((e) => {
+        if (initCtrl.signal.aborted) return null as any
+        throw e
+      }),
       agentsApi.loadAgents(),
     ])
-    if (chatResp.ok) {
+    clearTimeout(initTimer)
+    if (chatResp && chatResp.ok) {
       const data = await chatResp.json()
       if (data.sessionId) {
         currentSessionId.value = data.sessionId

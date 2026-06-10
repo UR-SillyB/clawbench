@@ -480,23 +480,6 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		service.EmitSessionEvent(clawbenchSID, status, false)
 	})
 
-	// Inject ACP state prefetched callback (broadcasts WS event when ACP state
-	// is discovered for agents that previously had no cached state)
-	ai.SetACPStatePrefetchedCallback(func(agentID string, state ai.ACPCachedState) {
-		mgr := ws.GetManager()
-		mgr.BroadcastEvent(ws.ServerMessage{
-			Type:  "event",
-			Event: "acp_state_update",
-			Data: &ws.ACPStateUpdateData{
-				AgentID:             agentID,
-				ModeState:           state.Mode,
-				ThinkingEffortState: state.Effort,
-				Commands:            state.Commands,
-				ModelListState:      state.ModelList,
-			},
-		})
-	})
-
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
 	// Language is now per-request (sent from frontend), not configured at startup.
 	summarizeBackend := cfg.Summarize.Backend
