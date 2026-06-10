@@ -1405,7 +1405,7 @@ func SyncDiscoverAgentsDB(db *sql.DB) map[string]bool { //nolint:gocognit,gocycl
 			// Update acp_command if it changed in BackendSpec (e.g., claude moved
 			// from "claude acp" to the npx bridge adapter).
 			if r.spec.AcpCommand != "" && existingAcpCommand != r.spec.AcpCommand {
-				if _, updateErr := db.Exec("UPDATE agents SET acp_command = ?, transport = 'acp-stdio' WHERE backend = ? AND source = 'auto'", r.spec.AcpCommand, r.spec.Backend); updateErr != nil {
+				if _, updateErr := db.Exec("UPDATE agents SET acp_command = ? WHERE backend = ? AND source = 'auto'", r.spec.AcpCommand, r.spec.Backend); updateErr != nil {
 					slog.Warn("failed to update acp_command", "backend", r.spec.Backend, "error", updateErr)
 				} else {
 					slog.Info("updated acp_command for auto-discovered agent", "backend", r.spec.Backend, "old", existingAcpCommand, "new", r.spec.AcpCommand)
@@ -1433,9 +1433,8 @@ func SyncDiscoverAgentsDB(db *sql.DB) map[string]bool { //nolint:gocognit,gocycl
 			agent.Command = embeddedPath
 		}
 
-		// Set ACP transport info from BackendSpec
+		// Store ACP command info from BackendSpec (transport defaults to "cli")
 		if r.spec.AcpCommand != "" {
-			agent.Transport = "acp-stdio"
 			agent.AcpCommand = r.spec.AcpCommand
 		}
 
