@@ -37,8 +37,8 @@ func ServeAICommands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only ACP agents have commands
-	if agent.Transport != transportACP {
+	// Only ACP-capable agents have commands
+	if !agent.SupportsACP() {
 		writeJSON(w, http.StatusOK, map[string]any{keyCommands: []any{}})
 		return
 	}

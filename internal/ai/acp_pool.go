@@ -659,9 +659,11 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	prevConfig := c.snapshotCachedConfig()
 
 	// Need to spawn or respawn
+	spawnStart := time.Now()
 	if err := c.spawnLocked(ctx); err != nil {
 		return false, err
 	}
+	slog.Info("acp perf: ensureAliveWithSession.spawnLocked", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(spawnStart))
 
 	// LoadSession branch: if loadTargetSID is set, call LoadSession instead
 	// of ResumeSession/NewSession. This replays the full conversation history
@@ -674,11 +676,13 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		defer loadCancel()
 
 		c.loadSessionActive = true
+		loadStart := time.Now()
 		loadResp, err := c.conn.LoadSession(loadCtx, acp.LoadSessionRequest{
 			SessionId:  acp.SessionId(loadSID),
 			Cwd:        cwd,
 			McpServers: []acp.McpServer{},
 		})
+		slog.Info("acp perf: ensureAliveWithSession.LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID, "elapsed", time.Since(loadStart), "error", err)
 		c.loadSessionActive = false
 
 		if err != nil {
@@ -694,9 +698,22 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	}
 
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
-	// If ResumeSession fails (e.g., session deleted), fall back to NewSession.
-	acpSID := getExternalSessionID(c.clawbenchSID)
-	if acpSID != "" {
+	// Only attempt ResumeSession if this connection previously had a session
+	// (c.acpSID was set before the connection died). If c.acpSID is empty, this
+	// is a brand-new connection that was just spawned — there's nothing to resume.
+	//
+	// The external_session_id in the DB is NOT a reliable indicator here:
+	// codebuddy/claude/qoder set external_session_id = ClawBench UUID at
+	// session_capture time, which means even a brand-new session (never completed
+	// a Prompt on the ACP side) has a non-empty external_session_id. Using it
+	// to decide "should we ResumeSession" causes a 60s timeout on every first
+	// message — the ACP agent has no session to resume.
+	//
+	// The correct signal is c.acpSID: it's only set after a successful
+	// NewSession or ResumeSession. If it's empty after spawn, the connection
+	// never completed a session lifecycle and must use NewSession.
+	if c.acpSID != "" {
+		acpSID := c.acpSID
 		err := c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
 		if err == nil {
 			return false, nil // recovered successfully
@@ -716,14 +733,16 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// No prior session (or ResumeSession failed) — create new session.
 	// Timeout prevents blocking forever if the agent binary hangs during
 	// session creation (e.g., bridge adapter waiting for claude CLI init).
-	// Use the parent context's deadline if available, otherwise default 60s.
-	newSessCtx, newSessCancel := context.WithTimeout(ctx, 60*time.Second)
+	// Use the parent context's deadline if available, otherwise default 15s.
+	newSessCtx, newSessCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer newSessCancel()
 
+	newSessStart := time.Now()
 	sessResp, err := c.conn.NewSession(newSessCtx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
 	})
+	slog.Info("acp perf: ensureAliveWithSession.NewSession", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(newSessStart), "error", err)
 	if err != nil {
 		// Mark connection dead so the next request triggers a fresh spawn
 		// instead of reusing a connection whose agent process is in an
@@ -763,11 +782,13 @@ func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID strin
 	resumeCtx, resumeCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer resumeCancel()
 
+	resumeStart := time.Now()
 	resumeResp, err := c.conn.ResumeSession(resumeCtx, acp.ResumeSessionRequest{
 		SessionId:  acp.SessionId(acpSID),
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
 	})
+	slog.Info("acp perf: recoverViaResumeSession.ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "elapsed", time.Since(resumeStart), "error", err)
 	if err != nil {
 		slog.Error("acp conn: ResumeSession failed",
 			"clawbench_sid", c.clawbenchSID,
@@ -794,9 +815,12 @@ func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID strin
 
 // reapplyConfigAfterResume re-applies cached mode/model/thinking config after a ResumeSession.
 func (c *ACPConn) reapplyConfigAfterResume(ctx context.Context, acpSID string, prevConfig cachedConfigSnapshot) {
+	reapplyStart := time.Now()
 	c.reapplyConfigOption(ctx, acpSID, "mode", prevConfig.mode)
 	c.reapplyConfigOption(ctx, acpSID, "model", prevConfig.model)
 	c.reapplyConfigOption(ctx, acpSID, "thinkingEffort", prevConfig.effort)
+	slog.Info("acp perf: reapplyConfigAfterResume.total", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(reapplyStart),
+		"mode", prevConfig.mode, "model", prevConfig.model, "effort", prevConfig.effort)
 }
 
 // reapplyConfigOption sets a config option on the resumed session if the value is non-empty
@@ -855,6 +879,7 @@ func (c *ACPConn) killProcessLocked() {
 func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	// Kill any existing process first
 	if c.cmd != nil && c.cmd.Process != nil {
+		killStart := time.Now()
 		// Send ACP Cancel to let the agent stop gracefully before killing
 		if c.conn != nil && c.acpSID != "" {
 			cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -871,6 +896,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 		c.mu.Unlock()
 		_ = oldCmd.Wait()
 		c.mu.Lock()
+		slog.Info("acp perf: spawnLocked.kill_old_process", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(killStart))
 		// Clear the old cmd reference only if it hasn't been replaced
 		// by another concurrent spawn (unlikely but defensive).
 		if c.cmd == oldCmd {
@@ -914,11 +940,13 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	}
 	cmd.Stderr = &strings.Builder{}
 
+	spawnStart := time.Now()
 	slog.Info("acp conn: spawning agent process", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "command", cmdName, "args", cmdArgs)
 
 	if startErr := cmd.Start(); startErr != nil {
 		return fmt.Errorf("acp: start: %w", startErr)
 	}
+	slog.Info("acp perf: spawnLocked.cmd.Start", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "pid", cmd.Process.Pid, "elapsed", time.Since(spawnStart))
 
 	client := NewClawBenchACPClient()
 	client.connRef = c // back-reference for cache updates
@@ -931,6 +959,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	initCtx, initCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer initCancel()
 
+	initStart := time.Now()
 	initResp, err := conn.Initialize(initCtx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
@@ -950,7 +979,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 		return fmt.Errorf("acp: initialize: %w", err)
 	}
 
-	slog.Info("acp conn: agent initialized", "agent_id", c.agent.ID, "protocol_version", initResp.ProtocolVersion)
+	slog.Info("acp perf: spawnLocked.Initialize", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "protocol_version", initResp.ProtocolVersion, "elapsed", time.Since(initStart))
 
 	// Extract LoadSession and ListSessions capabilities from the Initialize response.
 	// These are agent-level capabilities that persist across sessions.
@@ -1081,6 +1110,11 @@ func (c *ACPConn) AgentID() string {
 //
 //nolint:gocyclo // Prompt has a long switch over ACP response types; the inline branching is clearer than extracting a dispatch table
 func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamCh chan<- StreamEvent, req ChatRequest) error {
+	promptTotalStart := time.Now()
+	defer func() {
+		slog.Info("acp perf: Prompt.total", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(promptTotalStart))
+	}()
+
 	// Clear stale plan state from the previous turn — a new prompt starts
 	// a fresh execution cycle and the old plan entries are no longer relevant.
 	c.mu.Lock()
@@ -1225,9 +1259,11 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		}
 
 		// Agent is still alive but Prompt returned an error (e.g., internal error,
-		// request cancelled by agent). Log it but don't kill the connection.
+		// API error, request cancelled by agent). Return the error so the caller
+		// can decide how to surface it (e.g., warning event in chat).
 		slog.Warn("acp conn: prompt failed but agent still alive",
 			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
+		return fmt.Errorf("acp: prompt: %w", err)
 	}
 
 	return nil

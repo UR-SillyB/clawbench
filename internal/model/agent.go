@@ -80,6 +80,12 @@ func (a *Agent) EffectiveThinkingEffort() string {
 	return a.ThinkingEffort
 }
 
+// SupportsACP returns true if the agent has ACP capability (has an acp_command configured),
+// regardless of its current transport setting.
+func (a *Agent) SupportsACP() bool {
+	return a.AcpCommand != ""
+}
+
 var (
 	Agents       map[string]*Agent // indexed by ID
 	AgentList    []*Agent          // ordered list for API responses

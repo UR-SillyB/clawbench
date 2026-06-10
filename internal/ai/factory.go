@@ -64,7 +64,7 @@ func NewBackendForAgentWithTransport(backendType, agentID, transportOverride str
 				effectiveTransport = agent.Transport
 			}
 		if effectiveTransport == "acp-stdio" {
-			if agent.AcpCommand != "" {
+			if agent.SupportsACP() {
 				acpBackend, err := NewACPBackend(agent)
 				if err != nil {
 					return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)

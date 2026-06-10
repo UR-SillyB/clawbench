@@ -148,7 +148,7 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if agent.Transport != transportACP {
+	if !agent.SupportsACP() {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
 		return
 	}

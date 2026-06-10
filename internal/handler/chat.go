@@ -489,7 +489,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			effectiveTransport := "cli"
 			if t := service.GetSessionTransport(sessionID); t != "" {
 				effectiveTransport = t
-			} else if agent, ok := model.Agents[effectiveAgentID]; ok && agent.Transport == "acp-stdio" {
+			} else if agent, ok := model.Agents[effectiveAgentID]; ok && agent.SupportsACP() {
 				effectiveTransport = "acp-stdio"
 			}
 			if effectiveTransport == "acp-stdio" {
@@ -588,7 +588,10 @@ func executeStreamRun(
 	chatReq ai.ChatRequest,
 	fileDir string,
 ) streamRunResult {
+	runStart := time.Now()
 	sessionTransport := service.GetSessionTransport(sessionID)
+	slog.Info("acp perf: executeStreamRun.start", "session_id", sessionID, "backend", backendName, "agent_id", agentID, "transport", sessionTransport, "resume", chatReq.Resume)
+
 	backend, err := ai.NewBackendForAgentWithTransport(backendName, agentID, sessionTransport)
 	if err != nil {
 		slog.Error("failed to create backend", slog.String("backend", backendName), slog.String("err", err.Error()))
@@ -608,6 +611,7 @@ func executeStreamRun(
 		}
 	}
 
+	slog.Info("acp perf: executeStreamRun.ExecuteStream_start", "session_id", sessionID, "transport", sessionTransport, "after_backend_create", time.Since(runStart))
 	eventCh, err := backend.ExecuteStream(ctx, chatReq)
 	if err != nil {
 		slog.Error("failed to start stream", slog.String("err", err.Error()))
@@ -629,6 +633,7 @@ func executeStreamRun(
 	var blocks []model.ContentBlock
 	var responseMetadata *ai.Metadata
 	var rawOutput string // collected from raw_output event for debugging
+	var firstContentTime time.Duration // track time to first content event
 
 	// Incremental persistence: flush every 1s or every 5 events
 	flushTicker := time.NewTicker(1 * time.Second)
@@ -694,6 +699,12 @@ func executeStreamRun(
 			// Forward to SSE channel
 			if !sendEvent(ctx, streamCh, event) {
 				return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID, chatReq, blocks, responseMetadata, rawOutput, eventCh, wallStart)
+			}
+
+			// Track time to first content event for perf diagnosis
+			if firstContentTime == 0 && (event.Type == "content" || event.Type == "tool_use" || event.Type == "thinking") {
+				firstContentTime = time.Since(runStart)
+				slog.Info("acp perf: executeStreamRun.first_content_event", "session_id", sessionID, "type", event.Type, "elapsed", firstContentTime)
 			}
 
 			ai.AccumulateBlock(&blocks, event)
@@ -860,7 +871,7 @@ func finalizeStreamRun(
 	effectiveTransport := "cli"
 	if t := service.GetSessionTransport(sessionID); t != "" {
 		effectiveTransport = t
-	} else if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+	} else if agent, ok := model.Agents[agentID]; ok && agent.SupportsACP() {
 		effectiveTransport = "acp-stdio"
 	}
 	responseMetadata.Transport = effectiveTransport
@@ -1052,15 +1063,19 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 	// via ACPConnectionPool (clawbench UUID → ACP session ID). For ACP agents,
 	// always use the ClawBench UUID as the session ID — the pool handles the rest.
 	effectiveSessionID := sessionID
+	resumeStart := time.Now()
 	resume := service.SessionHasAssistant(sessionID)
+	slog.Info("acp perf: buildChatRequest.SessionHasAssistant", "session_id", sessionID, "resume", resume, "elapsed", time.Since(resumeStart))
 	isACP := false
 	if transportOverride != "" {
 		isACP = transportOverride == "acp-stdio"
-	} else if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+	} else if agent, ok := model.Agents[agentID]; ok && agent.SupportsACP() {
 		isACP = true
 	}
 	if resume && !isACP {
+		extStart := time.Now()
 		extID := service.GetExternalSessionID(sessionID)
+		slog.Info("acp perf: buildChatRequest.GetExternalSessionID", "session_id", sessionID, "ext_id", extID, "elapsed", time.Since(extStart))
 		if extID != "" {
 			effectiveSessionID = extID
 			slog.Info("session resume: resolved external_session_id",

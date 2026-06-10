@@ -727,7 +727,7 @@ func TestDeleteSession_ClosesACPConn(t *testing.T) {
 	// Set up an ACP agent
 	origAgents := model.Agents
 	origAgentList := model.AgentList
-	model.Agents["claude"].Transport = "acp-stdio"
+	model.Agents["claude"].AcpCommand = "claude --acp"
 	defer func() {
 		model.Agents = origAgents
 		model.AgentList = origAgentList

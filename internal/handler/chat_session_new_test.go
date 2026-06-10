@@ -96,9 +96,10 @@ func TestDeleteSession_ClosesACPConnForACPTransport(t *testing.T) {
 
 	model.Agents = map[string]*model.Agent{
 		"acp-test-agent": {
-			ID:        "acp-test-agent",
-			Backend:   "claude",
-			Transport: "acp-stdio",
+			ID:         "acp-test-agent",
+			Backend:    "claude",
+			Transport:  "cli",
+			AcpCommand: "claude --acp",
 		},
 	}
 
@@ -232,7 +233,7 @@ func TestServeAISessionUpdate_TransportToCLI_ClosesACPConn(t *testing.T) {
 	t.Cleanup(func() { model.Agents = origAgents })
 
 	model.Agents = map[string]*model.Agent{
-		"acp-agent": {ID: "acp-agent", Backend: "claude", Transport: "acp-stdio"},
+		"acp-agent": {ID: "acp-agent", Backend: "claude", Transport: "cli", AcpCommand: "claude --acp"},
 	}
 
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "patch-transport", "acp-agent", "", "default", "chat")
@@ -261,7 +262,7 @@ func TestServeAISessionUpdate_TransportNonCLI(t *testing.T) {
 	t.Cleanup(func() { model.Agents = origAgents })
 
 	model.Agents = map[string]*model.Agent{
-		"acp-agent": {ID: "acp-agent", Backend: "claude", Transport: "acp-stdio"},
+		"acp-agent": {ID: "acp-agent", Backend: "claude", Transport: "cli", AcpCommand: "claude --acp"},
 	}
 
 	sessionID, err := service.CreateSession(env.ProjectDir, "claude", "patch-transport-other", "acp-agent", "", "default", "chat")

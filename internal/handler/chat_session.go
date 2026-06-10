@@ -175,7 +175,7 @@ func DeleteSession(w http.ResponseWriter, r *http.Request) {
 	// (GetSessionAgentID queries WHERE deleted=0, so we must read it first)
 	agentID := service.GetSessionAgentID(sessionID)
 	if agentID != "" {
-		if agent, ok := model.Agents[agentID]; ok && agent.Transport == "acp-stdio" {
+		if agent, ok := model.Agents[agentID]; ok && agent.SupportsACP() {
 			slog.Info("acp: closing connection for deleted session", "session_id", sessionID, "agent_id", agentID)
 			ai.GetACPConnManager().CloseConn(sessionID)
 		}

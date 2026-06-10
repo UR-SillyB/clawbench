@@ -33,7 +33,7 @@ type ACPBackend struct {
 // NewACPBackend creates a new ACPBackend for the given agent.
 // The agent must have AcpCommand set (indicating ACP support).
 func NewACPBackend(agent *model.Agent) (*ACPBackend, error) {
-	if agent.AcpCommand == "" {
+	if !agent.SupportsACP() {
 		return nil, fmt.Errorf("acp backend: agent %q does not support acp-stdio transport (no acp_command)", agent.ID)
 	}
 	return &ACPBackend{agent: agent}, nil
@@ -54,36 +54,20 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 	go func() {
 		defer close(ch)
 
+		streamStart := time.Now()
+
 		// Step 1: Get or create a dedicated connection for this session
 		mgr := GetACPConnManager()
 		connStart := time.Now()
 		conn, isNew, err := mgr.GetOrCreateConn(ctx, b.agent, req.SessionID, req.WorkDir)
 		slog.Info("acp: GetOrCreateConn done", "session_id", req.SessionID, "agent_id", b.agent.ID, "is_new", isNew, "elapsed", time.Since(connStart), "error", err)
 		if err != nil {
-			// ACP connection failed (e.g., agent binary doesn't support ACP mode).
-			// Fall back to CLI backend so the user can still chat.
-			slog.Warn("acp: connection failed, falling back to CLI backend", "agent_id", b.agent.ID, "error", err)
-			b.cliFallbackOnce.Do(func() {
-				cli, cliErr := NewBackend(b.agent.Backend)
-				if cliErr != nil {
-					slog.Error("acp: CLI fallback creation failed", "backend", b.agent.Backend, "error", cliErr)
-					return
-				}
-				b.cliFallback = cli
-			})
-			if b.cliFallback == nil {
-				forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: connection: %v", err), Reason: ReasonBackendExit})
-				return
-			}
-			// Delegate to CLI backend and forward events
-			fallbackCh, fallbackErr := b.cliFallback.ExecuteStream(ctx, req)
-			if fallbackErr != nil {
-				forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: connection: %v (CLI fallback also failed: %v)", err, fallbackErr), Reason: ReasonBackendExit})
-				return
-			}
-			for event := range fallbackCh {
-				forwardACPEvent(ch, event)
-			}
+			// ACP connection failed — surface the error directly.
+			// Do NOT fall back to CLI backend: the user chose ACP transport
+			// and silent fallback hides real problems (e.g., NewSession timeout).
+			slog.Error("acp: connection failed", "agent_id", b.agent.ID, "error", err)
+			forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: connection: %v", err), Reason: ReasonBackendExit})
+			return
 			return
 		}
 
@@ -94,9 +78,11 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		conn.SetAutoApprove(getSessionAutoApprove(req.SessionID))
 
 		// Step 2: Handle new vs recovered session
+		slog.Info("acp perf: ExecuteStream.step2_emitSession_start", "session_id", req.SessionID, "is_new", isNew, "after_GetOrCreateConn", time.Since(streamStart))
 		b.emitSessionAndCacheState(conn, isNew, ch)
 
 		// Step 3: Send prompt
+		slog.Info("acp perf: ExecuteStream.step3_Prompt_start", "session_id", req.SessionID, "after_emitSession", time.Since(streamStart))
 		promptBlocks := b.buildPromptBlocks(req)
 		err = conn.Prompt(ctx, promptBlocks, ch, req)
 		if err != nil {
@@ -171,6 +157,7 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		}
 
 		// Step 4: Prompt completed normally
+		slog.Info("acp perf: ExecuteStream.step4_done", "session_id", req.SessionID, "total_elapsed", time.Since(streamStart))
 		forwardACPEvent(ch, StreamEvent{Type: "done"})
 	}()
 

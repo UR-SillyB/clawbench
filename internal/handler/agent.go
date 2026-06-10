@@ -62,7 +62,7 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 	states := make(map[string]*acpState, len(agents))
 	reg := ai.GetAgentCapabilityRegistry()
 	for _, a := range agents {
-		if a.Transport == transportACP {
+		if a.SupportsACP() {
 			// ACP agents: populate from AgentCapabilityRegistry
 			agentCap := reg.Get(a.ID)
 			if agentCap == nil || !agentCap.HasData() {
@@ -331,7 +331,7 @@ func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if agent.Transport != transportACP {
+	if !agent.SupportsACP() {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
 		return
 	}

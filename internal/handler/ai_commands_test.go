@@ -134,11 +134,12 @@ func TestServeAICommands_ACPAgentWithCommands(t *testing.T) {
 
 	// Add an ACP agent
 	acpAgent := &model.Agent{
-		ID:        "acp-cmds",
-		Name:      "ACP Commands",
-		Backend:   "acp-test",
-		Transport: "acp-stdio",
-		Models:    []model.AgentModel{{ID: "m1", Name: "M1", Default: true}},
+		ID:         "acp-cmds",
+		Name:       "ACP Commands",
+		Backend:    "acp-test",
+		Transport:  "cli",
+		AcpCommand: "acp-test --acp",
+		Models:     []model.AgentModel{{ID: "m1", Name: "M1", Default: true}},
 	}
 	model.Agents["acp-cmds"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)

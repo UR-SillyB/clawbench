@@ -788,11 +788,12 @@ func TestServeAgentsGet_ACPStateFromPoolCache(t *testing.T) {
 
 	// Add an ACP agent
 	acpAgent := &model.Agent{
-		ID:        "acp-agent",
-		Name:      "ACP Agent",
-		Backend:   "acp-test",
-		Transport: "acp-stdio",
-		Models:    []model.AgentModel{{ID: "m1", Name: "M1", Default: true}},
+		ID:         "acp-agent",
+		Name:       "ACP Agent",
+		Backend:    "acp-test",
+		Transport:  "cli",
+		AcpCommand: "acp-test --acp",
+		Models:     []model.AgentModel{{ID: "m1", Name: "M1", Default: true}},
 	}
 	model.Agents["acp-agent"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)
@@ -939,11 +940,12 @@ func TestServeAgentsGet_ACPModelListOverridesModels(t *testing.T) {
 
 	// Add an ACP agent with CLI-discovered models
 	acpAgent := &model.Agent{
-		ID:        "acp-ml-override",
-		Name:      "ACP ML Override",
-		Backend:   "acp-test",
-		Transport: "acp-stdio",
-		Models:    []model.AgentModel{{ID: "cli-model", Name: "CLI Model", Default: true}},
+		ID:         "acp-ml-override",
+		Name:       "ACP ML Override",
+		Backend:    "acp-test",
+		Transport:  "cli",
+		AcpCommand: "acp-test --acp",
+		Models:     []model.AgentModel{{ID: "cli-model", Name: "CLI Model", Default: true}},
 	}
 	model.Agents["acp-ml-override"] = acpAgent
 	model.AgentList = append(model.AgentList, acpAgent)
