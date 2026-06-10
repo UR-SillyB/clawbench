@@ -31,10 +31,10 @@ type ACPBackend struct {
 }
 
 // NewACPBackend creates a new ACPBackend for the given agent.
-// The agent must have Transport set to "acp-stdio".
+// The agent must have AcpCommand set (indicating ACP support).
 func NewACPBackend(agent *model.Agent) (*ACPBackend, error) {
-	if agent.Transport != "acp-stdio" {
-		return nil, fmt.Errorf("acp backend: agent %q has transport %q, expected acp-stdio", agent.ID, agent.Transport)
+	if agent.AcpCommand == "" {
+		return nil, fmt.Errorf("acp backend: agent %q does not support acp-stdio transport (no acp_command)", agent.ID)
 	}
 	return &ACPBackend{agent: agent}, nil
 }
@@ -161,7 +161,12 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				return
 			}
 
-			forwardACPEvent(ch, StreamEvent{Type: "error", Error: fmt.Sprintf("acp: prompt: %v", err), Reason: ReasonBackendExit})
+			// Non-fatal prompt error (e.g., API returned malformed response,
+			// agent cancelled the turn). The agent process is still alive and
+			// the connection is usable — surface as an amber warning card so
+			// the user can retry without losing the session.
+			forwardACPEvent(ch, StreamEvent{Type: "warning", Content: fmt.Sprintf("acp: prompt: %v", err), Reason: ReasonRequestFailed})
+			forwardACPEvent(ch, StreamEvent{Type: "done"})
 			return
 		}
 

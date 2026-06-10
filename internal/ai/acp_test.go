@@ -828,13 +828,14 @@ func TestMapACPSessionUpdate_PlanUpdate(t *testing.T) {
 
 func TestNewACPBackend_InvalidTransport(t *testing.T) {
 	agent := &model.Agent{
-		ID:        "test",
-		Backend:   "claude",
-		Transport: "cli",
+		ID:         "test",
+		Backend:    "claude",
+		Transport:  "cli",
+		AcpCommand: "",
 	}
 	_, err := NewACPBackend(agent)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "expected acp-stdio")
+	assert.Contains(t, err.Error(), "does not support acp-stdio")
 }
 
 // --- shouldSetConfig / markConfigSet / resetLastSetConfig tests ---
@@ -925,13 +926,14 @@ func TestNewACPBackend_ValidStdio(t *testing.T) {
 
 func TestNewACPBackend_InvalidHTTP(t *testing.T) {
 	agent := &model.Agent{
-		ID:        "test",
-		Backend:   "codebuddy",
-		Transport: "acp-http",
+		ID:         "test",
+		Backend:    "codebuddy",
+		Transport:  "acp-http",
+		AcpCommand: "",
 	}
 	_, err := NewACPBackend(agent)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "expected acp-stdio")
+	assert.Contains(t, err.Error(), "does not support acp-stdio")
 }
 
 // --- mapACPSessionUpdate AgentMessageChunk tests ---
