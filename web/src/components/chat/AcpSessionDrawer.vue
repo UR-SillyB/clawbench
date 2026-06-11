@@ -15,34 +15,55 @@
       <div v-else-if="acpSessions.length === 0" class="acp-session-empty">
         {{ t('chat.acpSession.empty') }}
       </div>
-      <div
-        v-for="session in acpSessions"
-        :key="session.sessionId"
-        class="acp-session-item"
-        :class="{ 'acp-session-item--loading': acpResuming }"
-        @click="handleSelect(session)"
-      >
-        <div class="acp-session-item-title">{{ session.title || t('chat.acpSession.untitled') }}</div>
-        <div class="acp-session-item-meta">
-          <span v-if="session.updatedAt">{{ formatTime(session.updatedAt) }}</span>
-          <span class="acp-session-item-id">{{ session.sessionId.slice(0, 8) }}</span>
+      <template v-else>
+        <div
+          v-for="session in acpSessions"
+          :key="session.sessionId"
+          class="acp-session-item"
+        >
+          <div class="acp-session-item-info">
+            <div class="acp-session-item-title">{{ session.title || t('chat.acpSession.untitled') }}</div>
+            <div class="acp-session-item-meta">
+              <span v-if="session.updatedAt" class="acp-session-item-time">{{ formatTime(session.updatedAt) }}</span>
+              <span class="acp-session-item-id">{{ session.sessionId.slice(0, 8) }}</span>
+            </div>
+          </div>
+          <button
+            class="acp-session-resume-btn"
+            :disabled="acpResuming"
+            :title="t('chat.acpSession.title')"
+            @click.stop="handleSelect(session)"
+          >
+            <Loader2Icon v-if="resumingId === session.sessionId" :size="14" class="spin" />
+            <RotateCcwIcon v-else :size="14" />
+          </button>
+        </div>
+        <button
+          v-if="nextCursor && !acpSessionsLoading"
+          class="acp-session-more"
+          @click="loadMore"
+        >
+          {{ t('chat.acpSession.loadMore') }}
+        </button>
+      </template>
+    </div>
+
+    <!-- Loading overlay -->
+    <Transition name="overlay-fade">
+      <div v-if="acpResuming" class="acp-resume-overlay">
+        <div class="acp-resume-overlay-content">
+          <Loader2Icon :size="24" class="spin" />
+          <span>{{ t('chat.acpSession.resuming') }}</span>
         </div>
       </div>
-      <button
-        v-if="nextCursor && !acpSessionsLoading"
-        class="acp-session-more"
-        @click="loadMore"
-      >
-        {{ t('chat.acpSession.loadMore') }}
-      </button>
-    </div>
+    </Transition>
   </BottomSheet>
 </template>
 
 <script setup lang="ts">
-import { watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { History as HistoryIcon, RotateCw as RotateCwIcon } from 'lucide-vue-next'
+import { History as HistoryIcon, RotateCcw as RotateCcwIcon, Loader2 as Loader2Icon } from 'lucide-vue-next'
 import BottomSheet from '@/components/common/BottomSheet.vue'
 import { useAcpSession, type AcpSessionInfo } from '@/composables/useAcpSession'
 import { currentAgentId } from '@/composables/useSessionIdentity'
@@ -58,6 +79,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const resumingId = ref('')
 
 const {
   acpSessions,
@@ -78,7 +100,9 @@ watch(() => props.open, (val) => {
 
 async function handleSelect(session: AcpSessionInfo) {
   if (acpResuming.value) return
+  resumingId.value = session.sessionId
   const sessionId = await acpLoadSession(session.sessionId)
+  resumingId.value = ''
   if (sessionId) {
     emit('select', sessionId)
     emit('close')
@@ -110,66 +134,159 @@ function formatTime(iso: string): string {
 
 <style scoped>
 .acp-session-list {
-  padding: 0 8px 16px;
-  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  min-height: 0;
   overflow-y: auto;
+  flex: 1;
+  position: relative;
 }
+
 .acp-session-empty {
-  padding: 24px 16px;
-  text-align: center;
-  color: var(--color-text-secondary, #888);
-  font-size: 14px;
+  min-height: 40vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #999);
+  font-size: 13px;
 }
+
 .acp-session-item {
-  padding: 12px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-color, #dee2e6);
 }
-.acp-session-item:hover {
-  background: var(--color-bg-hover, rgba(0,0,0,0.04));
+
+.acp-session-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
-.acp-session-item--loading {
-  opacity: 0.5;
-  pointer-events: none;
-}
+
 .acp-session-item-title {
-  font-size: 14px;
+  font-size: 13px;
+  color: var(--text-primary, #1a1a1a);
   font-weight: 500;
-  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .acp-session-item-meta {
   display: flex;
-  gap: 8px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--color-text-secondary, #888);
+  align-items: center;
+  gap: 6px;
 }
+
+.acp-session-item-time {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+}
+
 .acp-session-item-id {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 500;
+  flex-shrink: 0;
+  background: var(--bg-tertiary, #e9ecef);
+  color: var(--text-secondary, #495057);
   font-family: monospace;
-  opacity: 0.6;
 }
+
+.acp-session-resume-btn {
+  flex-shrink: 0;
+  margin-left: 8px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--accent-color, #0066cc);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.acp-session-resume-btn:hover {
+  background: rgba(0, 102, 204, 0.16);
+}
+
+.acp-session-resume-btn:active {
+  background: rgba(0, 102, 204, 0.24);
+}
+
+.acp-session-resume-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .acp-session-more {
   display: block;
   width: 100%;
   padding: 10px;
-  margin-top: 8px;
+  margin-top: 4px;
   border: none;
-  border-radius: 8px;
-  background: var(--color-bg-hover, rgba(0,0,0,0.04));
+  background: none;
   cursor: pointer;
-  font-size: 13px;
-  color: var(--color-text-secondary, #888);
+  font-size: 12px;
+  color: var(--text-muted, #999);
+  text-align: center;
 }
+
 .acp-session-more:hover {
-  background: var(--color-bg-active, rgba(0,0,0,0.08));
+  color: var(--text-secondary, #666);
 }
+
+/* Loading overlay */
+.acp-resume-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: inherit;
+}
+
+:root[data-theme="dark"] .acp-resume-overlay {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.acp-resume-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--accent-color, #0066cc);
+  font-weight: 500;
+}
+
+.overlay-fade-enter-active,
+.overlay-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
+  opacity: 0;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
+
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }

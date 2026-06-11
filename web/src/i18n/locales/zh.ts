@@ -96,7 +96,6 @@ export default {
       title: 'ClawBench 命令',
       chatsearchDesc: '搜索聊天历史',
       taskDesc: '管理定时任务',
-      resumeDesc: '恢复 ACP 代理会话',
     },
     slashCommand: {
       title: 'Agent 命令',
@@ -114,6 +113,7 @@ export default {
       minutesAgo: '{n}分钟前',
       hoursAgo: '{n}小时前',
       daysAgo: '{n}天前',
+      resuming: '正在恢复会话...',
     },
     actions: {
       session: '会话',

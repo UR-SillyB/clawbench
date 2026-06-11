@@ -190,7 +190,7 @@
       />
     </div>
     <!-- Session info bar (model + mode + thinking + transport) -->
-    <div class="chat-session-info" v-if="currentModelName || showModeInfo || showThinkingInfo || showTransportInfo">
+    <div class="chat-session-info" v-if="currentModelName || showModeInfo || showThinkingInfo || showTransportInfo || showResumeIcon">
       <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
       <template v-if="showModeInfo">
         <span class="session-info-divider"></span>
@@ -204,6 +204,10 @@
         <span class="session-info-divider"></span>
         <span class="session-info-transport" @click.stop="openSettingsModal('transport')"><Cable :size="11" />{{ currentTransport }}</span>
       </template>
+      <template v-if="showResumeIcon">
+        <span class="session-info-divider"></span>
+        <span class="session-info-resume" @click.stop="openResumeDrawer" :title="t('chat.acpSession.title')"><RotateCcw :size="11" /></span>
+      </template>
     </div>
   </div>
 </template>
@@ -211,7 +215,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Loader2, Cpu, Compass, Brain, Cable } from 'lucide-vue-next'
+import { MessageSquare, List, Plus, Trash2, Volume2, Upload, Paperclip, FileImage, FileText, Folder, XCircle, Inbox, Send, Square, Settings, Zap, Loader2, Cpu, Compass, Brain, Cable, RotateCcw } from 'lucide-vue-next'
 import { baseName } from '@/utils/path.ts'
 import { computeRecentReferencedFiles, computeHasFileGroups, computeAttachMenuItemCount } from '@/utils/chatInputUtils.ts'
 import PopupMenu from '@/components/common/PopupMenu.vue'
@@ -245,6 +249,7 @@ const isACPTransport = computed(() => {
 const showModeInfo = computed(() => availableModes.value.length > 0 && isACP.value)
 const showThinkingInfo = computed(() => isACP.value && (availableThinkingEfforts.value.length > 0 || hasThinkingEffortLevels(props.currentAgentId || '')))
 const showTransportInfo = computed(() => supportsDualTransport(props.currentAgentId || '') || !isACP.value)
+const showResumeIcon = computed(() => props.currentAgentId && agentCanResume(props.currentAgentId))
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
@@ -359,15 +364,10 @@ function openSettingsModal(tab) {
 const showAtMenu = ref(false)
 const showAcpSessionDrawer = ref(false)
 const atCommands = computed(() => {
-  const cmds = [
+  return [
     { key: '@chatsearch', label: '@chatsearch', description: t('chat.atCommand.chatsearchDesc') },
     { key: '@task', label: '@task', description: t('chat.atCommand.taskDesc') },
   ]
-  // @resume only shown when current agent supports LoadSession + ListSessions
-  if (props.currentAgentId && agentCanResume(props.currentAgentId)) {
-    cmds.push({ key: '@resume', label: '@resume', description: t('chat.atCommand.resumeDesc') })
-  }
-  return cmds
 })
 
 // ── Slash command autocomplete (ACP backend commands) ──
@@ -418,13 +418,6 @@ watch(inputText, () => {
 })
 
 function handleAtSelect(cmd) {
-  if (cmd.key === '@resume') {
-    // Open ACP session drawer instead of inserting text
-    showAcpSessionDrawer.value = true
-    showAtMenu.value = false
-    inputText.value = ''
-    return
-  }
   inputText.value = cmd.key + ' '
   showAtMenu.value = false
   nextTick(() => {
@@ -440,6 +433,10 @@ function handleSlashSelect(cmd) {
     const el = textareaRef.value
     if (el) el.focus()
   })
+}
+
+function openResumeDrawer() {
+  showAcpSessionDrawer.value = true
 }
 
 function handleAcpSessionSelect(sessionId) {
@@ -813,7 +810,8 @@ defineExpose({
 .session-info-model,
 .session-info-mode,
 .session-info-thinking,
-.session-info-transport {
+.session-info-transport,
+.session-info-resume {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -828,14 +826,16 @@ defineExpose({
 .session-info-model:active,
 .session-info-mode:active,
 .session-info-thinking:active,
-.session-info-transport:active {
+.session-info-transport:active,
+.session-info-resume:active {
   color: var(--accent-color, #0066cc);
 }
 
 .session-info-model svg,
 .session-info-mode svg,
 .session-info-thinking svg,
-.session-info-transport svg {
+.session-info-transport svg,
+.session-info-resume svg {
   flex-shrink: 0;
 }
 

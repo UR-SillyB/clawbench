@@ -96,7 +96,6 @@ export default {
       title: 'ClawBench Commands',
       chatsearchDesc: 'Search chat history',
       taskDesc: 'Manage scheduled tasks',
-      resumeDesc: 'Resume ACP agent session',
     },
     slashCommand: {
       title: 'Agent Commands',
@@ -114,6 +113,7 @@ export default {
       minutesAgo: '{n}m ago',
       hoursAgo: '{n}h ago',
       daysAgo: '{n}d ago',
+      resuming: 'Resuming session...',
     },
     actions: {
       session: 'Chat',
