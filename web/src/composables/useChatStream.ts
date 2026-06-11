@@ -191,7 +191,12 @@ export function useChatStream(options: UseChatStreamOptions) {
             if (metadata) msg.metadata = metadata
             if (cancelled) msg.cancelled = cancelled
           } else if (msg.role === 'user' && !msg.blocks) {
-            msg.blocks = msg.content ? [{ type: 'text', text: msg.content }] : []
+            if (msg.content && msg.content.startsWith('{"blocks":')) {
+              const { blocks } = onParseAssistantContent(msg.content)
+              msg.blocks = blocks
+            } else {
+              msg.blocks = msg.content ? [{ type: 'text', text: msg.content }] : []
+            }
           }
           return msg
         })

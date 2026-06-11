@@ -53,8 +53,14 @@ export function parseMessages(
         msg.showingSummary = false
       }
     } else if (msg.role === 'user' && !msg.blocks) {
-      // User messages also use ContentBlocks for unified rendering & auto-collapse
-      msg.blocks = msg.content ? [{ type: 'text', text: msg.content }] : []
+      // User messages may be plain text or block-format JSON (e.g. from ACP LoadSession).
+      // If content starts with {"blocks":, parse it the same way as assistant messages.
+      if (msg.content && msg.content.startsWith('{"blocks":')) {
+        const { blocks } = onParseAssistantContent(msg.content)
+        msg.blocks = blocks
+      } else {
+        msg.blocks = msg.content ? [{ type: 'text', text: msg.content }] : []
+      }
     }
     return msg
   })
