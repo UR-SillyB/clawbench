@@ -250,10 +250,11 @@ async function deleteSession(sessionId) {
   if (!await dialog.confirm(confirmMsg, { dangerous: true })) return
   const session = sessions.value.find(s => s.id === sessionId)
   emit('delete', sessionId, session?.backend)
-  // Optimistic local removal — no API reload needed while drawer is open.
-  // Next open will do a full loadSessions() to catch any changes made while closed.
-  sessions.value = sessions.value.filter(s => s.id !== sessionId)
-  if (store.state.sessionCount > 0) store.state.sessionCount--
+  // No optimistic removal — the delete is async (cancel + API call) and emit
+  // doesn't await the parent handler. If the API fails, an optimistic removal
+  // would make the session vanish then reappear on next load. Instead, rely on
+  // useChatSession.deleteSession to refresh state via loadSessionsOnce/switchSession
+  // on success, and leave the list unchanged on failure.
 }
 
 function addSessionLocally(session) {
@@ -263,13 +264,16 @@ function addSessionLocally(session) {
   sessions.value = [session, ...sessions.value]
 }
 
-// Load from API when the drawer opens. While the drawer is open, local
-// mutations (delete, create) update the sessions array directly — no reload
-// needed. The next open will do a full loadSessions() to catch any changes
-// that happened while the drawer was closed.
+// Load from API when the drawer opens. Also reload when sessionCount changes
+// while the drawer is open (e.g. after a successful delete).
 watch(() => props.open, async (val) => {
   if (val) {
     await Promise.all([loadSessions(), loadAgents()])
+  }
+})
+watch(() => store.state.sessionCount, async () => {
+  if (props.open) {
+    await loadSessions()
   }
 })
 

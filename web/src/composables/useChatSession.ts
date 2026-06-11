@@ -170,6 +170,7 @@ export function useChatSession(options: UseChatSessionOptions) {
   // "loading" which means "AI is generating"). Used to show a fade/placeholder
   // transition so the user sees immediate feedback instead of a frozen UI.
   const switching = ref(false)
+  const deletingSessionIds = ref(new Set<string>())
 
   const lastMsgCount = ref(0)
   let msgCountInterval: ReturnType<typeof setInterval> | null = null
@@ -609,6 +610,9 @@ export function useChatSession(options: UseChatSessionOptions) {
   }
 
   async function deleteSession(sessionId, backend) {
+    // Prevent concurrent deletes for the same session
+    if (deletingSessionIds.value.has(sessionId)) return
+    deletingSessionIds.value.add(sessionId)
     try {
       const resp = await fetch(`/api/ai/session/delete?session_id=${encodeURIComponent(sessionId)}&backend=${encodeURIComponent(backend || '')}`, {
         method: 'DELETE',
@@ -638,6 +642,8 @@ export function useChatSession(options: UseChatSessionOptions) {
     } catch (err) {
       console.error('Failed to delete session:', err)
       toast.show(gt('chat.session.deleteFailed'), { icon: '⚠️', type: 'error' })
+    } finally {
+      deletingSessionIds.value.delete(sessionId)
     }
   }
 

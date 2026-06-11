@@ -37,6 +37,18 @@ function open(type: DialogState['type'], message: string, opts: {
   dangerous?: boolean
 } = {}): Promise<string | boolean | null> {
   return new Promise(resolve => {
+    // Resolve the previous dialog as cancelled before replacing it,
+    // so its awaiter doesn't hang forever.
+    const prev = state.value
+    if (prev.visible && prev.resolve) {
+      console.warn(
+        '[useDialog] resolve overwritten while previous dialog is still open!',
+        '\n  Previous:', prev.type, prev.message?.slice(0, 60),
+        '\n  New:     ', type, message?.slice(0, 60),
+      )
+      console.trace('[useDialog] overwrite call stack')
+      prev.resolve(null)
+    }
     state.value = {
       visible: true,
       type,
@@ -65,6 +77,9 @@ function alert(message: string, opts?: { title?: string; confirmText?: string })
 }
 
 function resolve(result: string | boolean | null) {
+  if (!state.value.resolve) {
+    console.warn('[useDialog] resolve() called but no pending dialog')
+  }
   state.value.resolve?.(result)
   state.value.visible = false
 }
