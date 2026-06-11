@@ -40,8 +40,8 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
-//nolint:gocyclo // serveAgentsGet fan-outs across ACP/CLI transport branches and registry lookups; restructuring breaks readability
-func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
+//nolint:gocyclo // serveAgentsGet fan-outs across ACP/CLI transport branches
+func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
 	configMutex.RLock()
 	agents := make([]*model.Agent, len(model.AgentList))
 	copy(agents, model.AgentList)
@@ -450,7 +450,7 @@ func findExistingACPSessions(acpSessionIDs []string) map[string]bool {
 	}
 
 	result := make(map[string]bool)
-	rows, err := service.DBRead.Query(
+	rows, err := service.DBRead.Query( //nolint:noctx // background DB query, no request context available in this helper
 		"SELECT source_session_id FROM chat_sessions WHERE source_session_id IN ("+placeholders+")",
 		sourceIDs...,
 	)
@@ -465,6 +465,9 @@ func findExistingACPSessions(acpSessionIDs []string) map[string]bool {
 		if err := rows.Scan(&sourceID); err == nil {
 			result[sourceID] = true
 		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("handler: error iterating ACP session rows", "error", err)
 	}
 	return result
 }
