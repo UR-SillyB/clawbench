@@ -3120,3 +3120,138 @@ func TestAIChat_POST_WithSessionID_Succeeds(t *testing.T) {
 	// Give the async AI goroutine time to finish before teardown closes the DB
 	time.Sleep(100 * time.Millisecond)
 }
+
+// ============================================================================
+// ACP session resume after server restart — targeted tests
+// ============================================================================
+
+// TestBuildChatRequest_ACPResume_UsesClawBenchUUID verifies that for ACP-backed
+// agents (transport=acp-stdio), buildChatRequest always passes the ClawBench UUID
+// as effectiveSessionID, regardless of what external_session_id contains.
+// The ACP connection pool handles the UUID→ACP session mapping internally.
+func TestBuildChatRequest_ACPResume_UsesClawBenchUUID(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "test-acp-resume", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// Simulate: first message completed, ACP session ID was captured
+	err = service.UpdateExternalSessionID(sessionID, "acp-sess-abc-123")
+	assert.NoError(t, err)
+
+	// Mark as ACP transport
+	err = service.UpdateSessionTransport(sessionID, "acp-stdio")
+	assert.NoError(t, err)
+
+	// Add assistant message so SessionHasAssistant returns true
+	_, err = service.AddChatMessage(env.ProjectDir, "codebuddy", sessionID, "assistant", `{"blocks":[{"type":"text","text":"done"}]}`, nil, false, "")
+	assert.NoError(t, err)
+
+	// buildChatRequest with acp-stdio transport should use the ClawBench UUID,
+	// not the ACP session ID — the pool maps internally
+	req := buildChatRequest("continue", sessionID, env.ProjectDir, "codebuddy", "codebuddy", "", "", "", "acp-stdio", "")
+	assert.True(t, req.Resume, "should be resume since session has assistant messages")
+	assert.Equal(t, sessionID, req.SessionID, "ACP resume should use ClawBench UUID, not external_session_id")
+}
+
+// TestBuildChatRequest_ACPResume_AfterServerRestart simulates the exact scenario
+// from the bug: after a server restart, the ACP pool is empty, but the DB has
+// the ACP session ID stored in external_session_id. The handler must still pass
+// the ClawBench UUID to the ACP backend (the pool uses external_session_id
+// internally to decide ResumeSession vs NewSession).
+func TestBuildChatRequest_ACPResume_AfterServerRestart(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "test-acp-restart", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// Simulate: before restart, ACP session was captured
+	err = service.UpdateExternalSessionID(sessionID, "698ddb14-d532-44c1-8cf6-6378907ec72a")
+	assert.NoError(t, err)
+	err = service.UpdateSessionTransport(sessionID, "acp-stdio")
+	assert.NoError(t, err)
+
+	// Add assistant messages
+	_, err = service.AddChatMessage(env.ProjectDir, "codebuddy", sessionID, "user", "hello", nil, false, "")
+	assert.NoError(t, err)
+	_, err = service.AddChatMessage(env.ProjectDir, "codebuddy", sessionID, "assistant", `{"blocks":[{"type":"text","text":"hi"}]}`, nil, false, "")
+	assert.NoError(t, err)
+
+	// After restart: pool is empty, but handler still works correctly
+	req := buildChatRequest("next message", sessionID, env.ProjectDir, "codebuddy", "codebuddy", "", "", "", "acp-stdio", "")
+	assert.True(t, req.Resume, "should be resume after restart since session has assistant messages")
+	assert.Equal(t, sessionID, req.SessionID, "ACP resume after restart should use ClawBench UUID")
+}
+
+// TestGetExternalSessionID_ACPVsCLI verifies the DB query behavior for
+// external_session_id: ACP sessions have the real ACP session ID stored,
+// while CLI sessions (claude/codebuddy without ACP) have the ClawBench UUID.
+func TestGetExternalSessionID_ACPVsCLI(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// ACP session: external_session_id = ACP session ID (different from clawbench UUID)
+	acpSessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "test-ext-acp", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+	err = service.UpdateSessionTransport(acpSessionID, "acp-stdio")
+	assert.NoError(t, err)
+	acpExtID := "acp-real-session-xyz"
+	err = service.UpdateExternalSessionID(acpSessionID, acpExtID)
+	assert.NoError(t, err)
+
+	// Verify: ACP session's external_session_id differs from clawbench UUID
+	gotACP := service.GetExternalSessionID(acpSessionID)
+	assert.Equal(t, acpExtID, gotACP, "ACP session external_session_id should be the ACP session ID")
+	assert.NotEqual(t, acpSessionID, gotACP, "ACP session external_session_id should differ from clawbench UUID")
+
+	// CLI session: external_session_id = clawbench UUID (same, from CreateSession)
+	cliSessionID, err := service.CreateSession(env.ProjectDir, "claude", "test-ext-cli", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+
+	// Verify: CLI session's external_session_id equals clawbench UUID (initial value)
+	gotCLI := service.GetExternalSessionID(cliSessionID)
+	assert.Equal(t, cliSessionID, gotCLI, "CLI session external_session_id should initially equal clawbench UUID")
+}
+
+// TestBuildChatRequest_NonACPResumeWithExternalSessionID verifies that
+// non-ACP CLI backends (opencode, codex, pi) correctly use external_session_id
+// for --resume after a simulated restart. This path was already working but
+// is included to ensure the ACP fix doesn't break it.
+func TestBuildChatRequest_NonACPResumeWithExternalSessionID(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// OpenCode session with a real external session ID
+	sessionID, err := service.CreateSession(env.ProjectDir, "opencode", "test-nonacp-resume", "", "", "default", "chat")
+	assert.NoError(t, err)
+	extID := "ses_abc123xyz"
+	err = service.UpdateExternalSessionID(sessionID, extID)
+	assert.NoError(t, err)
+
+	// Add assistant message so resume=true
+	_, err = service.AddChatMessage(env.ProjectDir, "opencode", sessionID, "assistant", `{"blocks":[{"type":"text","text":"hi"}]}`, nil, false, "")
+	assert.NoError(t, err)
+
+	req := buildChatRequest("continue", sessionID, env.ProjectDir, "opencode", "codebuddy", "", "", "", "", "")
+	assert.True(t, req.Resume)
+	assert.Equal(t, extID, req.SessionID, "non-ACP resume should use external_session_id")
+}
+
+// TestBuildChatRequest_ACPNewSession_NoResume verifies that a brand new ACP
+// session (no assistant messages yet) does NOT set Resume=true, and passes
+// the ClawBench UUID so the ACP pool can create a new session.
+func TestBuildChatRequest_ACPNewSession_NoResume(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	sessionID, err := service.CreateSession(env.ProjectDir, "codebuddy", "test-acp-new", "codebuddy", "", "default", "chat")
+	assert.NoError(t, err)
+	err = service.UpdateSessionTransport(sessionID, "acp-stdio")
+	assert.NoError(t, err)
+
+	req := buildChatRequest("hello", sessionID, env.ProjectDir, "codebuddy", "codebuddy", "", "", "", "acp-stdio", "")
+	assert.False(t, req.Resume, "new ACP session should not be resume")
+	assert.Equal(t, sessionID, req.SessionID, "new ACP session should use ClawBench UUID")
+}

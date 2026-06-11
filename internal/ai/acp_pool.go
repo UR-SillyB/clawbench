@@ -259,6 +259,28 @@ func (m *ACPConnManager) GetOrCreateConn(ctx context.Context, agent *model.Agent
 	conn, ok := m.conns[clawbenchSID]
 	if !ok {
 		conn = newACPConn(agent, clawbenchSID)
+		// Pre-populate acpSID from DB so ensureAliveWithSession can attempt
+		// ResumeSession after a server restart. Without this, a fresh ACPConn
+		// has acpSID="" and always falls through to NewSession, losing all
+		// conversation context.
+		//
+		// For ACP sessions, external_session_id stores the ACP session ID
+		// (captured via session_capture event). For CLI backends (claude/codebuddy),
+		// external_session_id equals the ClawBench UUID — but those backends
+		// don't go through this path (they use CLIBackend, not ACPBackend).
+		//
+		// We only set acpSID when external_session_id differs from clawbenchSID,
+		// because:
+		//   - ACP sessions that completed at least one Prompt have external_session_id
+		//     set to the ACP session ID (different from clawbenchSID).
+		//   - ACP sessions that never completed a Prompt still have external_session_id
+		//     equal to clawbenchSID (from CreateSession), which is NOT a valid ACP
+		//     session ID — using it would cause a 60s ResumeSession timeout.
+		if extID := getExternalSessionID(clawbenchSID); extID != "" && extID != clawbenchSID {
+			conn.acpSID = extID
+			slog.Info("acp conn: pre-populated acpSID from DB for ResumeSession",
+				"clawbench_sid", clawbenchSID, "acp_sid", extID)
+		}
 		m.conns[clawbenchSID] = conn
 	}
 	m.mu.Unlock()
@@ -697,6 +719,12 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// "amnesia" — the user's mode/model/thinking selections would be lost.
 	prevConfig := c.snapshotCachedConfig()
 
+	// Save acpSID before spawnLocked clears it. spawnLocked resets acpSID
+	// to "" because it assumes the session mapping will be re-established by
+	// ensureAliveWithSession. We need the pre-spawn value to decide whether
+	// to attempt ResumeSession after spawn.
+	preSpawnAcpSID := c.acpSID
+
 	// Need to spawn or respawn
 	spawnStart := time.Now()
 	if err := c.spawnLocked(ctx); err != nil {
@@ -738,8 +766,9 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 
 	// Try to recover session via ResumeSession (no history replay — ClawBench has its own DB)
 	// Only attempt ResumeSession if this connection previously had a session
-	// (c.acpSID was set before the connection died). If c.acpSID is empty, this
-	// is a brand-new connection that was just spawned — there's nothing to resume.
+	// (preSpawnAcpSID was set before spawnLocked cleared it). If preSpawnAcpSID
+	// is empty, this is a brand-new connection that was just spawned — there's
+	// nothing to resume.
 	//
 	// The external_session_id in the DB is NOT a reliable indicator here:
 	// codebuddy/claude/qoder set external_session_id = ClawBench UUID at
@@ -748,11 +777,13 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 	// to decide "should we ResumeSession" causes a 60s timeout on every first
 	// message — the ACP agent has no session to resume.
 	//
-	// The correct signal is c.acpSID: it's only set after a successful
-	// NewSession or ResumeSession. If it's empty after spawn, the connection
-	// never completed a session lifecycle and must use NewSession.
-	if c.acpSID != "" {
-		acpSID := c.acpSID
+	// The correct signal is preSpawnAcpSID: it's only set after a successful
+	// NewSession, ResumeSession, or pre-populated from DB (GetOrCreateConn
+	// reads external_session_id when the pool entry is fresh after restart).
+	// If it's empty after spawn, the connection never completed a session
+	// lifecycle and must use NewSession.
+	if preSpawnAcpSID != "" {
+		acpSID := preSpawnAcpSID
 		err := c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
 		if err == nil {
 			return false, nil // recovered successfully
