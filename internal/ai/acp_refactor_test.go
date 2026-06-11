@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -2526,6 +2528,258 @@ func TestRefactor_ACPBackend_BuildPromptBlocks_Extended(t *testing.T) {
 		require.NotNil(t, blocks[0].Text)
 		assert.Equal(t, "hello", blocks[0].Text.Text)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// AgentCapabilityRegistry — Update, merge, persist, ForceUpdate, MarkStale, HasData, boolPtrVal
+// ---------------------------------------------------------------------------
+
+func TestRefactor_BoolPtrVal(t *testing.T) {
+	assert.Equal(t, "<nil>", boolPtrVal(nil))
+	tp := true
+	assert.Equal(t, "true", boolPtrVal(&tp))
+	fp := false
+	assert.Equal(t, "false", boolPtrVal(&fp))
+}
+
+func TestRefactor_AgentCapability_HasData(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		c := &AgentCapability{}
+		assert.False(t, c.HasData())
+	})
+	t.Run("with_modes", func(t *testing.T) {
+		c := &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}}
+		assert.True(t, c.HasData())
+	})
+	t.Run("with_load_session", func(t *testing.T) {
+		v := true
+		c := &AgentCapability{LoadSession: &v}
+		assert.True(t, c.HasData())
+	})
+	t.Run("with_list_sessions", func(t *testing.T) {
+		v := true
+		c := &AgentCapability{ListSessions: &v}
+		assert.True(t, c.HasData())
+	})
+	t.Run("with_config", func(t *testing.T) {
+		c := &AgentCapability{ConfigOptionState: &ConfigOptionState{ConfigID: "mode"}}
+		assert.True(t, c.HasData())
+	})
+}
+
+func TestRefactor_AgentCapabilityRegistry_Merge(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+
+	t.Run("merge_preserves_existing_non_empty", func(t *testing.T) {
+		agentID := "test-merge-preserve-" + t.Name()
+		reg.Update(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "code"}},
+		})
+		reg.Update(agentID, &AgentCapability{
+			AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
+		})
+		cap := reg.Get(agentID)
+		assert.NotNil(t, cap)
+		assert.Len(t, cap.AvailableModes, 1, "modes should be preserved during merge")
+		assert.Len(t, cap.AvailableThinkingEfforts, 1, "efforts should be added during merge")
+	})
+
+	t.Run("merge_overwrites_non_empty", func(t *testing.T) {
+		agentID := "test-merge-overwrite-" + t.Name()
+		reg.Update(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "code"}},
+		})
+		reg.Update(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "ask"}, {ID: "architect"}},
+		})
+		cap := reg.Get(agentID)
+		assert.Len(t, cap.AvailableModes, 2, "modes should be overwritten during merge")
+	})
+
+	t.Run("merge_does_not_overwrite_empty", func(t *testing.T) {
+		agentID := "test-merge-empty-" + t.Name()
+		reg.Update(agentID, &AgentCapability{
+			AvailableModes:    []ModeDef{{ID: "code"}},
+			AvailableCommands: []AvailableCommandInfo{{Name: "/test"}},
+		})
+		// Update with empty commands should NOT clear existing commands
+		reg.Update(agentID, &AgentCapability{
+			AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
+		})
+		cap := reg.Get(agentID)
+		assert.Len(t, cap.AvailableCommands, 1, "commands should be preserved when update has empty commands")
+	})
+}
+
+func TestRefactor_AgentCapabilityRegistry_ForceUpdate(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-forceupdate-" + t.Name()
+
+	t.Run("first_update_applied", func(t *testing.T) {
+		applied := reg.ForceUpdate(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "code"}},
+		})
+		assert.True(t, applied, "first ForceUpdate should be applied")
+		cap := reg.Get(agentID)
+		assert.Len(t, cap.AvailableModes, 1)
+	})
+
+	t.Run("second_update_skipped", func(t *testing.T) {
+		applied := reg.ForceUpdate(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "ask"}},
+		})
+		assert.False(t, applied, "second ForceUpdate should be skipped (already refreshed)")
+		cap := reg.Get(agentID)
+		assert.Len(t, cap.AvailableModes, 1, "modes should not change after skipped update")
+		assert.Equal(t, "code", cap.AvailableModes[0].ID)
+	})
+
+	t.Run("mark_stale_allows_new_update", func(t *testing.T) {
+		reg.MarkStale(agentID)
+		applied := reg.ForceUpdate(agentID, &AgentCapability{
+			AvailableModes: []ModeDef{{ID: "architect"}},
+		})
+		assert.True(t, applied, "ForceUpdate after MarkStale should be applied")
+		cap := reg.Get(agentID)
+		assert.Len(t, cap.AvailableModes, 1)
+		assert.Equal(t, "architect", cap.AvailableModes[0].ID)
+	})
+}
+
+func TestRefactor_AgentCapabilityRegistry_IsModeAvailable(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-mode-avail-" + t.Name()
+	reg.Update(agentID, &AgentCapability{
+		AvailableModes: []ModeDef{{ID: "code"}, {ID: "ask"}},
+	})
+	assert.True(t, reg.IsModeAvailable(agentID, "code"))
+	assert.True(t, reg.IsModeAvailable(agentID, "ask"))
+	assert.False(t, reg.IsModeAvailable(agentID, "nonexistent"))
+	assert.False(t, reg.IsModeAvailable("no-such-agent", "code"))
+}
+
+func TestRefactor_AgentCapabilityRegistry_HasNewAvailableModes(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-hasnew-modes-" + t.Name()
+	reg.Update(agentID, &AgentCapability{
+		AvailableModes: []ModeDef{{ID: "code"}},
+	})
+	assert.False(t, reg.HasNewAvailableModes(agentID, []ModeDef{{ID: "code"}}), "same modes should not be new")
+	assert.True(t, reg.HasNewAvailableModes(agentID, []ModeDef{{ID: "ask"}}), "different mode should be new")
+	assert.False(t, reg.HasNewAvailableModes(agentID, nil), "nil should not be new when modes exist")
+	assert.True(t, reg.HasNewAvailableModes("no-agent", []ModeDef{{ID: "code"}}), "agent with no caps: any modes are new")
+}
+
+func TestRefactor_AgentCapabilityRegistry_HasNewAvailableThinkingEfforts(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-hasnew-efforts-" + t.Name()
+	reg.Update(agentID, &AgentCapability{
+		AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
+	})
+	assert.False(t, reg.HasNewAvailableThinkingEfforts(agentID, []ThinkingEffortDef{{ID: "high"}}))
+	assert.True(t, reg.HasNewAvailableThinkingEfforts(agentID, []ThinkingEffortDef{{ID: "medium"}}))
+}
+
+func TestRefactor_AgentCapabilityRegistry_SaveToDB(t *testing.T) {
+	t.Run("save_with_all_fields", func(t *testing.T) {
+		v := true
+		agentCap := &AgentCapability{
+			AvailableModes:           []ModeDef{{ID: "code"}},
+			AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
+			AvailableCommands:        []AvailableCommandInfo{{Name: "/test"}},
+			ConfigOptionState:        &ConfigOptionState{ConfigID: "mode", CurrentID: "code"},
+			LoadSession:              &v,
+			ListSessions:             &v,
+		}
+		// Verify marshal paths work (saveToDB calls json.Marshal internally)
+		modesJSON, _ := json.Marshal(agentCap.AvailableModes)
+		assert.Contains(t, string(modesJSON), "code")
+		effortsJSON, _ := json.Marshal(agentCap.AvailableThinkingEfforts)
+		assert.Contains(t, string(effortsJSON), "high")
+		cmdsJSON, _ := json.Marshal(agentCap.AvailableCommands)
+		assert.Contains(t, string(cmdsJSON), "/test")
+		configJSON, _ := json.Marshal(agentCap.ConfigOptionState)
+		assert.Contains(t, string(configJSON), "mode")
+	})
+
+	t.Run("save_with_nil_slices", func(t *testing.T) {
+		agentCap := &AgentCapability{}
+		// Verify nil slices are handled (marshaled as [] instead of null)
+		modesJSON, _ := json.Marshal(agentCap.AvailableModes)
+		assert.Equal(t, "null", string(modesJSON), "nil slice marshals to null")
+		// The saveToDB function converts null to []
+	})
+}
+
+func TestRefactor_AgentCapabilityRegistry_GetModeState_ConfigFallback(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-mode-config-fallback-" + t.Name()
+	// Register agent with no modes but with config state containing mode options
+	reg.Update(agentID, &AgentCapability{
+		ConfigOptionState: &ConfigOptionState{
+			ConfigID:  "mode",
+			CurrentID: "ask",
+			Options: []ConfigOptionDef{
+				{ID: "mode", Category: "mode", Values: []ConfigOptionValue{{ID: "ask", Name: "Ask"}, {ID: "code", Name: "Code"}}},
+			},
+		},
+	})
+	ms := reg.GetModeState(agentID, "ask")
+	assert.NotNil(t, ms, "should derive mode state from config options")
+	assert.Equal(t, "ask", ms.CurrentModeID)
+	assert.Len(t, ms.AvailableModes, 2)
+}
+
+// ---------------------------------------------------------------------------
+// collectCrashDiagnostics
+// ---------------------------------------------------------------------------
+
+func TestRefactor_CollectCrashDiagnostics_NoProcess(t *testing.T) {
+	agent := &model.Agent{ID: "test-crash-noproc", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-crash-noproc")
+	// No process spawned — collectCrashDiagnostics should return zero-value diag
+	diag := conn.collectCrashDiagnostics()
+	assert.Equal(t, 0, diag.ExitCode)
+	assert.Equal(t, "", diag.StderrTail)
+}
+
+func TestRefactor_CollectCrashDiagnostics_WithProcess(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping: test unreliable as root")
+	}
+	agent := &model.Agent{ID: "test-crash-proc", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-crash-proc")
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	conn.mu.Lock()
+	conn.cmd = cmd
+	conn.startedAt = time.Now().Add(-5 * time.Second)
+	// Set stderr builder with content
+	cmd.Stderr = &strings.Builder{}
+	sb := cmd.Stderr.(*strings.Builder)
+	sb.WriteString("some stderr output")
+	conn.mu.Unlock()
+
+	// Kill the process; collectCrashDiagnostics will call cmdWaitOnce.Do → Process.Wait
+	_ = cmd.Process.Kill()
+
+	diag := conn.collectCrashDiagnostics()
+	// Uptime should be positive
+	assert.Greater(t, diag.Uptime, time.Duration(0))
+	// Stderr should be captured
+	assert.Contains(t, diag.StderrTail, "some stderr output")
+}
+
+func TestRefactor_ReadProcStatus(t *testing.T) {
+	ppid, rss, err := readProcStatus(os.Getpid())
+	assert.NoError(t, err, "reading own /proc/status should succeed")
+	assert.Greater(t, ppid, 0, "PPid should be > 0")
+	assert.Greater(t, rss, 0, "VmRSS should be > 0")
+}
+
+func TestRefactor_ReadProcStatus_NonexistentPID(t *testing.T) {
+	_, _, err := readProcStatus(99999999)
+	assert.Error(t, err, "nonexistent PID should return error")
 }
 
 // ---------------------------------------------------------------------------
