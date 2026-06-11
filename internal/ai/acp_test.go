@@ -2189,6 +2189,44 @@ func TestIsUnknownConfigOption_UnrelatedError(t *testing.T) {
 	assert.False(t, isUnknownConfigOption(err))
 }
 
+// --- IsACPResourceNotFound ---
+
+func TestIsACPResourceNotFound_RequestError(t *testing.T) {
+	err := &acp.RequestError{
+		Code:    -32002,
+		Message: "Resource not found: abc-123",
+		Data:    map[string]any{"uri": "abc-123"},
+	}
+	assert.True(t, IsACPResourceNotFound(err))
+}
+
+func TestIsACPResourceNotFound_WrappedRequestError(t *testing.T) {
+	innerErr := &acp.RequestError{
+		Code:    -32002,
+		Message: "Resource not found: abc-123",
+	}
+	err := fmt.Errorf("acp: session/load: %w", innerErr)
+	assert.True(t, IsACPResourceNotFound(err))
+}
+
+func TestIsACPResourceNotFound_PlainError(t *testing.T) {
+	err := fmt.Errorf("Resource not found: some-id")
+	assert.True(t, IsACPResourceNotFound(err))
+}
+
+func TestIsACPResourceNotFound_OtherCode(t *testing.T) {
+	err := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+	}
+	assert.False(t, IsACPResourceNotFound(err))
+}
+
+func TestIsACPResourceNotFound_UnrelatedError(t *testing.T) {
+	err := fmt.Errorf("some other error")
+	assert.False(t, IsACPResourceNotFound(err))
+}
+
 // --- extractModeStateFromModes ---
 
 func TestExtractModeStateFromModes_Nil(t *testing.T) {

@@ -558,6 +558,283 @@ func TestIntegration_Claude_ResumeSession(t *testing.T) {
 	assert.NotEmpty(t, doneEvents2, "should receive 'done' event in resumed session")
 }
 
+// --- 3a. Claude Session Resume Deep Tests ---
+
+// TestIntegration_Claude_MultiTurnResume verifies that Claude can maintain context
+// across three turns in the same session: new → resume → resume again.
+// This exercises the --resume flag being passed multiple times with the same
+// session ID, and the CLI's ability to accumulate conversation history.
+func TestIntegration_Claude_MultiTurnResume(t *testing.T) {
+	requireCLIAvailable(t, "claude")
+	backend, err := NewBackend("claude")
+	require.NoError(t, err)
+
+	sessionID := newSessionID()
+
+	// Turn 1: new session — ask Claude to remember a number
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+
+	ch1, err := backend.ExecuteStream(ctx1, ChatRequest{
+		Prompt:    "记住数字42，稍后我会问你。只回复OK",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+	})
+	require.NoError(t, err)
+
+	events1 := collectAllEvents(t, ch1, 90*time.Second)
+	meta1 := findEvents(events1, "metadata")
+	require.NotEmpty(t, meta1, "turn 1 should complete with metadata event")
+
+	// Verify metadata contains a session ID (Claude echoes back --session-id)
+	assert.NotEmpty(t, meta1[0].Meta.SessionID, "turn 1 metadata should contain session ID")
+
+	// Turn 2: resume — ask what number was remembered
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+
+	ch2, err := backend.ExecuteStream(ctx2, ChatRequest{
+		Prompt:    "我之前让你记住的数字是什么？只回答数字",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	events2 := collectAllEvents(t, ch2, 90*time.Second)
+	requireEventSequence(t, events2, "content", "metadata")
+	content2 := concatContent(events2)
+	assert.NotEmpty(t, content2, "turn 2 should receive content")
+
+	// Turn 2 metadata should still have session ID
+	meta2 := findEvents(events2, "metadata")
+	require.NotEmpty(t, meta2, "turn 2 should have metadata event")
+	assert.NotEmpty(t, meta2[0].Meta.SessionID, "turn 2 metadata should contain session ID")
+
+	// Turn 3: resume again — ask for the number a second time
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel3()
+
+	ch3, err := backend.ExecuteStream(ctx3, ChatRequest{
+		Prompt:    "再告诉我一次那个数字",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	events3 := collectAllEvents(t, ch3, 90*time.Second)
+	requireEventSequence(t, events3, "content", "metadata")
+	content3 := concatContent(events3)
+	assert.NotEmpty(t, content3, "turn 3 should receive content")
+
+	// Verify done events on all resumed turns
+	doneEvents2 := findEvents(events2, "done")
+	assert.NotEmpty(t, doneEvents2, "turn 2 should receive 'done' event")
+	doneEvents3 := findEvents(events3, "done")
+	assert.NotEmpty(t, doneEvents3, "turn 3 should receive 'done' event")
+}
+
+// TestIntegration_Claude_ResumeSessionIDConsistency verifies that the session ID
+// remains consistent across a new session and its resumed continuation.
+// Claude uses the ClawBench UUID directly as --session-id / --resume, so the
+// metadata.SessionID in both rounds should match the original UUID.
+func TestIntegration_Claude_ResumeSessionIDConsistency(t *testing.T) {
+	requireCLIAvailable(t, "claude")
+	backend, err := NewBackend("claude")
+	require.NoError(t, err)
+
+	sessionID := newSessionID()
+
+	// Phase 1: new session
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+
+	ch1, err := backend.ExecuteStream(ctx1, ChatRequest{
+		Prompt:    "说一个字：好",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+	})
+	require.NoError(t, err)
+
+	events1 := collectAllEvents(t, ch1, 90*time.Second)
+	meta1 := findEvents(events1, "metadata")
+	require.NotEmpty(t, meta1, "first conversation should complete with metadata event")
+	firstSessionID := meta1[0].Meta.SessionID
+	assert.NotEmpty(t, firstSessionID, "metadata should contain session ID")
+
+	// Phase 2: resume session with same session ID
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+
+	ch2, err := backend.ExecuteStream(ctx2, ChatRequest{
+		Prompt:    "再说一个字：是",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	events2 := collectAllEvents(t, ch2, 90*time.Second)
+	meta2 := findEvents(events2, "metadata")
+	require.NotEmpty(t, meta2, "resumed session should complete with metadata event")
+	resumedSessionID := meta2[0].Meta.SessionID
+	assert.NotEmpty(t, resumedSessionID, "resumed metadata should contain session ID")
+
+	// The session ID in metadata should match between the original and resumed rounds
+	assert.Equal(t, firstSessionID, resumedSessionID,
+		"session ID should remain consistent across resume — Claude uses ClawBench UUID directly")
+}
+
+// TestIntegration_Claude_ResumeAfterCancel verifies that a session can be resumed
+// after being cancelled mid-stream. This simulates the real-world scenario where
+// a user cancels a long-running response and then sends a new message to continue.
+//
+// The test flow:
+//  1. Start a new session and cancel after receiving some content
+//  2. Resume the same session ID — Claude should still have the initial context
+//
+// Note: After cancellation, the CLI process is killed, so the session state
+// depends on what the CLI persisted before the kill signal. Claude CLI persists
+// conversation state incrementally, so a resume after cancel should work.
+func TestIntegration_Claude_ResumeAfterCancel(t *testing.T) {
+	requireCLIAvailable(t, "claude")
+	backend, err := NewBackend("claude")
+	require.NoError(t, err)
+
+	sessionID := newSessionID()
+
+	// Phase 1: new session with a simple prompt, let it complete normally
+	// (we use a simple prompt to ensure the session is established in Claude's state)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+
+	ch1, err := backend.ExecuteStream(ctx1, ChatRequest{
+		Prompt:    "记住数字7，只回复OK",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+	})
+	require.NoError(t, err)
+
+	events1 := collectAllEvents(t, ch1, 90*time.Second)
+	meta1 := findEvents(events1, "metadata")
+	require.NotEmpty(t, meta1, "first conversation should complete with metadata event")
+
+	// Phase 2: cancel a second prompt mid-stream
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+
+	ch2, err := backend.ExecuteStream(ctx2, ChatRequest{
+		Prompt:    "现在从1数到100，每个数字一行",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	// Collect at least one content event, then cancel
+	var events2 []StreamEvent
+	cancelled := false
+	timer := time.NewTimer(90 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event, ok := <-ch2:
+			if !ok {
+				goto phase2Done
+			}
+			events2 = append(events2, event)
+			if !cancelled && event.Type == "content" {
+				cancelled = true
+				cancel2()
+			}
+		case <-timer.C:
+			t.Log("phase 2: timeout waiting for content")
+			goto phase2Done
+		}
+	}
+phase2Done:
+	contentEvents2 := findEvents(events2, "content")
+	assert.NotEmpty(t, contentEvents2, "should have received content before cancel in phase 2")
+	t.Logf("phase 2: cancelled after %d events, %d content events", len(events2), len(contentEvents2))
+
+	// Phase 3: resume the session after cancellation
+	// Claude should remember the number 7 from phase 1 even though phase 2 was cancelled
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel3()
+
+	ch3, err := backend.ExecuteStream(ctx3, ChatRequest{
+		Prompt:    "我之前让你记住的数字是什么？只回答数字",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	events3 := collectAllEvents(t, ch3, 90*time.Second)
+	requireEventSequence(t, events3, "content", "metadata")
+	content3 := concatContent(events3)
+	assert.NotEmpty(t, content3, "should receive content in resumed session after cancel")
+
+	// Best-effort: check if the response contains "7"
+	// AI responses are non-deterministic, but with a clean resume the model
+	// should recall the number from the first turn
+	if !strings.Contains(content3, "7") {
+		t.Logf("claude did not recall number 7 after cancel+resume — AI behavior is non-deterministic; content: %s", truncate(content3, 300))
+	}
+}
+
+// TestIntegration_Claude_ResumeMetadataCapture verifies that the metadata event
+// from a Claude resumed session contains the expected fields: SessionID, Model,
+// and token usage (InputTokens/OutputTokens). These fields are critical for
+// the handler's session capture logic (writing external_session_id to DB).
+func TestIntegration_Claude_ResumeMetadataCapture(t *testing.T) {
+	requireCLIAvailable(t, "claude")
+	backend, err := NewBackend("claude")
+	require.NoError(t, err)
+
+	sessionID := newSessionID()
+
+	// Phase 1: new session
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel1()
+
+	ch1, err := backend.ExecuteStream(ctx1, ChatRequest{
+		Prompt:    "说一个字：好",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+	})
+	require.NoError(t, err)
+
+	events1 := collectAllEvents(t, ch1, 90*time.Second)
+	meta1 := findEvents(events1, "metadata")
+	require.NotEmpty(t, meta1, "should have metadata event from new session")
+	assert.NotEmpty(t, meta1[0].Meta.SessionID, "new session metadata should have SessionID")
+	assert.NotEmpty(t, meta1[0].Meta.Model, "new session metadata should have Model")
+
+	// Phase 2: resume session
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel2()
+
+	ch2, err := backend.ExecuteStream(ctx2, ChatRequest{
+		Prompt:    "再说一个字：是",
+		SessionID: sessionID,
+		WorkDir:   testWorkDir(),
+		Resume:    true,
+	})
+	require.NoError(t, err)
+
+	events2 := collectAllEvents(t, ch2, 90*time.Second)
+	meta2 := findEvents(events2, "metadata")
+	require.NotEmpty(t, meta2, "should have metadata event from resumed session")
+	assert.NotEmpty(t, meta2[0].Meta.SessionID, "resumed session metadata should have SessionID")
+	assert.NotEmpty(t, meta2[0].Meta.Model, "resumed session metadata should have Model")
+
+	// Token usage should be present (non-zero) in both rounds
+	assert.NotZero(t, meta1[0].Meta.InputTokens, "new session should report input token usage")
+	assert.NotZero(t, meta2[0].Meta.InputTokens, "resumed session should report input token usage")
+}
+
 func TestIntegration_Codebuddy_ResumeSession(t *testing.T) {
 	requireCLIAvailable(t, "codebuddy")
 	backend, err := NewBackend("codebuddy")

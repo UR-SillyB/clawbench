@@ -89,7 +89,17 @@ export function useAcpSession(options: UseAcpSessionOptions) {
         }),
       })
       if (!resp.ok) {
-        toast.show(gt('chat.acpSession.loadFailed'), { type: 'error', icon: '⚠️' })
+        // Try to extract msgKey from error response for specific error messages
+        let msgKey = ''
+        try {
+          const errData = await resp.json()
+          msgKey = errData?.msgKey || ''
+        } catch { /* ignore parse error */ }
+        if (msgKey === 'ACPSessionNotFound') {
+          toast.show(gt('chat.acpSession.sessionNotFound'), { type: 'error', icon: '⚠️' })
+        } else {
+          toast.show(gt('chat.acpSession.loadFailed'), { type: 'error', icon: '⚠️' })
+        }
         return null
       }
       const data = await resp.json()

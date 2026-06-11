@@ -9,227 +9,280 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"clawbench/internal/ai"
+	"clawbench/internal/model"
 )
 
 // ---------------------------------------------------------------------------
-// convertACPSessionUpdateToMessages unit tests
+// ACP LoadSession replay parsing tests
 // ---------------------------------------------------------------------------
 //
-// These tests verify the behavior of convertACPSessionUpdateToMessages in
-// session_resume.go. The current implementation stores raw JSON from
-// acp.SessionUpdate without parsing through mapACPSessionUpdate, which
-// causes the frontend to display unparsed JSON like:
-//
-//	{"agent_message_chunk":{"content":{"text":{"text":"Hello!"}}}}}
-//
-// instead of properly rendered content blocks.
-//
-// When the implementation is fixed to parse through mapACPSessionUpdate,
-// these tests should be updated to verify the correct behavior.
+// These tests verify that ACP SessionUpdate notifications are correctly
+// parsed into structured content blocks via mapACPSessionUpdate + AccumulateBlock,
+// producing {"blocks":[{"type":"text","text":"Hello!"}]} format that the frontend
+// can render, instead of raw ACP JSON like {"agent_message_chunk":{...}}.
 
-// TestConvertACPSessionUpdateToMessages_AgentMessageChunk_StoresRawJSON
-// verifies that the current implementation stores raw JSON for an
-// AgentMessageChunk notification. This documents the bug.
-func TestConvertACPSessionUpdateToMessages_AgentMessageChunk_StoresRawJSON(t *testing.T) {
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session-1"),
-		Update: acp.SessionUpdate{
-			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
-				Content: acp.ContentBlock{
-					Text: &acp.ContentBlockText{Text: "Hello, world!"},
+// parsedMessage represents a single message extracted from ACP replay parsing.
+type parsedMessage struct {
+	role    string
+	content string
+}
+
+// parseNotifications simulates the replay parsing logic in ServeACPLoadSession:
+// iterate over SessionNotifications, split on role boundaries, accumulate blocks.
+func parseNotifications(buf []acp.SessionNotification) []parsedMessage {
+	var messages []parsedMessage
+	var blocks []model.ContentBlock
+	var currentRole string
+
+	flushBlocks := func() {
+		if len(blocks) == 0 || currentRole == "" {
+			return
+		}
+		blocks = ai.MergeConsecutiveThinkingBlocks(blocks)
+		contentMap := map[string]any{"blocks": blocks}
+		if currentRole == "assistant" {
+			contentMap["metadata"] = map[string]any{"transport": "acp-stdio"}
+		}
+		contentJSON, _ := json.Marshal(contentMap)
+		messages = append(messages, parsedMessage{
+			role:    currentRole,
+			content: string(contentJSON),
+		})
+		blocks = nil
+	}
+
+	for _, n := range buf {
+		notifRole := "assistant"
+		if n.Update.UserMessageChunk != nil {
+			notifRole = "user"
+		}
+		if notifRole != currentRole && currentRole != "" {
+			flushBlocks()
+		}
+		currentRole = notifRole
+
+		// UserMessageChunk is not handled by mapACPSessionUpdate —
+		// extract text directly from the ACP notification.
+		if n.Update.UserMessageChunk != nil {
+			if text := n.Update.UserMessageChunk.Content.Text; text != nil && text.Text != "" {
+				ai.AccumulateBlock(&blocks, ai.StreamEvent{Type: "content", Content: text.Text})
+			}
+			continue
+		}
+
+		ch := make(chan ai.StreamEvent, 64)
+		ai.MapACPSessionUpdateForTest(n.Update, ch)
+		close(ch)
+		for event := range ch {
+			switch event.Type {
+			case "content", "thinking", "thinking_done", "tool_use", "tool_result", "warning", "error":
+				ai.AccumulateBlock(&blocks, event)
+			}
+		}
+	}
+	flushBlocks()
+	return messages
+}
+
+// TestLoadSessionParsing_AgentMessageChunk_ProducesTextBlock
+// verifies that AgentMessageChunk produces a proper text block with the
+// actual text content, not raw ACP JSON.
+func TestLoadSessionParsing_AgentMessageChunk_ProducesTextBlock(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test-session-1",
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "Hello, world!"},
+					},
 				},
 			},
 		},
 	}
 
-	messages := convertACPSessionUpdateToMessages(n, "session-1", "claude")
+	messages := parseNotifications(buf)
 	require.Len(t, messages, 1, "should produce exactly one message")
+	assert.Equal(t, "assistant", messages[0].role)
 
-	// Current behavior: role is "assistant" and content is raw JSON
-	assert.Equal(t, "assistant", messages[0].Role)
-	assert.Equal(t, "session-1", messages[0].SessionID)
-	assert.Equal(t, "claude", messages[0].Backend)
+	// Content should be valid JSON with blocks array
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(messages[0].content), &parsed)
+	require.NoError(t, err)
 
-	// BUG: Content is raw JSON of the entire SessionUpdate, not parsed text
-	content := messages[0].Content
-	assert.True(t, isRawJSON(content),
-		"current implementation stores raw JSON — content: %s", truncateStr(content, 100))
+	blocks, ok := parsed["blocks"].([]any)
+	require.True(t, ok, "should have blocks array")
+	require.Len(t, blocks, 1, "should have one block")
 
-	// Verify the raw JSON contains the agent_message_chunk key
-	assert.Contains(t, content, "agent_message_chunk",
-		"raw JSON should contain the ACP notification type key")
+	block, ok := blocks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "text", block["type"], "block type should be text")
+	assert.Equal(t, "Hello, world!", block["text"], "text content should be extracted, not raw JSON")
 
-	// Verify the actual text is buried inside the raw JSON
-	assert.Contains(t, content, "Hello, world!",
-		"raw JSON should contain the original text, but it's not parsed out")
-
-	// Show what mapACPSessionUpdate WOULD produce for comparison
-	ch := make(chan ai.StreamEvent, 100)
-	ai.MapACPSessionUpdateForTest(n.Update, ch)
-	close(ch)
-
-	var events []ai.StreamEvent
-	for e := range ch {
-		events = append(events, e)
-	}
-
-	contentEvents := filterEvents(events, "content")
-	require.NotEmpty(t, contentEvents,
-		"mapACPSessionUpdate should produce 'content' events from AgentMessageChunk")
-	assert.Equal(t, "Hello, world!", contentEvents[0].Content,
-		"mapACPSessionUpdate extracts the actual text, not raw JSON")
+	// Verify assistant messages include metadata with transport
+	metadata, ok := parsed["metadata"].(map[string]any)
+	require.True(t, ok, "assistant messages should include metadata")
+	assert.Equal(t, "acp-stdio", metadata["transport"])
 }
 
-// TestConvertACPSessionUpdateToMessages_ToolCall_StoresRawJSON
-// verifies that ToolCall notifications are stored as raw JSON.
-func TestConvertACPSessionUpdateToMessages_ToolCall_StoresRawJSON(t *testing.T) {
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session-2"),
-		Update: acp.SessionUpdate{
-			ToolCall: &acp.SessionUpdateToolCall{
-				ToolCallId: acp.ToolCallId("tc-read-1"),
-				Title:      "Read file contents",
-				Kind:       acp.ToolKindRead,
-				RawInput:   map[string]any{"file_path": "/tmp/test.go"},
+// TestLoadSessionParsing_ToolCall_ProducesToolUseBlock
+// verifies that ToolCall notifications produce proper tool_use blocks
+// with canonical tool names and normalized input.
+func TestLoadSessionParsing_ToolCall_ProducesToolUseBlock(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test-session-2",
+			Update: acp.SessionUpdate{
+				ToolCall: &acp.SessionUpdateToolCall{
+					ToolCallId: acp.ToolCallId("tc-read-1"),
+					Title:      "Read file contents",
+					Kind:       acp.ToolKindRead,
+					RawInput:   map[string]any{"file_path": "/tmp/test.go"},
+				},
 			},
 		},
 	}
 
-	messages := convertACPSessionUpdateToMessages(n, "session-2", "claude")
+	messages := parseNotifications(buf)
 	require.Len(t, messages, 1)
 
-	content := messages[0].Content
-	assert.True(t, isRawJSON(content),
-		"current implementation stores raw JSON for ToolCall — content: %s",
-		truncateStr(content, 100))
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(messages[0].content), &parsed)
+	require.NoError(t, err)
 
-	// Verify the raw JSON contains tool_call key
-	assert.Contains(t, content, "tool_call",
-		"raw JSON should contain the ACP notification type key")
+	blocks, ok := parsed["blocks"].([]any)
+	require.True(t, ok)
+	require.Len(t, blocks, 1)
 
-	// Show what mapACPSessionUpdate WOULD produce
-	ch := make(chan ai.StreamEvent, 100)
-	ai.MapACPSessionUpdateForTest(n.Update, ch)
-	close(ch)
-
-	var events []ai.StreamEvent
-	for e := range ch {
-		events = append(events, e)
-	}
-
-	toolUseEvents := filterEvents(events, "tool_use")
-	require.NotEmpty(t, toolUseEvents,
-		"mapACPSessionUpdate should produce 'tool_use' events from ToolCall")
-	assert.Equal(t, "Read", toolUseEvents[0].Tool.Name,
-		"mapACPSessionUpdate extracts the canonical tool name")
-	assert.Contains(t, toolUseEvents[0].Tool.Input, "file_path",
-		"mapACPSessionUpdate normalizes the tool input")
+	block, ok := blocks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "tool_use", block["type"])
+	assert.Equal(t, "Read", block["name"], "tool name should be canonical 'Read'")
+	assert.Equal(t, "tc-read-1", block["id"])
 }
 
-// TestConvertACPSessionUpdateToMessages_ToolCallUpdate_StoresRawJSON
-// verifies that ToolCallUpdate (completed) notifications are stored as raw JSON.
-func TestConvertACPSessionUpdateToMessages_ToolCallUpdate_StoresRawJSON(t *testing.T) {
+// TestLoadSessionParsing_ToolCallUpdate_ProducesToolResultBlock
+// verifies that completed ToolCallUpdate notifications update the tool_use block
+// with output text.
+func TestLoadSessionParsing_ToolCallUpdate_ProducesToolResultBlock(t *testing.T) {
 	completed := acp.ToolCallStatusCompleted
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session-3"),
-		Update: acp.SessionUpdate{
-			ToolCallUpdate: &acp.SessionToolCallUpdate{
-				ToolCallId: acp.ToolCallId("tc-read-1"),
-				Status:     &completed,
-				RawOutput:  "file contents here",
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test-session-3",
+			Update: acp.SessionUpdate{
+				ToolCall: &acp.SessionUpdateToolCall{
+					ToolCallId: acp.ToolCallId("tc-read-1"),
+					Title:      "Read file",
+					Kind:       acp.ToolKindRead,
+					RawInput:   map[string]any{"file_path": "/tmp/test.go"},
+				},
 			},
 		},
-	}
-
-	messages := convertACPSessionUpdateToMessages(n, "session-3", "claude")
-	require.Len(t, messages, 1)
-
-	content := messages[0].Content
-	assert.True(t, isRawJSON(content),
-		"current implementation stores raw JSON for ToolCallUpdate — content: %s",
-		truncateStr(content, 100))
-
-	// Show what mapACPSessionUpdate WOULD produce
-	ch := make(chan ai.StreamEvent, 100)
-	ai.MapACPSessionUpdateForTest(n.Update, ch)
-	close(ch)
-
-	var events []ai.StreamEvent
-	for e := range ch {
-		events = append(events, e)
-	}
-
-	toolResultEvents := filterEvents(events, "tool_result")
-	require.NotEmpty(t, toolResultEvents,
-		"mapACPSessionUpdate should produce 'tool_result' events from completed ToolCallUpdate")
-	assert.Equal(t, "file contents here", toolResultEvents[0].Tool.Output,
-		"mapACPSessionUpdate extracts the tool output as text, not raw JSON")
-}
-
-// TestConvertACPSessionUpdateToMessages_ThinkingChunk_StoresRawJSON
-// verifies that AgentThoughtChunk notifications are stored as raw JSON.
-func TestConvertACPSessionUpdateToMessages_ThinkingChunk_StoresRawJSON(t *testing.T) {
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session-4"),
-		Update: acp.SessionUpdate{
-			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
-				Content: acp.ContentBlock{
-					Text: &acp.ContentBlockText{Text: "Let me think about this..."},
+		{
+			SessionId: "test-session-3",
+			Update: acp.SessionUpdate{
+				ToolCallUpdate: &acp.SessionToolCallUpdate{
+					ToolCallId: acp.ToolCallId("tc-read-1"),
+					Status:     &completed,
+					RawOutput:  "file contents here",
 				},
 			},
 		},
 	}
 
-	messages := convertACPSessionUpdateToMessages(n, "session-4", "claude")
+	messages := parseNotifications(buf)
 	require.Len(t, messages, 1)
 
-	content := messages[0].Content
-	assert.True(t, isRawJSON(content),
-		"current implementation stores raw JSON for AgentThoughtChunk — content: %s",
-		truncateStr(content, 100))
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(messages[0].content), &parsed)
+	require.NoError(t, err)
 
-	// Show what mapACPSessionUpdate WOULD produce
-	ch := make(chan ai.StreamEvent, 100)
-	ai.MapACPSessionUpdateForTest(n.Update, ch)
-	close(ch)
+	blocks, ok := parsed["blocks"].([]any)
+	require.True(t, ok)
+	require.Len(t, blocks, 1, "tool_use + tool_result should merge into one block")
 
-	var events []ai.StreamEvent
-	for e := range ch {
-		events = append(events, e)
-	}
-
-	thinkingEvents := filterEvents(events, "thinking")
-	require.NotEmpty(t, thinkingEvents,
-		"mapACPSessionUpdate should produce 'thinking' events from AgentThoughtChunk")
-	assert.Equal(t, "Let me think about this...", thinkingEvents[0].Content,
-		"mapACPSessionUpdate extracts the thinking text, not raw JSON")
+	block, ok := blocks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "tool_use", block["type"])
+	assert.Equal(t, true, block["done"], "tool should be marked done after completion")
+	assert.Equal(t, "file contents here", block["output"], "tool output should be extracted")
 }
 
-// TestConvertACPSessionUpdateToMessages_UserMessageChunk_DetectsUserRole
-// verifies that UserMessageChunk notifications correctly set role to "user".
-func TestConvertACPSessionUpdateToMessages_UserMessageChunk_DetectsUserRole(t *testing.T) {
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session-5"),
-		Update: acp.SessionUpdate{
-			UserMessageChunk: &acp.SessionUpdateUserMessageChunk{
-				Content: acp.ContentBlock{
-					Text: &acp.ContentBlockText{Text: "User says hello"},
+// TestLoadSessionParsing_ThinkingChunk_ProducesThinkingBlock
+// verifies that AgentThoughtChunk notifications produce thinking blocks
+// with the extracted text content.
+func TestLoadSessionParsing_ThinkingChunk_ProducesThinkingBlock(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test-session-4",
+			Update: acp.SessionUpdate{
+				AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "Let me think about this..."},
+					},
 				},
 			},
 		},
 	}
 
-	messages := convertACPSessionUpdateToMessages(n, "session-5", "claude")
+	messages := parseNotifications(buf)
 	require.Len(t, messages, 1)
 
-	// The role detection works correctly even in the current implementation
-	assert.Equal(t, "user", messages[0].Role,
-		"UserMessageChunk should set role to 'user'")
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(messages[0].content), &parsed)
+	require.NoError(t, err)
+
+	blocks, ok := parsed["blocks"].([]any)
+	require.True(t, ok)
+	require.Len(t, blocks, 1)
+
+	block, ok := blocks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "thinking", block["type"])
+	assert.Equal(t, "Let me think about this...", block["text"])
 }
 
-// TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant
+// TestLoadSessionParsing_UserMessageChunk_SetsUserRole
+// verifies that UserMessageChunk notifications produce a user role message.
+func TestLoadSessionParsing_UserMessageChunk_SetsUserRole(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test-session-5",
+			Update: acp.SessionUpdate{
+				UserMessageChunk: &acp.SessionUpdateUserMessageChunk{
+					Content: acp.ContentBlock{
+						Text: &acp.ContentBlockText{Text: "User says hello"},
+					},
+				},
+			},
+		},
+	}
+
+	messages := parseNotifications(buf)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "user", messages[0].role)
+
+	var parsed map[string]any
+	err := json.Unmarshal([]byte(messages[0].content), &parsed)
+	require.NoError(t, err)
+
+	blocks, ok := parsed["blocks"].([]any)
+	require.True(t, ok)
+	require.Len(t, blocks, 1)
+
+	block, ok := blocks[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "text", block["type"])
+	assert.Equal(t, "User says hello", block["text"])
+
+	// User messages should NOT have metadata
+	_, hasMetadata := parsed["metadata"]
+	assert.False(t, hasMetadata, "user messages should not include metadata")
+}
+
+// TestLoadSessionParsing_NonUserMessage_DefaultsToAssistant
 // verifies that non-UserMessageChunk notifications default to "assistant" role.
-func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t *testing.T) {
+func TestLoadSessionParsing_NonUserMessage_DefaultsToAssistant(t *testing.T) {
 	tests := []struct {
 		name string
 		n    acp.SessionNotification
@@ -237,7 +290,7 @@ func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t 
 		{
 			name: "AgentMessageChunk",
 			n: acp.SessionNotification{
-				SessionId: acp.SessionId("test"),
+				SessionId: "test",
 				Update: acp.SessionUpdate{
 					AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
 						Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "hi"}},
@@ -248,7 +301,7 @@ func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t 
 		{
 			name: "ToolCall",
 			n: acp.SessionNotification{
-				SessionId: acp.SessionId("test"),
+				SessionId: "test",
 				Update: acp.SessionUpdate{
 					ToolCall: &acp.SessionUpdateToolCall{
 						ToolCallId: "tc-1",
@@ -261,7 +314,7 @@ func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t 
 		{
 			name: "ToolCallUpdate",
 			n: acp.SessionNotification{
-				SessionId: acp.SessionId("test"),
+				SessionId: "test",
 				Update: acp.SessionUpdate{
 					ToolCallUpdate: &acp.SessionToolCallUpdate{
 						ToolCallId: "tc-1",
@@ -272,7 +325,7 @@ func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t 
 		{
 			name: "AgentThoughtChunk",
 			n: acp.SessionNotification{
-				SessionId: acp.SessionId("test"),
+				SessionId: "test",
 				Update: acp.SessionUpdate{
 					AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
 						Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "thinking"}},
@@ -284,84 +337,85 @@ func TestConvertACPSessionUpdateToMessages_NonUserMessage_DefaultsToAssistant(t 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			messages := convertACPSessionUpdateToMessages(tt.n, "session", "claude")
+			messages := parseNotifications([]acp.SessionNotification{tt.n})
 			require.Len(t, messages, 1)
-			assert.Equal(t, "assistant", messages[0].Role,
+			assert.Equal(t, "assistant", messages[0].role,
 				"non-UserMessageChunk notifications should default to 'assistant' role")
 		})
 	}
 }
 
-// TestConvertACPSessionUpdateToMessages_PersistenceFormat_WrapsRawJSONInTextBlock
-// verifies that the ServeACPLoadSession handler wraps the raw JSON content
-// inside a text block format for persistence to chat_history.
-// This produces: {"blocks": [{"type": "text", "text": "{\"agent_message_chunk\":..."}]}
-// which the frontend renders as raw JSON text instead of parsed blocks.
-func TestConvertACPSessionUpdateToMessages_PersistenceFormat_WrapsRawJSONInTextBlock(t *testing.T) {
-	n := acp.SessionNotification{
-		SessionId: acp.SessionId("test-session"),
-		Update: acp.SessionUpdate{
-			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
-				Content: acp.ContentBlock{
-					Text: &acp.ContentBlockText{Text: "Hello!"},
+// TestLoadSessionParsing_RoleBoundary_SplitsUserAndAssistant
+// verifies that the replay parsing splits messages at role boundaries:
+// user messages and assistant messages are persisted separately.
+func TestLoadSessionParsing_RoleBoundary_SplitsUserAndAssistant(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test",
+			Update: acp.SessionUpdate{
+				UserMessageChunk: &acp.SessionUpdateUserMessageChunk{
+					Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "Hello AI!"}},
+				},
+			},
+		},
+		{
+			SessionId: "test",
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "Hello human!"}},
 				},
 			},
 		},
 	}
 
-	messages := convertACPSessionUpdateToMessages(n, "session", "claude")
+	messages := parseNotifications(buf)
+	require.Len(t, messages, 2, "should produce two messages split at role boundary")
+	assert.Equal(t, "user", messages[0].role)
+	assert.Equal(t, "assistant", messages[1].role)
+
+	// Verify user message content
+	var userParsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(messages[0].content), &userParsed))
+	userBlocks := userParsed["blocks"].([]any)
+	require.Len(t, userBlocks, 1)
+	assert.Equal(t, "Hello AI!", userBlocks[0].(map[string]any)["text"])
+
+	// Verify assistant message content
+	var asstParsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(messages[1].content), &asstParsed))
+	asstBlocks := asstParsed["blocks"].([]any)
+	require.Len(t, asstBlocks, 1)
+	assert.Equal(t, "Hello human!", asstBlocks[0].(map[string]any)["text"])
+}
+
+// TestLoadSessionParsing_ContentNotRawJSON
+// verifies that the parsed content does NOT contain raw ACP JSON keys
+// like "agent_message_chunk", "tool_call", etc.
+func TestLoadSessionParsing_ContentNotRawJSON(t *testing.T) {
+	buf := []acp.SessionNotification{
+		{
+			SessionId: "test",
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "Hello!"}},
+				},
+			},
+		},
+	}
+
+	messages := parseNotifications(buf)
 	require.Len(t, messages, 1)
+	assert.Equal(t, "assistant", messages[0].role)
 
-	// Simulate what ServeACPLoadSession does when persisting the message
-	contentJSON, _ := json.Marshal(map[string]any{
-		"blocks": []map[string]any{{"type": "text", "text": messages[0].Content}},
-	})
+	// The content should NOT contain raw ACP protocol keys
+	assert.NotContains(t, messages[0].content, "agent_message_chunk",
+		"parsed content should not contain raw ACP protocol keys")
+	assert.NotContains(t, messages[0].content, "tool_call",
+		"parsed content should not contain raw ACP protocol keys")
 
-	// The persisted content wraps raw JSON inside a text block
-	var persisted map[string]any
-	err := json.Unmarshal(contentJSON, &persisted)
-	require.NoError(t, err)
-
-	blocks := persisted["blocks"].([]any)
-	require.Len(t, blocks, 1)
-
-	block := blocks[0].(map[string]any)
-	assert.Equal(t, "text", block["type"])
-
-	// BUG: The text content is raw JSON instead of parsed text
-	textContent := block["text"].(string)
-	assert.True(t, isRawJSON(textContent),
-		"persisted text block contains raw JSON — frontend shows this as unparsed text")
-
-	// What it SHOULD look like after the fix:
-	// {"blocks": [{"type": "text", "text": "Hello!"}, {"type": "tool_use", ...}]}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// isRawJSON checks if a string starts with { or " indicating raw JSON.
-func isRawJSON(s string) bool {
-	s = truncateStr(s, 1)
-	return s == "{" || s == `"`
-}
-
-// truncateStr truncates a string to maxLen characters.
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
-
-// filterEvents returns StreamEvents matching the given type.
-func filterEvents(events []ai.StreamEvent, eventType string) []ai.StreamEvent {
-	var matched []ai.StreamEvent
-	for _, e := range events {
-		if e.Type == eventType {
-			matched = append(matched, e)
-		}
-	}
-	return matched
+	// The content SHOULD contain the parsed text
+	assert.Contains(t, messages[0].content, "Hello!",
+		"parsed content should contain the actual text")
+	assert.Contains(t, messages[0].content, `"type":"text"`,
+		"parsed content should have proper block type")
 }

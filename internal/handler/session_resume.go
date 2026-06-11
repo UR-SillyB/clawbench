@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"clawbench/internal/ai"
 	"clawbench/internal/middleware"
 	"clawbench/internal/model"
@@ -159,6 +157,36 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if a ClawBench session already exists for this ACP session.
+	// source_session_id = "acp:{acpSessionId}" tracks the ACP session origin.
+	sourceID := "acp:" + req.AcpSessionID
+	var existingID string
+	var existingDeleted int
+	err := service.DBRead.QueryRow(
+		"SELECT id, deleted FROM chat_sessions WHERE source_session_id = ? AND session_type = 'chat' ORDER BY deleted ASC, updated_at DESC LIMIT 1",
+		sourceID,
+	).Scan(&existingID, &existingDeleted)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Error("handler: failed to check existing ACP session", "error", err)
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+
+	if existingID != "" {
+		// A session for this ACP session already exists.
+		// Hard-delete the old session and its data so we can recreate
+		// it fresh with the latest replay from the ACP agent.
+		slog.Info("handler: hard-deleting existing session for ACP reload",
+			"old_session", existingID,
+			"acp_sid", req.AcpSessionID,
+			"was_deleted", existingDeleted == 1)
+		if err := service.HardDeleteSession(existingID); err != nil {
+			slog.Error("handler: failed to hard-delete existing ACP session", "error", err)
+			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+			return
+		}
+	}
+
 	// Create new ClawBench session
 	sessionID, err := service.CreateSession(projectPath, agent.Backend, "", req.AgentID, "", "default", "chat")
 	if err != nil {
@@ -179,34 +207,115 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		slog.Error("handler: LoadSession failed", "agent", req.AgentID, "acp_sid", req.AcpSessionID, "error", err)
 		// Clean up the session we just created
 		_ = service.DeleteSession(projectPath, agent.Backend, sessionID)
+		// Clean up the dead connection from the pool
+		mgr.CloseConn(sessionID)
+		// Detect "Resource not found" from ACP agent — session no longer exists
+		if ai.IsACPResourceNotFound(err) {
+			writeLocalizedErrorf(w, r, http.StatusNotFound, "ACPSessionNotFound")
+			return
+		}
 		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 		return
 	}
 
-	// Collect replayed messages from the buffer
+	// Collect replayed messages from the buffer and parse through
+	// mapACPSessionUpdate to produce properly structured content blocks
+	// (same pipeline as live streaming), instead of storing raw ACP JSON.
 	client := conn.GetClient()
-	var messages []model.ChatMessage
+	type persistedMessage struct {
+		role    string
+		content string // JSON: {"blocks":[...]}
+	}
+	var messages []persistedMessage
 	if client != nil {
 		buf := client.GetAndClearLoadSessionBuf()
-		for _, n := range buf {
-			msgs := convertACPSessionUpdateToMessages(n, sessionID, agent.Backend)
-			messages = append(messages, msgs...)
+
+		// Accumulate blocks across notifications, splitting on role boundaries.
+		var blocks []model.ContentBlock
+		var currentRole string // "user" or "assistant"
+
+		flushBlocks := func() {
+			if len(blocks) == 0 || currentRole == "" {
+				return
+			}
+			blocks = ai.MergeConsecutiveThinkingBlocks(blocks)
+			contentMap := map[string]any{"blocks": blocks}
+			if currentRole == "assistant" {
+				contentMap["metadata"] = map[string]any{
+					"transport": "acp-stdio",
+				}
+			}
+			contentJSON, _ := json.Marshal(contentMap)
+			messages = append(messages, persistedMessage{
+				role:    currentRole,
+				content: string(contentJSON),
+			})
+			blocks = nil
 		}
+
+		for _, n := range buf {
+			// Determine the role of this notification
+			notifRole := "assistant"
+			if n.Update.UserMessageChunk != nil {
+				notifRole = "user"
+			}
+
+			// Flush accumulated blocks when role changes
+			if notifRole != currentRole && currentRole != "" {
+				flushBlocks()
+			}
+			currentRole = notifRole
+
+			// UserMessageChunk is not handled by mapACPSessionUpdate —
+			// extract text directly from the ACP notification.
+			if n.Update.UserMessageChunk != nil {
+				if text := n.Update.UserMessageChunk.Content.Text; text != nil && text.Text != "" {
+					ai.AccumulateBlock(&blocks, ai.StreamEvent{Type: "content", Content: text.Text})
+				}
+				continue
+			}
+
+			// Parse the SessionUpdate through the same pipeline used for
+			// live streaming (mapACPSessionUpdate → StreamEvent → AccumulateBlock)
+			ch := make(chan ai.StreamEvent, 64)
+			ai.MapACPSessionUpdateForTest(n.Update, ch)
+			close(ch)
+			for event := range ch {
+				// Skip non-content events (mode_update, config_update, etc.)
+				switch event.Type {
+				case "content", "thinking", "thinking_done", "tool_use", "tool_result", "warning", "error":
+					ai.AccumulateBlock(&blocks, event)
+				}
+			}
+		}
+		// Flush remaining blocks
+		flushBlocks()
 	}
 
 	// Batch insert replay messages to chat_history
-	if len(messages) > 0 {
-		for _, msg := range messages {
-			contentJSON, _ := json.Marshal(map[string]any{
-				"blocks": []map[string]any{{"type": "text", "text": msg.Content}},
-			})
-			_, err := service.DB.Exec(
-				"INSERT INTO chat_history (project_path, backend, session_id, role, content, streaming, indexed) VALUES (?, ?, ?, ?, ?, 0, 0)",
-				projectPath, msg.Backend, msg.SessionID, msg.Role, string(contentJSON),
-			)
-			if err != nil {
-				slog.Error("handler: failed to save LoadSession replay message", "error", err)
+	for _, msg := range messages {
+		_, err := service.DB.Exec(
+			"INSERT INTO chat_history (project_path, backend, session_id, role, content, streaming, indexed) VALUES (?, ?, ?, ?, ?, 0, 0)",
+			projectPath, agent.Backend, sessionID, msg.role, msg.content,
+		)
+		if err != nil {
+			slog.Error("handler: failed to save LoadSession replay message", "error", err)
+		}
+	}
+
+	// Set session title from first user message
+	for _, msg := range messages {
+		if msg.role == "user" {
+			title := service.ExtractPlainText(msg.content)
+			if title != "" {
+				if runes := []rune(title); len(runes) > 50 {
+					title = string(runes[:50]) + "..."
+				}
+				if err := service.UpdateSessionTitle(sessionID, title); err != nil {
+					slog.Warn("handler: failed to set title for acp-load session", "session_id", sessionID, "error", err)
+				}
 			}
+			break
 		}
 	}
 
@@ -219,29 +328,4 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sessionId": sessionID,
 	})
-}
-
-// convertACPSessionUpdateToMessages converts a single ACP SessionUpdate notification
-// into ClawBench chat messages for persistence.
-func convertACPSessionUpdateToMessages(n acp.SessionNotification, sessionID, backend string) []model.ChatMessage {
-	// Store the raw JSON of the update as an assistant message.
-	// The frontend will parse the full content when displaying the session.
-	// A more sophisticated conversion can extract individual message blocks
-	// (user/assistant/tool) from the SessionUpdate variants.
-	var messages []model.ChatMessage
-
-	role := "assistant"
-	if n.Update.UserMessageChunk != nil {
-		role = "user"
-	}
-
-	content, _ := json.Marshal(n.Update)
-	messages = append(messages, model.ChatMessage{
-		SessionID: sessionID,
-		Role:      role,
-		Content:   string(content),
-		Backend:   backend,
-	})
-
-	return messages
 }

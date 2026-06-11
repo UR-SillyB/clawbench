@@ -10,6 +10,7 @@ import (
 	"clawbench/internal/service"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- POST /api/ai/session/resume tests ---
@@ -201,4 +202,57 @@ func TestServeSessionResume_SessionCountLimit(t *testing.T) {
 	ServeSessionResume(w, req)
 
 	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+// --- findExistingACPSessions tests ---
+
+func TestFindExistingACPSessions_FindsActiveSession(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Insert a session with source_session_id = "acp:test-acp-123"
+	_, err := service.DB.Exec(
+		"INSERT INTO chat_sessions (id, project_path, backend, title, source_session_id) VALUES (?, ?, 'claude', 'Test', ?)",
+		"cb-session-1", env.ProjectDir, "acp:test-acp-123",
+	)
+	require.NoError(t, err)
+
+	result := findExistingACPSessions([]string{"test-acp-123", "test-acp-456"})
+	assert.True(t, result["acp:test-acp-123"], "should find existing session for test-acp-123")
+	assert.False(t, result["acp:test-acp-456"], "should not find session for test-acp-456")
+}
+
+func TestFindExistingACPSessions_FindsSoftDeletedSession(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Insert a soft-deleted session
+	_, err := service.DB.Exec(
+		"INSERT INTO chat_sessions (id, project_path, backend, title, source_session_id, deleted) VALUES (?, ?, 'claude', 'Deleted', ?, 1)",
+		"cb-session-deleted", env.ProjectDir, "acp:deleted-acp-123",
+	)
+	require.NoError(t, err)
+
+	result := findExistingACPSessions([]string{"deleted-acp-123"})
+	assert.True(t, result["acp:deleted-acp-123"], "should find soft-deleted session")
+}
+
+func TestFindExistingACPSessions_EmptyInput(t *testing.T) {
+	result := findExistingACPSessions(nil)
+	assert.Nil(t, result)
+
+	result = findExistingACPSessions([]string{})
+	assert.Nil(t, result)
+}
+
+func TestFindExistingACPSessions_NoMatches(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// No sessions in DB with these ACP session IDs
+	result := findExistingACPSessions([]string{"nonexistent-acp-1", "nonexistent-acp-2"})
+	assert.Empty(t, result)
+
+	// Suppress unused variable warning
+	_ = env
 }

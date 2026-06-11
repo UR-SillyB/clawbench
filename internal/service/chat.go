@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
+	"clawbench/internal/summarize"
 )
 
 // GetChatHistory retrieves all chat messages for a given project path, backend, and session.
@@ -138,6 +140,26 @@ func GetMessagesBySessionID(sessionID string) ([]model.ChatMessage, error) {
 	return scanMessages(rows, sessionID)
 }
 
+// ExtractPlainText extracts plain text from content that may be block-format JSON
+// (e.g. {"blocks":[{"type":"text","text":"hello"}]}) or plain text.
+// Returns the original content unchanged if it's not block-format JSON.
+func ExtractPlainText(content string) string {
+	if !strings.HasPrefix(content, `{"blocks":`) {
+		return content
+	}
+	var wrapper struct {
+		Blocks []model.ContentBlock `json:"blocks"`
+	}
+	if json.Unmarshal([]byte(content), &wrapper) != nil {
+		return content
+	}
+	text := summarize.ExtractTextFromBlocks(wrapper.Blocks)
+	if text == "" {
+		return content
+	}
+	return text
+}
+
 // AddChatMessage adds a message to the chat history for a given project path, backend, and session.
 func AddChatMessage(projectPath, backend, sessionID, role, content string, files []string, streaming bool, fallbackTitle string) (int64, error) {
 	// Guard: reject messages to soft-deleted sessions
@@ -183,7 +205,7 @@ func AddChatMessage(projectPath, backend, sessionID, role, content string, files
 		var count int
 		err = tx.QueryRow("SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sessionID).Scan(&count)
 		if err == nil && count == 1 {
-			title := content
+			title := ExtractPlainText(content)
 			if len(files) > 0 && title == "" {
 				title = fallbackTitle
 			}
@@ -598,6 +620,12 @@ func UpdateSessionSourceID(sessionID, sourceSessionID string) error {
 	return err
 }
 
+// UpdateSessionTitle updates the title of a chat session.
+func UpdateSessionTitle(sessionID, title string) error {
+	_, err := DB.Exec("UPDATE chat_sessions SET title = ? WHERE id = ?", title, sessionID)
+	return err
+}
+
 // DeleteSession soft-deletes a chat session.
 // Sets deleted=1 on the session record and updates updated_at so it serves as the deletion timestamp.
 // Messages in chat_history are NOT soft-deleted — session-level soft-delete is sufficient
@@ -969,6 +997,27 @@ func PurgeDeletedData(sessionIDs []string) (sessionsPurged int64, messagesPurged
 		return 0, 0, err
 	}
 	return sessionsPurged, messagesPurged, nil
+}
+
+// HardDeleteSession removes a session and all its associated data regardless
+// of deletion status. Used by ACP LoadSession to clean up existing sessions
+// before recreating them with fresh replay data.
+// Deletes in order: ai_raw_responses → chat_history → task_executions → chat_sessions.
+func HardDeleteSession(sessionID string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, _ = tx.Exec("DELETE FROM ai_raw_responses WHERE session_id = ?", sessionID)
+	_, _ = tx.Exec("DELETE FROM chat_history WHERE session_id = ?", sessionID)
+	_, _ = tx.Exec("DELETE FROM task_executions WHERE session_id = ?", sessionID)
+	_, err = tx.Exec("DELETE FROM chat_sessions WHERE id = ?", sessionID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // enrichMessagesWithSummaries populates the Summary field for assistant messages

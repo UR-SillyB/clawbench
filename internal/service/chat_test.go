@@ -278,6 +278,50 @@ func TestAddChatMessage_AutoTitleEmptyContentNoFiles(t *testing.T) {
 	assert.Equal(t, "NewSession", title)
 }
 
+func TestExtractPlainText_PlainText(t *testing.T) {
+	assert.Equal(t, "hello world", service.ExtractPlainText("hello world"))
+}
+
+func TestExtractPlainText_BlockJSON(t *testing.T) {
+	content := `{"blocks":[{"type":"text","text":"退出 plan","input":null,"done":false}]}`
+	assert.Equal(t, "退出 plan", service.ExtractPlainText(content))
+}
+
+func TestExtractPlainText_BlockJSONMultipleText(t *testing.T) {
+	content := `{"blocks":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}`
+	assert.Equal(t, "hello\n\nworld", service.ExtractPlainText(content))
+}
+
+func TestExtractPlainText_BlockJSONWithToolUse(t *testing.T) {
+	content := `{"blocks":[{"type":"text","text":"read the file"},{"type":"tool_use","name":"read","input":{}}]}`
+	assert.Equal(t, "read the file", service.ExtractPlainText(content))
+}
+
+func TestExtractPlainText_BlockJSONNoText(t *testing.T) {
+	content := `{"blocks":[{"type":"tool_use","name":"read","input":{}}]}`
+	// No text blocks → return original content
+	assert.Equal(t, content, service.ExtractPlainText(content))
+}
+
+func TestExtractPlainText_InvalidJSON(t *testing.T) {
+	content := `{"blocks":invalid}`
+	assert.Equal(t, content, service.ExtractPlainText(content))
+}
+
+func TestAddChatMessage_AutoTitleBlockFormat(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "New Session")
+
+	content := `{"blocks":[{"type":"text","text":"退出 plan","input":null,"done":false}]}`
+	_, err := service.AddChatMessage("/project", "claude", sid, "user", content, nil, false, "NewSession")
+	assert.NoError(t, err)
+
+	title, err := service.GetSessionTitle(sid)
+	assert.NoError(t, err)
+	assert.Equal(t, "退出 plan", title)
+}
+
 func TestAddChatMessage_WithFiles(t *testing.T) {
 	setupDB(t)
 
@@ -1387,6 +1431,51 @@ func TestPurgeDeletedData_NonExistentSessionID(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int64(0), sessionsPurged)
 	assert.Equal(t, int64(0), messagesPurged)
+}
+
+// ---------- HardDeleteSession ----------
+
+func TestHardDeleteSession_ActiveSession(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Active To HardDelete")
+	_, _ = service.AddChatMessage("/project", "claude", sid, "user", "msg1", nil, false, "NewSession")
+	_, _ = service.AddChatMessage("/project", "claude", sid, "assistant", "reply1", nil, false, "NewSession")
+	_, _ = service.DB.Exec("INSERT INTO ai_raw_responses (session_id, message_id, backend, raw_output) VALUES (?, 1, 'claude', 'raw')", sid)
+
+	err := service.HardDeleteSession(sid)
+	assert.NoError(t, err)
+
+	// Verify all data is gone
+	var count int
+	assert.NoError(t, service.DB.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE id = ?", sid).Scan(&count))
+	assert.Equal(t, 0, count, "session should be gone")
+	assert.NoError(t, service.DB.QueryRow("SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sid).Scan(&count))
+	assert.Equal(t, 0, count, "messages should be gone")
+	assert.NoError(t, service.DB.QueryRow("SELECT COUNT(*) FROM ai_raw_responses WHERE session_id = ?", sid).Scan(&count))
+	assert.Equal(t, 0, count, "raw responses should be gone")
+}
+
+func TestHardDeleteSession_SoftDeletedSession(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "SoftDeleted To HardDelete")
+	_, _ = service.AddChatMessage("/project", "claude", sid, "user", "msg1", nil, false, "NewSession")
+	_ = service.DeleteSession("/project", "claude", sid)
+
+	err := service.HardDeleteSession(sid)
+	assert.NoError(t, err)
+
+	var count int
+	assert.NoError(t, service.DB.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE id = ?", sid).Scan(&count))
+	assert.Equal(t, 0, count, "soft-deleted session should be gone after hard delete")
+}
+
+func TestHardDeleteSession_NonExistentSession(t *testing.T) {
+	setupDB(t)
+
+	err := service.HardDeleteSession("nonexistent-session-id")
+	assert.NoError(t, err, "hard-deleting non-existent session should not error")
 }
 
 // ---------- AddChatMessage guard against deleted session ----------

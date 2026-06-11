@@ -109,6 +109,7 @@ export default {
       untitled: '未命名会话',
       loadMore: '加载更多',
       loadFailed: '加载 ACP 会话失败',
+      sessionNotFound: '该会话在智能体端已不存在',
       justNow: '刚刚',
       minutesAgo: '{n}分钟前',
       hoursAgo: '{n}小时前',

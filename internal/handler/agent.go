@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
@@ -397,8 +399,68 @@ func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter out ACP sessions that already exist in ClawBench's session manager.
+	// Each loaded ACP session has source_session_id = "acp:{acpSessionId}".
+	// Active sessions: user already has this conversation — don't show it.
+	// Soft-deleted sessions: will be hard-deleted and recreated on load,
+	// so also don't show them to avoid confusion.
+	if len(sessions) > 0 {
+		acpSessionIDs := make([]string, len(sessions))
+		for i, s := range sessions {
+			acpSessionIDs[i] = string(s.SessionId)
+		}
+		existingACP := findExistingACPSessions(acpSessionIDs)
+		filtered := make([]acp.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if !existingACP["acp:"+string(s.SessionId)] {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions":   sessions,
 		"nextCursor": nextCursor,
 	})
+}
+
+// findExistingACPSessions returns a set of source_session_id values
+// (formatted as "acp:{acpSessionId}") for ACP sessions that already
+// exist in ClawBench's session manager (active or soft-deleted).
+// This is used to filter out already-loaded sessions from the ACP
+// session list displayed in the @resume drawer.
+func findExistingACPSessions(acpSessionIDs []string) map[string]bool {
+	if len(acpSessionIDs) == 0 {
+		return nil
+	}
+	// Build IN clause placeholders
+	placeholders := ""
+	sourceIDs := make([]any, len(acpSessionIDs))
+	for i, sid := range acpSessionIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		sourceIDs[i] = "acp:" + sid
+	}
+
+	result := make(map[string]bool)
+	rows, err := service.DBRead.Query(
+		"SELECT source_session_id FROM chat_sessions WHERE source_session_id IN ("+placeholders+")",
+		sourceIDs...,
+	)
+	if err != nil {
+		slog.Warn("handler: failed to query existing ACP sessions for filtering", "error", err)
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sourceID string
+		if err := rows.Scan(&sourceID); err == nil {
+			result[sourceID] = true
+		}
+	}
+	return result
 }

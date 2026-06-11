@@ -425,6 +425,20 @@ func isUnknownConfigOption(err error) bool {
 	return strings.Contains(reqErr.Error(), "Unknown config option")
 }
 
+// IsACPResourceNotFound checks whether the error indicates the ACP agent
+// could not find the requested resource (e.g., session no longer exists).
+// These errors have code -32002 with "Resource not found" in the message.
+func IsACPResourceNotFound(err error) bool {
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) {
+		return strings.Contains(err.Error(), "Resource not found")
+	}
+	if reqErr.Code == -32002 && strings.Contains(reqErr.Message, "Resource not found") {
+		return true
+	}
+	return strings.Contains(reqErr.Error(), "Resource not found")
+}
+
 // buildPromptBlocks constructs ACP ContentBlock list from the chat request.
 // If a system prompt should be injected, it's prepended as the first text block.
 func (b *ACPBackend) buildPromptBlocks(req ChatRequest) []acp.ContentBlock {
