@@ -173,11 +173,14 @@ func DeleteSession(w http.ResponseWriter, r *http.Request) {
 
 	// Close the ACP connection for this session before soft-delete
 	// (GetSessionAgentID queries WHERE deleted=0, so we must read it first)
+	// Run in a goroutine because CloseConn calls cmd.Wait() which can
+	// block indefinitely if the agent subprocess doesn't exit cleanly,
+	// preventing the HTTP response from being sent.
 	agentID := service.GetSessionAgentID(sessionID)
 	if agentID != "" {
 		if agent, ok := model.Agents[agentID]; ok && agent.SupportsACP() {
 			slog.Info("acp: closing connection for deleted session", "session_id", sessionID, "agent_id", agentID)
-			ai.GetACPConnManager().CloseConn(sessionID)
+			go ai.GetACPConnManager().CloseConn(sessionID)
 		}
 	}
 
