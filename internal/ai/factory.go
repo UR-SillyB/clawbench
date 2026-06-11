@@ -63,18 +63,18 @@ func NewBackendForAgentWithTransport(backendType, agentID, transportOverride str
 			if effectiveTransport == "" {
 				effectiveTransport = agent.Transport
 			}
-		if effectiveTransport == "acp-stdio" {
-			if agent.SupportsACP() {
-				acpBackend, err := NewACPBackend(agent)
-				if err != nil {
-					return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)
+			if effectiveTransport == "acp-stdio" {
+				if agent.SupportsACP() {
+					acpBackend, err := NewACPBackend(agent)
+					if err != nil {
+						return nil, fmt.Errorf("acp backend for agent %q: %w", agentID, err)
+					}
+					return acpBackend, nil
 				}
-				return acpBackend, nil
+				// transport override says acp-stdio but agent doesn't support it;
+				// fall through to CLI backend instead of erroring out.
+				slog.Warn("agent does not support acp-stdio transport, falling back to CLI", "agentID", agentID)
 			}
-			// transport override says acp-stdio but agent doesn't support it;
-			// fall through to CLI backend instead of erroring out.
-			slog.Warn("agent does not support acp-stdio transport, falling back to CLI", "agentID", agentID)
-		}
 		}
 	}
 

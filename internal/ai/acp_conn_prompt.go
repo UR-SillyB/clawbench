@@ -62,7 +62,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 		if cfg.value == "" {
 			continue
 		}
-		if err := c.setConfigOptionWithCrashCheck(ctx, acpSID, cfg, streamCh); err != nil {
+		if err := c.setConfigOptionWithCrashCheck(ctx, acpSID, cfg); err != nil {
 			return err
 		}
 	}
@@ -110,7 +110,7 @@ func (c *ACPConn) Prompt(ctx context.Context, prompt []acp.ContentBlock, streamC
 // setConfigOptionWithCrashCheck sets a config option, checking whether it killed
 // the connection. Returns a configKilledConnectionError if the connection died
 // after the call, so the caller can skip that config on retry.
-func (c *ACPConn) setConfigOptionWithCrashCheck(ctx context.Context, acpSID string, cfg configOptionSpec, streamCh chan<- StreamEvent) error {
+func (c *ACPConn) setConfigOptionWithCrashCheck(ctx context.Context, acpSID string, cfg configOptionSpec) error {
 	if !c.shouldSetConfig(cfg.configID, cfg.value) {
 		slog.Debug("acp conn: set_config_option skipped (unchanged)",
 			"config_id", cfg.configID, "value", cfg.value,

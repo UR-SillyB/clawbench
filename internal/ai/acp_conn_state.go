@@ -19,13 +19,13 @@ import (
 // sessionStateExtracted holds extracted state from an ACP session response.
 // Used by CacheNewSessionState and MergeResumedSessionState to share extraction logic.
 type sessionStateExtracted struct {
-	modes         []ModeDef
-	modeCurrentID string
-	configState   *ConfigOptionState
-	efforts       []ThinkingEffortDef
+	modes           []ModeDef
+	modeCurrentID   string
+	configState     *ConfigOptionState
+	efforts         []ThinkingEffortDef
 	effortCurrentID string
-	models        []model.AgentModel
-	modelCurrentID string
+	models          []model.AgentModel
+	modelCurrentID  string
 }
 
 // CacheNewSessionState extracts and caches mode/config/thinking/model state from
