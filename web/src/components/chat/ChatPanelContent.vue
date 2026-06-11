@@ -542,9 +542,9 @@ function handleSwitchTransport(transport) {
   }
 }
 
-function handleAcpSessionLoaded(sessionId) {
+async function handleAcpSessionLoaded(sessionId) {
   // After ACP LoadSession, switch to the new session (reuse existing switchSession logic)
-  manager.switchSession(sessionId)
+  await manager.switchSession(sessionId)
 }
 
 /** Persist session-scoped settings (mode, thinkingEffort, model, transport)

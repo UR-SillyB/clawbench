@@ -255,13 +255,12 @@ export function useChatSession(options: UseChatSessionOptions) {
           clearTimeout(recoverTimer)
           if (recoverCtrl.signal.aborted) {
             // Timeout — bail without error toast, let retry handle it
-            switching.value = false
             return
           }
           throw e
         }
         clearTimeout(recoverTimer)
-        if (loadHistorySeq !== mySeq) { switching.value = false; return }
+        if (loadHistorySeq !== mySeq) { return }
         if (recoverResp.ok) {
           const recoverData = await recoverResp.json()
           if (recoverData.sessionId) {
@@ -280,7 +279,6 @@ export function useChatSession(options: UseChatSessionOptions) {
         }
         // If recovery still yields no session, bail — createSession will handle it
         if (!currentSessionId.value) {
-          switching.value = false
           return
         }
       }
@@ -294,31 +292,26 @@ export function useChatSession(options: UseChatSessionOptions) {
         clearTimeout(fetchTimer)
         if (fetchCtrl.signal.aborted) {
           // Timeout — bail without error toast
-          switching.value = false
-          loadHistoryInProgress = false
-          resolveDeferred!()
-          loadHistoryDeferred = null
           return
         }
         throw e
       }
       clearTimeout(fetchTimer)
       // If another loadHistory or switchSession started while we were fetching, discard our results
-      if (loadHistorySeq !== mySeq) { switching.value = false; return }
+      if (loadHistorySeq !== mySeq) { return }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}))
         throw new Error(errData.error || gt('chat.session.requestFailed', { status: resp.status }))
       }
       const data = await resp.json()
       // Re-check after JSON parse (another async boundary)
-      if (loadHistorySeq !== mySeq) { switching.value = false; return }
+      if (loadHistorySeq !== mySeq) { return }
       const rawMsgs = data.messages || []
 
       // Change detection: if skipIfUnchanged and data matches last snapshot, do nothing.
       // Always refresh when session is running (SSE events may have been dropped).
       const newSnapshot = buildMessageSnapshot(rawMsgs)
       if (skipIfUnchanged && newSnapshot === lastMessageSnapshot && !data.running) {
-        switching.value = false
         return
       }
       lastMessageSnapshot = newSnapshot
@@ -420,7 +413,6 @@ export function useChatSession(options: UseChatSessionOptions) {
       console.error('Failed to load chat history:', err)
       const _msg = err instanceof Error ? err.message : ''
       toast.show(_msg ? gt('chat.session.loadHistoryFailedDetail', { error: _msg }) : gt('chat.session.loadHistoryFailed'), { icon: '⚠️', type: 'error' })
-      switching.value = false
       loadHistoryInProgress = false
       if (pendingReload) {
         const next = pendingReload
@@ -435,6 +427,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       // exit path (early returns via loadHistorySeq guard, etc.) so callers
       // aren't stuck awaiting and future loadHistory calls aren't blocked.
       loadHistoryInProgress = false
+      switching.value = false
       if (loadHistoryDeferred) {
         resolveDeferred!()
         loadHistoryDeferred = null
