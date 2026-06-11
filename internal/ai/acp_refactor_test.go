@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -970,6 +971,9 @@ func TestRefactor_BuildPromptBlocks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRefactor_ReadProcStatus_InvalidPid(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("skipping: /proc only available on Linux (current: %s)", runtime.GOOS)
+	}
 	// A very high PID almost certainly doesn't exist
 	ppid, rss, err := readProcStatus(999999999)
 	assert.Error(t, err)
@@ -1575,7 +1579,7 @@ func TestRefactor_ACPConnManager_GetCachedStateByAgentID(t *testing.T) {
 		stopSweep: make(chan struct{}),
 	}
 
-	// No capabilities registered → empty state
+	// No agentCapabilities registered → empty state
 	state := mgr.GetCachedStateByAgentID("nonexistent")
 	assert.Equal(t, ACPCachedState{}, state)
 }
@@ -2578,10 +2582,10 @@ func TestRefactor_AgentCapabilityRegistry_Merge(t *testing.T) {
 		reg.Update(agentID, &AgentCapability{
 			AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
 		})
-		cap := reg.Get(agentID)
-		assert.NotNil(t, cap)
-		assert.Len(t, cap.AvailableModes, 1, "modes should be preserved during merge")
-		assert.Len(t, cap.AvailableThinkingEfforts, 1, "efforts should be added during merge")
+		agentCap := reg.Get(agentID)
+		assert.NotNil(t, agentCap)
+		assert.Len(t, agentCap.AvailableModes, 1, "modes should be preserved during merge")
+		assert.Len(t, agentCap.AvailableThinkingEfforts, 1, "efforts should be added during merge")
 	})
 
 	t.Run("merge_overwrites_non_empty", func(t *testing.T) {
@@ -2592,8 +2596,8 @@ func TestRefactor_AgentCapabilityRegistry_Merge(t *testing.T) {
 		reg.Update(agentID, &AgentCapability{
 			AvailableModes: []ModeDef{{ID: "ask"}, {ID: "architect"}},
 		})
-		cap := reg.Get(agentID)
-		assert.Len(t, cap.AvailableModes, 2, "modes should be overwritten during merge")
+		agentCap := reg.Get(agentID)
+		assert.Len(t, agentCap.AvailableModes, 2, "modes should be overwritten during merge")
 	})
 
 	t.Run("merge_does_not_overwrite_empty", func(t *testing.T) {
@@ -2606,8 +2610,8 @@ func TestRefactor_AgentCapabilityRegistry_Merge(t *testing.T) {
 		reg.Update(agentID, &AgentCapability{
 			AvailableThinkingEfforts: []ThinkingEffortDef{{ID: "high"}},
 		})
-		cap := reg.Get(agentID)
-		assert.Len(t, cap.AvailableCommands, 1, "commands should be preserved when update has empty commands")
+		agentCap := reg.Get(agentID)
+		assert.Len(t, agentCap.AvailableCommands, 1, "commands should be preserved when update has empty commands")
 	})
 }
 
@@ -2620,8 +2624,8 @@ func TestRefactor_AgentCapabilityRegistry_ForceUpdate(t *testing.T) {
 			AvailableModes: []ModeDef{{ID: "code"}},
 		})
 		assert.True(t, applied, "first ForceUpdate should be applied")
-		cap := reg.Get(agentID)
-		assert.Len(t, cap.AvailableModes, 1)
+		agentCap := reg.Get(agentID)
+		assert.Len(t, agentCap.AvailableModes, 1)
 	})
 
 	t.Run("second_update_skipped", func(t *testing.T) {
@@ -2629,9 +2633,9 @@ func TestRefactor_AgentCapabilityRegistry_ForceUpdate(t *testing.T) {
 			AvailableModes: []ModeDef{{ID: "ask"}},
 		})
 		assert.False(t, applied, "second ForceUpdate should be skipped (already refreshed)")
-		cap := reg.Get(agentID)
-		assert.Len(t, cap.AvailableModes, 1, "modes should not change after skipped update")
-		assert.Equal(t, "code", cap.AvailableModes[0].ID)
+		agentCap := reg.Get(agentID)
+		assert.Len(t, agentCap.AvailableModes, 1, "modes should not change after skipped update")
+		assert.Equal(t, "code", agentCap.AvailableModes[0].ID)
 	})
 
 	t.Run("mark_stale_allows_new_update", func(t *testing.T) {
@@ -2640,9 +2644,9 @@ func TestRefactor_AgentCapabilityRegistry_ForceUpdate(t *testing.T) {
 			AvailableModes: []ModeDef{{ID: "architect"}},
 		})
 		assert.True(t, applied, "ForceUpdate after MarkStale should be applied")
-		cap := reg.Get(agentID)
-		assert.Len(t, cap.AvailableModes, 1)
-		assert.Equal(t, "architect", cap.AvailableModes[0].ID)
+		agentCap := reg.Get(agentID)
+		assert.Len(t, agentCap.AvailableModes, 1)
+		assert.Equal(t, "architect", agentCap.AvailableModes[0].ID)
 	})
 }
 
@@ -2667,7 +2671,7 @@ func TestRefactor_AgentCapabilityRegistry_HasNewAvailableModes(t *testing.T) {
 	assert.False(t, reg.HasNewAvailableModes(agentID, []ModeDef{{ID: "code"}}), "same modes should not be new")
 	assert.True(t, reg.HasNewAvailableModes(agentID, []ModeDef{{ID: "ask"}}), "different mode should be new")
 	assert.False(t, reg.HasNewAvailableModes(agentID, nil), "nil should not be new when modes exist")
-	assert.True(t, reg.HasNewAvailableModes("no-agent", []ModeDef{{ID: "code"}}), "agent with no caps: any modes are new")
+	assert.True(t, reg.HasNewAvailableModes("no-agent", []ModeDef{{ID: "code"}}), "agent with no agentCaps: any modes are new")
 }
 
 func TestRefactor_AgentCapabilityRegistry_HasNewAvailableThinkingEfforts(t *testing.T) {
@@ -2691,6 +2695,9 @@ func TestRefactor_AgentCapabilityRegistry_SaveToDB(t *testing.T) {
 			LoadSession:              &v,
 			ListSessions:             &v,
 		}
+		// Verify all fields are set
+		assert.True(t, *agentCap.LoadSession)
+		assert.True(t, *agentCap.ListSessions)
 		// Verify marshal paths work (saveToDB calls json.Marshal internally)
 		modesJSON, _ := json.Marshal(agentCap.AvailableModes)
 		assert.Contains(t, string(modesJSON), "code")
@@ -2744,6 +2751,9 @@ func TestRefactor_CollectCrashDiagnostics_NoProcess(t *testing.T) {
 }
 
 func TestRefactor_CollectCrashDiagnostics_WithProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("skipping: /proc only available on Linux (current: %s)", runtime.GOOS)
+	}
 	if os.Getuid() == 0 {
 		t.Skip("skipping: test unreliable as root")
 	}
@@ -2766,11 +2776,14 @@ func TestRefactor_CollectCrashDiagnostics_WithProcess(t *testing.T) {
 	diag := conn.collectCrashDiagnostics()
 	// Uptime should be positive
 	assert.Greater(t, diag.Uptime, time.Duration(0))
-	// Stderr should be captured
+	// Stderr should be agentCaptured
 	assert.Contains(t, diag.StderrTail, "some stderr output")
 }
 
 func TestRefactor_ReadProcStatus(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("skipping: /proc only available on Linux (current: %s)", runtime.GOOS)
+	}
 	ppid, rss, err := readProcStatus(os.Getpid())
 	assert.NoError(t, err, "reading own /proc/status should succeed")
 	assert.Greater(t, ppid, 0, "PPid should be > 0")
@@ -2778,6 +2791,9 @@ func TestRefactor_ReadProcStatus(t *testing.T) {
 }
 
 func TestRefactor_ReadProcStatus_NonexistentPID(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("skipping: /proc only available on Linux (current: %s)", runtime.GOOS)
+	}
 	_, _, err := readProcStatus(99999999)
 	assert.Error(t, err, "nonexistent PID should return error")
 }
