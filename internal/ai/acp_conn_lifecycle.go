@@ -1,0 +1,527 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	acp "github.com/coder/acp-go-sdk"
+)
+
+// ---------------------------------------------------------------------------
+// ACPConn lifecycle — spawn, ensure alive, resume, session creation
+// ---------------------------------------------------------------------------
+
+// EnsureAlive ensures the connection has a live agent process and initialized
+// ACP connection, but does NOT create/resume a session. Used by ListSessions
+// which needs an alive connection but no session.
+func (c *ACPConn) EnsureAlive(ctx context.Context, cwd string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.alive && c.isAliveLocked() {
+		c.lastUsed = time.Now()
+		return nil
+	}
+
+	return c.spawnLocked(ctx)
+}
+
+// ListSessions calls the ACP ListSessions RPC on this connection's client.
+func (c *ACPConn) ListSessions(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+	c.mu.Lock()
+	if !c.alive || c.conn == nil {
+		c.mu.Unlock()
+		return nil, nil, fmt.Errorf("acp: connection not alive for ListSessions")
+	}
+	conn := c.conn
+	c.mu.Unlock()
+
+	req := acp.ListSessionsRequest{}
+	if cursor != nil {
+		req.Cursor = cursor
+	}
+	resp, err := conn.ListSessions(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acp: ListSessions: %w", err)
+	}
+	return resp.Sessions, resp.NextCursor, nil
+}
+
+// ensureAliveWithSession ensures the connection is alive and has a valid ACP session.
+// If the process is dead, it respawns and tries ResumeSession recovery, falling back to NewSession.
+// Returns isNew=true if a new ACP session was created, false if reusing or recovered.
+func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// If alive and already has a session, reuse
+	if c.alive && c.isAliveLocked() && c.acpSID != "" {
+		slog.Debug("acp conn: reusing existing connection", "clawbench_sid", c.clawbenchSID, "acp_sid", c.acpSID)
+		c.lastUsed = time.Now()
+		return false, nil
+	}
+
+	// Snapshot cached config state before spawn
+	prevConfig := c.snapshotCachedConfig()
+
+	// Save acpSID before spawnLocked clears it
+	preSpawnAcpSID := c.acpSID
+
+	// Need to spawn or respawn
+	spawnStart := time.Now()
+	if err := c.spawnLocked(ctx); err != nil {
+		return false, err
+	}
+	slog.Info("acp perf: ensureAliveWithSession.spawnLocked", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(spawnStart))
+
+	// LoadSession branch
+	if c.loadTargetSID != "" {
+		loadSID := c.loadTargetSID
+		c.loadTargetSID = "" // clear to prevent reuse on next call
+
+		loadCtx, loadCancel := context.WithTimeout(ctx, 60*time.Second)
+		defer loadCancel()
+
+		c.loadSessionActive.Store(true)
+		loadStart := time.Now()
+		loadResp, err := c.conn.LoadSession(loadCtx, acp.LoadSessionRequest{
+			SessionId:  acp.SessionId(loadSID),
+			Cwd:        cwd,
+			McpServers: []acp.McpServer{},
+		})
+		slog.Info("acp perf: ensureAliveWithSession.LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID, "elapsed", time.Since(loadStart), "error", err)
+
+		if err != nil {
+			c.alive = false
+			return false, fmt.Errorf("acp: session/load: %w", err)
+		}
+
+		c.acpSID = loadSID
+		c.lastLoadSessionResp = &loadResp
+		c.lastUsed = time.Now()
+		slog.Info("acp conn: loaded session via LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID)
+		return true, nil
+	}
+
+	// Try ResumeSession if we had a previous session
+	if preSpawnAcpSID != "" {
+		acpSID := preSpawnAcpSID
+		err := c.recoverViaResumeSession(ctx, cwd, acpSID, prevConfig)
+		if err == nil {
+			return false, nil // recovered successfully
+		}
+		slog.Warn("acp conn: ResumeSession failed, falling back to NewSession",
+			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
+		c.killProcessLocked()
+		if err := c.spawnLocked(ctx); err != nil {
+			return false, err
+		}
+	}
+
+	// No prior session (or ResumeSession failed) — create new session.
+	newSessCtx, newSessCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer newSessCancel()
+
+	newSessStart := time.Now()
+	sessResp, err := c.conn.NewSession(newSessCtx, acp.NewSessionRequest{
+		Cwd:        cwd,
+		McpServers: []acp.McpServer{},
+	})
+	slog.Info("acp perf: ensureAliveWithSession.NewSession", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(newSessStart), "error", err)
+	if err != nil {
+		c.alive = false
+		return false, fmt.Errorf("acp: session/new: %w", err)
+	}
+
+	c.acpSID = string(sessResp.SessionId)
+	c.lastNewSessionResp = &sessResp
+	c.lastUsed = time.Now()
+	slog.Info("acp conn: created new session", "clawbench_sid", c.clawbenchSID, "acp_sid", c.acpSID)
+	return true, nil
+}
+
+// cachedConfigSnapshot holds previously-set config values to re-apply after respawn.
+type cachedConfigSnapshot struct {
+	mode   string
+	model  string
+	effort string
+}
+
+// snapshotCachedConfig captures current session-level config values before a respawn.
+func (c *ACPConn) snapshotCachedConfig() cachedConfigSnapshot {
+	return cachedConfigSnapshot{
+		mode:   c.currentModeID,
+		model:  c.currentModelID,
+		effort: c.currentThinkingEffortID,
+	}
+}
+
+// recoverViaResumeSession recovers a session via ResumeSession and re-applies config.
+func (c *ACPConn) recoverViaResumeSession(ctx context.Context, cwd, acpSID string, prevConfig cachedConfigSnapshot) error {
+	resumeCtx, resumeCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer resumeCancel()
+
+	resumeStart := time.Now()
+	resumeResp, err := c.conn.ResumeSession(resumeCtx, acp.ResumeSessionRequest{
+		SessionId:  acp.SessionId(acpSID),
+		Cwd:        cwd,
+		McpServers: []acp.McpServer{},
+	})
+	slog.Info("acp perf: recoverViaResumeSession.ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "elapsed", time.Since(resumeStart), "error", err)
+	if err != nil {
+		slog.Error("acp conn: ResumeSession failed",
+			"clawbench_sid", c.clawbenchSID,
+			"acp_sid", acpSID,
+			"error", err)
+		c.alive = false
+		return fmt.Errorf("acp: ResumeSession failed for session %s: %w", acpSID, err)
+	}
+	c.acpSID = acpSID
+	c.lastResumeSessionResp = &resumeResp
+	c.lastUsed = time.Now()
+	slog.Info("acp conn: recovered session via ResumeSession", "clawbench_sid", c.clawbenchSID, "acp_sid", acpSID)
+
+	c.reapplyConfigAfterResume(ctx, acpSID, prevConfig)
+
+	return nil
+}
+
+// reapplyConfigAfterResume re-applies cached mode/model/thinking config after a ResumeSession.
+func (c *ACPConn) reapplyConfigAfterResume(ctx context.Context, acpSID string, prevConfig cachedConfigSnapshot) {
+	reapplyStart := time.Now()
+	c.reapplyConfigOption(ctx, acpSID, "mode", prevConfig.mode)
+	c.reapplyConfigOption(ctx, acpSID, "model", prevConfig.model)
+	c.reapplyConfigOption(ctx, acpSID, "thinkingEffort", prevConfig.effort)
+	slog.Info("acp perf: reapplyConfigAfterResume.total", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(reapplyStart),
+		"mode", prevConfig.mode, "model", prevConfig.model, "effort", prevConfig.effort)
+}
+
+// reapplyConfigOption sets a config option on the resumed session if the value is non-empty
+// and the connection is still alive. Called with c.mu held; temporarily unlocks for the RPC.
+func (c *ACPConn) reapplyConfigOption(ctx context.Context, acpSID, configID, value string) {
+	if value == "" || !c.alive || !c.isAliveLocked() {
+		return
+	}
+	reapplyStart := time.Now()
+	slog.Info("acp conn: reapplyConfigOption starting", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
+	c.mu.Unlock()
+	c.setSessionConfigOption(ctx, acpSID, configID, value)
+	c.mu.Lock()
+	slog.Info("acp conn: reapplyConfigOption done", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(reapplyStart))
+	if c.alive {
+		c.markConfigSet(configID, value)
+		slog.Info("acp conn: re-applied config after resume", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
+	}
+}
+
+// isAliveLocked checks if the connection is still alive (must hold c.mu).
+func (c *ACPConn) isAliveLocked() bool {
+	if c.conn == nil {
+		return false
+	}
+	select {
+	case <-c.conn.Done():
+		return false
+	default:
+		return true
+	}
+}
+
+// killProcessLocked kills the agent subprocess and waits for it to exit.
+// Must be called with c.mu held; temporarily releases c.mu during Wait().
+func (c *ACPConn) killProcessLocked() {
+	if c.cmd == nil || c.cmd.Process == nil {
+		return
+	}
+	_ = c.cmd.Process.Kill()
+	oldCmd := c.cmd
+	c.mu.Unlock()
+	_ = oldCmd.Wait()
+	c.mu.Lock()
+	if c.cmd == oldCmd {
+		c.cmd = nil
+	}
+	c.alive = false
+	c.conn = nil
+	c.client = nil
+	c.acpSID = ""
+}
+
+// spawnLocked spawns the agent process and initializes the connection (must hold c.mu).
+func (c *ACPConn) spawnLocked(ctx context.Context) error {
+	// Kill any existing process first
+	if c.cmd != nil && c.cmd.Process != nil {
+		killStart := time.Now()
+		if c.conn != nil && c.acpSID != "" {
+			cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = c.conn.Cancel(cancelCtx, acp.CancelNotification{SessionId: acp.SessionId(c.acpSID)})
+			cancelCancel()
+		}
+		_ = c.cmd.Process.Kill()
+		oldCmd := c.cmd
+		c.mu.Unlock()
+		_ = oldCmd.Wait()
+		c.mu.Lock()
+		slog.Info("acp perf: spawnLocked.kill_old_process", "clawbench_sid", c.clawbenchSID, "elapsed", time.Since(killStart))
+		if c.cmd == oldCmd {
+			c.cmd = nil
+		}
+	}
+
+	// Reset cached config values — the new process doesn't know about prior settings.
+	c.resetLastSetConfig()
+
+	cmdParts := strings.Fields(c.agent.AcpCommand)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("acp: no acp_command configured for agent %q", c.agent.ID)
+	}
+
+	cmdName := cmdParts[0]
+	cmdArgs := cmdParts[1:]
+
+	cmd := exec.CommandContext(context.Background(), cmdName, cmdArgs...)
+	cmd.Dir = "" // cwd is per-session, set during NewSession/ResumeSession
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, OrphanChildEnvVar)
+
+	if nodeOpts := os.Getenv("NODE_OPTIONS"); nodeOpts != "" {
+		cmd.Env = append(cmd.Env, "NODE_OPTIONS="+nodeOpts+" --report-on-fatalerror --report-on-signal --report-directory=/tmp/node-reports")
+	} else {
+		cmd.Env = append(cmd.Env, "NODE_OPTIONS=--report-on-fatalerror --report-on-signal --report-directory=/tmp/node-reports")
+	}
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("acp: stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("acp: stdout pipe: %w", err)
+	}
+	cmd.Stderr = &strings.Builder{}
+
+	spawnStart := time.Now()
+	slog.Info("acp conn: spawning agent process", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "command", cmdName, "args", cmdArgs)
+
+	if startErr := cmd.Start(); startErr != nil {
+		return fmt.Errorf("acp: start: %w", startErr)
+	}
+	slog.Info("acp perf: spawnLocked.cmd.Start", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "pid", cmd.Process.Pid, "elapsed", time.Since(spawnStart))
+
+	client := NewClawBenchACPClient()
+	client.connRef = c // back-reference for cache updates
+	conn := acp.NewClientSideConnection(client, stdinPipe, stdoutPipe)
+	conn.SetLogger(slog.Default())
+
+	initCtx, initCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer initCancel()
+
+	initStart := time.Now()
+	initResp, err := conn.Initialize(initCtx, acp.InitializeRequest{
+		ProtocolVersion: acp.ProtocolVersionNumber,
+		ClientCapabilities: acp.ClientCapabilities{
+			Fs: acp.FileSystemCapabilities{
+				ReadTextFile:  true,
+				WriteTextFile: true,
+			},
+			Terminal: true,
+		},
+		ClientInfo: &acp.Implementation{
+			Name:    "clawbench",
+			Version: "1.0.0",
+		},
+	})
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return fmt.Errorf("acp: initialize: %w", err)
+	}
+
+	slog.Info("acp perf: spawnLocked.Initialize", "agent_id", c.agent.ID, "clawbench_sid", c.clawbenchSID, "protocol_version", initResp.ProtocolVersion, "elapsed", time.Since(initStart))
+
+	// Extract LoadSession and ListSessions capabilities
+	if c.agent != nil && c.agent.ID != "" {
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateLoadSession(c.agent.ID, initResp.AgentCapabilities.LoadSession)
+		listSessions := initResp.AgentCapabilities.SessionCapabilities.List != nil
+		reg.UpdateListSessions(c.agent.ID, listSessions)
+		slog.Info("acp conn: extracted capabilities from Initialize",
+			"agent_id", c.agent.ID,
+			"loadSession", initResp.AgentCapabilities.LoadSession,
+			"listSessions", listSessions)
+	}
+
+	c.cmd = cmd
+	c.conn = conn
+	c.client = client
+	c.acpSID = "" // cleared on respawn — will be set by ensureAliveWithSession
+	c.alive = true
+	c.lastUsed = time.Now()
+	c.startedAt = time.Now()
+	c.cmdWaitOnce = sync.Once{}
+	c.cmdWaitState = nil
+
+	go c.watchProcessDeath()
+	return nil
+}
+
+// watchProcessDeath monitors the ACP connection and marks it as dead
+// when the agent process exits or the connection drops.
+func (c *ACPConn) watchProcessDeath() {
+	if c.conn == nil {
+		return
+	}
+	<-c.conn.Done()
+
+	c.mu.Lock()
+	if c.alive {
+		c.alive = false
+		if c.agent != nil && c.agent.ID != "" {
+			GetAgentCapabilityRegistry().MarkStale(c.agent.ID)
+		}
+	}
+	agentID := ""
+	if c.agent != nil {
+		agentID = c.agent.ID
+	}
+	c.mu.Unlock()
+
+	// Collect crash diagnostics outside the lock
+	diag := c.collectCrashDiagnostics()
+
+	if diag.ExitCode == 0 && diag.Signal == "" {
+		slog.Info("acp conn: agent process exited",
+			"agent_id", agentID,
+			"clawbench_sid", c.clawbenchSID,
+			"exit_code", diag.ExitCode,
+			"uptime", diag.Uptime.Round(time.Second),
+		)
+	} else {
+		slog.Error("acp conn: agent process died",
+			"agent_id", agentID,
+			"clawbench_sid", c.clawbenchSID,
+			"exit_code", diag.ExitCode,
+			"signal", diag.Signal,
+			"uptime", diag.Uptime.Round(time.Second),
+			"ppid", diag.ParentPID,
+			"rss_mb", diag.VMRSSKB/1024,
+			"fds", diag.FDCount,
+			"stderr_tail", diag.StderrTail,
+		)
+	}
+
+	c.resetLastSetConfig()
+}
+
+// CancelTurn cancels the current in-progress prompt turn.
+func (c *ACPConn) CancelTurn(ctx context.Context) {
+	c.mu.Lock()
+	conn := c.conn
+	acpSID := c.acpSID
+	c.mu.Unlock()
+
+	if conn != nil && acpSID != "" {
+		_ = conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(acpSID)})
+	}
+}
+
+// SetSessionConfigOption sets a config option for this session.
+// Also updates cached state so re-emitted SSE events reflect the new value.
+func (c *ACPConn) SetSessionConfigOption(ctx context.Context, configID, value string) {
+	if !c.shouldSetConfig(configID, value) {
+		slog.Debug("acp conn: SetSessionConfigOption skipped (unchanged)", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID)
+		return
+	}
+
+	c.mu.Lock()
+	acpSID := c.acpSID
+	c.mu.Unlock()
+
+	if acpSID == "" {
+		slog.Debug("acp conn: SetSessionConfigOption: no session", "clawbench_sid", c.clawbenchSID)
+		return
+	}
+
+	wasUnsupported := c.IsConfigUnsupported(configID)
+
+	c.setSessionConfigOption(ctx, acpSID, configID, value)
+
+	nowUnsupported := c.IsConfigUnsupported(configID)
+
+	if nowUnsupported {
+		return
+	}
+
+	_ = wasUnsupported
+
+	switch configID {
+	case "mode":
+		c.UpdateCachedCurrentMode(value)
+		c.markConfigSet("mode", value)
+	case "thinking_effort", "thought_level", "thinkingEffort":
+		c.UpdateCachedCurrentThinkingEffort(value)
+		c.markConfigSet("thinkingEffort", value)
+	case "model":
+		c.UpdateCachedCurrentModel(value)
+		c.markConfigSet("model", value)
+	}
+}
+
+// setSessionConfigOption sets a config option. Errors are logged but not fatal.
+func (c *ACPConn) setSessionConfigOption(ctx context.Context, acpSessionID, configID, value string) {
+	c.mu.Lock()
+	conn := c.conn
+	alive := c.alive && c.isAliveLocked()
+	c.mu.Unlock()
+
+	if conn == nil || !alive {
+		slog.Debug("acp conn: skipping set_config_option on dead connection", "config_id", configID, "value", value)
+		return
+	}
+
+	slog.Info("acp conn: sending set_config_option", "config_id", configID, "value", value, "clawbench_sid", c.clawbenchSID, "acp_sid", acpSessionID)
+
+	configCtx, configCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer configCancel()
+
+	_, err := conn.SetSessionConfigOption(configCtx, acp.SetSessionConfigOptionRequest{
+		ValueId: &acp.SetSessionConfigOptionValueId{
+			SessionId: acp.SessionId(acpSessionID),
+			ConfigId:  acp.SessionConfigId(configID),
+			Value:     acp.SessionConfigValueId(value),
+		},
+	})
+	if err != nil {
+		slog.Warn("acp conn: set_config_option failed", "config_id", configID, "value", value, "error", err)
+		if isUnknownConfigOption(err) {
+			c.lastSetConfigMu.Lock()
+			if c.unsupportedConfigs == nil {
+				c.unsupportedConfigs = make(map[string]bool)
+			}
+			c.unsupportedConfigs[configID] = true
+			c.lastSetConfigMu.Unlock()
+			slog.Info("acp conn: marking config as unsupported by agent", "config_id", configID, "value", value)
+		}
+		if isACPPeerDisconnected(err) {
+			c.mu.Lock()
+			c.alive = false
+			c.mu.Unlock()
+			slog.Info("acp conn: set_config_option detected peer disconnect, marking dead", "config_id", configID, "value", value)
+		}
+		if configCtx.Err() == context.DeadlineExceeded {
+			c.mu.Lock()
+			c.alive = false
+			c.mu.Unlock()
+			slog.Warn("acp conn: set_config_option timed out, marking connection dead",
+				"config_id", configID, "value", value,
+				"clawbench_sid", c.clawbenchSID, "acp_sid", acpSessionID)
+		}
+	} else {
+		slog.Info("acp conn: set_config_option completed", "config_id", configID, "value", value)
+	}
+}
