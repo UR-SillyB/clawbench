@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"clawbench/internal/ai"
 	"clawbench/internal/middleware"
@@ -200,6 +201,11 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("handler: failed to update source_session_id", "session_id", sessionID, "error", err)
 	}
 
+	// Set transport to acp-stdio for ACP-loaded sessions
+	if err := service.UpdateSessionTransport(sessionID, "acp-stdio"); err != nil {
+		slog.Warn("handler: failed to update transport for acp-load session", "session_id", sessionID, "error", err)
+	}
+
 	// Load ACP session via connection manager
 	mgr := ai.GetACPConnManager()
 	conn, err := mgr.GetOrCreateConnForLoad(r.Context(), agent, sessionID, req.AcpSessionID, projectPath)
@@ -221,6 +227,9 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	// Collect replayed messages from the buffer and parse through
 	// mapACPSessionUpdate to produce properly structured content blocks
 	// (same pipeline as live streaming), instead of storing raw ACP JSON.
+	// Some ACP agents (e.g., OpenCode) send replay notifications AFTER the
+	// LoadSession RPC response returns. Wait briefly for late notifications
+	// before reading the buffer.
 	client := conn.GetClient()
 	type persistedMessage struct {
 		role    string
@@ -228,6 +237,11 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var messages []persistedMessage
 	if client != nil {
+		// Wait for late-arriving SessionUpdate notifications.
+		// Some ACP agents replay history via notifications that arrive
+		// after the LoadSession RPC response. A short delay ensures
+		// these are captured before we read the buffer.
+		time.Sleep(500 * time.Millisecond)
 		buf := client.GetAndClearLoadSessionBuf()
 
 		// Accumulate blocks across notifications, splitting on role boundaries.
@@ -291,6 +305,10 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		// Flush remaining blocks
 		flushBlocks()
 	}
+
+	// Now that the buffer has been read, clear loadSessionActive so future
+	// SessionUpdate notifications are routed normally (to SSE or dropped).
+	conn.ClearLoadSessionActive()
 
 	// Batch insert replay messages to chat_history
 	for _, msg := range messages {

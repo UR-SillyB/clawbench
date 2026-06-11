@@ -361,6 +361,14 @@ func (c *ACPConn) GetAndClearLoadSessionResp() *acp.LoadSessionResponse {
 	return resp
 }
 
+// ClearLoadSessionActive sets loadSessionActive to false after the handler
+// has read the replay buffer. This must be called by ServeACPLoadSession
+// after GetAndClearLoadSessionBuf(), because some ACP agents send replay
+// notifications AFTER the LoadSession RPC response returns.
+func (c *ACPConn) ClearLoadSessionActive() {
+	c.loadSessionActive.Store(false)
+}
+
 // GetConn returns the ACPConn for the given ClawBench session ID.
 // Returns nil if no connection exists.
 func (m *ACPConnManager) GetConn(clawbenchSID string) *ACPConn {
@@ -750,7 +758,11 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 			McpServers: []acp.McpServer{},
 		})
 		slog.Info("acp perf: ensureAliveWithSession.LoadSession", "clawbench_sid", c.clawbenchSID, "acp_sid", loadSID, "elapsed", time.Since(loadStart), "error", err)
-		c.loadSessionActive.Store(false)
+		// NOTE: Do NOT set loadSessionActive=false here. Some ACP agents (e.g., OpenCode)
+		// send SessionUpdate replay notifications AFTER the LoadSession RPC response returns.
+		// Keeping loadSessionActive=true ensures these late notifications are captured in the
+		// buffer. The caller (ServeACPLoadSession) is responsible for clearing the flag after
+		// reading the buffer via ClearLoadSessionActive().
 
 		if err != nil {
 			c.alive = false
