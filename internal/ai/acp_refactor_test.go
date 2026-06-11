@@ -1823,7 +1823,7 @@ func TestRefactor_SetSessionConfigOption(t *testing.T) {
 // setSessionConfigOption (dead-connection paths)
 // ---------------------------------------------------------------------------
 
-func TestRefactor_SetSessionConfigOption_DeadConn(t *testing.T) {
+func TestRefactor_SetSessionConfigOption_DeadConnEarlyReturn(t *testing.T) {
 	agent := &model.Agent{ID: "test-setconfigopt-dead", Backend: "acp-stdio", AcpCommand: "echo"}
 
 	t.Run("dead_connection_skip", func(t *testing.T) {
@@ -2882,6 +2882,87 @@ func TestRefactor_AgentCapabilityRegistry_GetLoadSessionListSessions(t *testing.
 }
 
 func ptrBool(v bool) *bool { return &v }
+
+// ---------------------------------------------------------------------------
+// setSessionConfigOption dead connection path
+// ---------------------------------------------------------------------------
+
+func TestRefactor_SetSessionConfigOption_DeadConn(t *testing.T) {
+	agent := &model.Agent{ID: "test-dead-conn-cfg", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-dead-conn-cfg")
+	// Connection is not alive — setSessionConfigOption should skip
+	conn.setSessionConfigOption(context.Background(), "test-sid", "mode", "code")
+	// Should not panic or block
+}
+
+func TestRefactor_ReapplyConfigOption_EmptyValue(t *testing.T) {
+	agent := &model.Agent{ID: "test-reapply-empty", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-reapply-empty")
+	// Empty value — reapplyConfigOption should return early
+	conn.mu.Lock()
+	conn.reapplyConfigOption(context.Background(), "test-sid", "mode", "")
+	conn.mu.Unlock()
+}
+
+func TestRefactor_ReapplyConfigOption_DeadConn(t *testing.T) {
+	agent := &model.Agent{ID: "test-reapply-dead", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-reapply-dead")
+	// alive=false — reapplyConfigOption should return early
+	conn.mu.Lock()
+	conn.reapplyConfigOption(context.Background(), "test-sid", "mode", "code")
+	conn.mu.Unlock()
+}
+
+func TestRefactor_ReapplyConfigOption_AliveConn(t *testing.T) {
+	agent := &model.Agent{ID: "test-reapply-alive", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-reapply-alive")
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest("test-reapply-alive", "acp-sid-reapply")
+	// alive=true — reapplyConfigOption should call setSessionConfigOption
+	conn.mu.Lock()
+	conn.reapplyConfigOption(context.Background(), "acp-sid-reapply", "mode", "code")
+	conn.mu.Unlock()
+	// The setSessionConfigOption call will fail (no real ACP agent), but the path is covered
+}
+
+func TestRefactor_ReapplyConfigAfterResume(t *testing.T) {
+	agent := &model.Agent{ID: "test-reapply-after-resume", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-reapply-after-resume")
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest("test-reapply-after-resume", "acp-sid-resume")
+	// Call reapplyConfigAfterResume which calls reapplyConfigOption for mode, model, effort
+	conn.mu.Lock()
+	conn.reapplyConfigAfterResume(context.Background(), "acp-sid-resume", cachedConfigSnapshot{
+		mode:   "code",
+		model:  "gpt-4",
+		effort: "high",
+	})
+	conn.mu.Unlock()
+}
+
+func TestRefactor_RecoverViaResumeSession_AliveConn(t *testing.T) {
+	agent := &model.Agent{ID: "test-recover-resume", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-recover-resume")
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest("test-recover-resume", "acp-sid-recover")
+	// recoverViaResumeSession will try RPC ResumeSession which will fail
+	// (pipe-based connection), but the call path is exercised
+	conn.mu.Lock()
+	err := conn.recoverViaResumeSession(context.Background(), "/tmp", "acp-sid-recover", cachedConfigSnapshot{
+		mode: "code",
+	})
+	conn.mu.Unlock()
+	// Should return error since the pipe-based connection can't handle RPC
+	assert.Error(t, err)
+}
+
+func TestRefactor_SetSessionConfigOption_NoAcpSID(t *testing.T) {
+	agent := &model.Agent{ID: "test-no-acpsid", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-no-acpsid")
+	// acpSID is empty — SetSessionConfigOption should skip
+	conn.SetSessionConfigOption(context.Background(), "mode", "code")
+	assert.Equal(t, "", conn.GetCurrentModeID(), "mode should not change without acpSID")
+}
 
 // ---------------------------------------------------------------------------
 // drainStreamEvents helper
