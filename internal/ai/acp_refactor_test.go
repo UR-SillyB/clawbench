@@ -2799,6 +2799,91 @@ func TestRefactor_ReadProcStatus_NonexistentPID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// AgentCapabilityRegistry — additional coverage for persist, LoadSession/ListSessions merge
+// ---------------------------------------------------------------------------
+
+func TestRefactor_AgentCapabilityRegistry_MergeLoadSessionListSessions(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-merge-ls-" + t.Name()
+
+	t.Run("merge_load_session", func(t *testing.T) {
+		v := true
+		reg.Update(agentID, &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+		reg.Update(agentID, &AgentCapability{LoadSession: &v})
+		agentCap := reg.Get(agentID)
+		assert.NotNil(t, agentCap.LoadSession)
+		assert.True(t, *agentCap.LoadSession)
+	})
+
+	t.Run("merge_list_sessions", func(t *testing.T) {
+		v2 := true
+		reg.Update(agentID, &AgentCapability{ListSessions: &v2})
+		agentCap := reg.Get(agentID)
+		assert.NotNil(t, agentCap.ListSessions)
+		assert.True(t, *agentCap.ListSessions)
+	})
+
+	t.Run("merge_nil_does_not_overwrite", func(t *testing.T) {
+		agentCap1 := reg.Get(agentID)
+		assert.NotNil(t, agentCap1.LoadSession, "LoadSession should still be set before nil merge")
+		// Update with nil LoadSession should NOT clear existing
+		reg.Update(agentID, &AgentCapability{AvailableModes: []ModeDef{{ID: "ask"}}})
+		agentCap2 := reg.Get(agentID)
+		assert.NotNil(t, agentCap2.LoadSession, "LoadSession should be preserved after nil merge")
+	})
+}
+
+func TestRefactor_AgentCapabilityRegistry_PersistAsync_NilDB(t *testing.T) {
+	// When dbHolder.db is nil, persistAsync should return early without error
+	reg := GetAgentCapabilityRegistry()
+	// Ensure DB is nil
+	SetRegistryDB(nil)
+	agentID := "test-persist-nil-db-" + t.Name()
+	// This should not panic
+	reg.Update(agentID, &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+}
+
+func TestRefactor_AgentCapabilityRegistry_MergeNilExisting(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-merge-nil-existing-" + t.Name()
+	// Update on non-existing agent should set it directly (not merge)
+	reg.Update(agentID, &AgentCapability{AvailableModes: []ModeDef{{ID: "code"}}})
+	agentCap := reg.Get(agentID)
+	assert.NotNil(t, agentCap)
+	assert.Len(t, agentCap.AvailableModes, 1)
+}
+
+func TestRefactor_AgentCapabilityRegistry_GetModeState_NilAgent(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	ms := reg.GetModeState("no-such-agent", "code")
+	assert.Nil(t, ms, "non-existent agent should return nil mode state")
+}
+
+func TestRefactor_AgentCapabilityRegistry_GetLoadSessionListSessions(t *testing.T) {
+	reg := GetAgentCapabilityRegistry()
+	agentID := "test-get-ls-" + t.Name()
+
+	t.Run("not_set", func(t *testing.T) {
+		assert.False(t, reg.GetLoadSession(agentID))
+		assert.False(t, reg.GetListSessions(agentID))
+	})
+
+	t.Run("set_true", func(t *testing.T) {
+		reg.Update(agentID, &AgentCapability{LoadSession: ptrBool(true), ListSessions: ptrBool(true)})
+		assert.True(t, reg.GetLoadSession(agentID))
+		assert.True(t, reg.GetListSessions(agentID))
+	})
+
+	t.Run("set_false", func(t *testing.T) {
+		reg.Update(agentID, &AgentCapability{LoadSession: ptrBool(false), ListSessions: ptrBool(false)})
+		assert.False(t, reg.GetLoadSession(agentID))
+		assert.False(t, reg.GetListSessions(agentID))
+	})
+}
+
+func ptrBool(v bool) *bool { return &v }
+
+// ---------------------------------------------------------------------------
 // drainStreamEvents helper
 // ---------------------------------------------------------------------------
 
