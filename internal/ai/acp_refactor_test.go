@@ -1188,3 +1188,455 @@ func TestRefactor_OrphanChildEnvVar(t *testing.T) {
 	assert.Equal(t, "CLAWBENCH_CHILD=1", OrphanChildEnvVar)
 	assert.True(t, strings.Contains(OrphanChildEnvVar, "CLAWBENCH_CHILD"))
 }
+
+// ---------------------------------------------------------------------------
+// NewACPBackend
+// ---------------------------------------------------------------------------
+
+func TestRefactor_NewACPBackend(t *testing.T) {
+	t.Run("success_with_acp_support", func(t *testing.T) {
+		agent := &model.Agent{ID: "acp-agent", Backend: "acp-stdio", AcpCommand: "echo hello"}
+		b, err := NewACPBackend(agent)
+		require.NoError(t, err)
+		assert.Equal(t, agent, b.agent)
+	})
+
+	t.Run("error_no_acp_support", func(t *testing.T) {
+		agent := &model.Agent{ID: "cli-agent", Backend: "claude", AcpCommand: ""}
+		b, err := NewACPBackend(agent)
+		assert.Nil(t, b)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "does not support acp-stdio transport")
+		assert.Contains(t, err.Error(), "cli-agent")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ACPBackend.Name()
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPBackend_Name(t *testing.T) {
+	agent := &model.Agent{ID: "test-name", Backend: "acp-claude", AcpCommand: "echo"}
+	b := &ACPBackend{agent: agent}
+	assert.Equal(t, "acp-claude", b.Name())
+}
+
+// ---------------------------------------------------------------------------
+// ACPConn state accessors (extended)
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPConn_StateAccessors(t *testing.T) {
+	agent := &model.Agent{ID: "test-state-accessors", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-state-accessors")
+
+	t.Run("AutoApprove", func(t *testing.T) {
+		assert.False(t, conn.IsAutoApprove())
+		conn.SetAutoApprove(true)
+		assert.True(t, conn.IsAutoApprove())
+		conn.SetAutoApprove(false)
+		assert.False(t, conn.IsAutoApprove())
+	})
+
+	t.Run("PlanState", func(t *testing.T) {
+		assert.Nil(t, conn.GetCachedPlanState())
+		plan := &PlanState{Entries: []PlanEntry{{Content: "do stuff", Priority: "high", Status: "in_progress"}}}
+		conn.SetCachedPlanState(plan)
+		got := conn.GetCachedPlanState()
+		require.NotNil(t, got)
+		require.Len(t, got.Entries, 1)
+		assert.Equal(t, "do stuff", got.Entries[0].Content)
+		conn.SetCachedPlanState(nil)
+		assert.Nil(t, conn.GetCachedPlanState())
+	})
+
+	t.Run("LoadSessionResp", func(t *testing.T) {
+		assert.Nil(t, conn.GetAndClearLoadSessionResp())
+	})
+
+	t.Run("NewSessionResp", func(t *testing.T) {
+		assert.Nil(t, conn.GetAndClearNewSessionResp())
+	})
+
+	t.Run("ResumeSessionResp", func(t *testing.T) {
+		assert.Nil(t, conn.GetAndClearResumeSessionResp())
+	})
+
+	t.Run("ProcessPID_no_process", func(t *testing.T) {
+		assert.Equal(t, 0, conn.ProcessPID())
+	})
+
+	t.Run("HasCurrentModeChanged", func(t *testing.T) {
+		conn.SetCurrentModeID("code")
+		assert.False(t, conn.HasCurrentModeChanged("code"))
+		assert.True(t, conn.HasCurrentModeChanged("ask"))
+	})
+
+	t.Run("UpdateCachedCurrentModel", func(t *testing.T) {
+		conn.UpdateCachedCurrentModel("gpt-4")
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+	})
+
+	t.Run("UpdateCachedCurrentMode", func(t *testing.T) {
+		conn.UpdateCachedCurrentMode("ask")
+		assert.Equal(t, "ask", conn.GetCurrentModeID())
+	})
+
+	t.Run("UpdateCachedCurrentThinkingEffort", func(t *testing.T) {
+		conn.UpdateCachedCurrentThinkingEffort("high")
+		assert.Equal(t, "high", conn.GetCurrentThinkingEffortID())
+	})
+
+	t.Run("ClearLoadSessionActive", func(t *testing.T) {
+		conn.loadSessionActive.Store(true)
+		assert.True(t, conn.loadSessionActive.Load())
+		conn.ClearLoadSessionActive()
+		assert.False(t, conn.loadSessionActive.Load())
+	})
+
+	t.Run("AgentID_nil_agent", func(t *testing.T) {
+		connNoAgent := newACPConn(nil, "no-agent")
+		assert.Equal(t, "", connNoAgent.AgentID())
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ACPConn.SetCachedModeState / SetCachedConfigState / SetCachedThinkingEffortState / SetCachedModelListState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPConn_SetCachedStates(t *testing.T) {
+	agent := &model.Agent{ID: "test-cached-states", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-cached-states")
+
+	t.Run("SetCachedModeState_nil", func(t *testing.T) {
+		conn.SetCachedModeState(nil)
+		assert.Equal(t, "", conn.GetCurrentModeID())
+	})
+
+	t.Run("SetCachedModeState_with_modes", func(t *testing.T) {
+		conn.SetCachedModeState(&ModeState{
+			CurrentModeID: "code",
+			AvailableModes: []ModeDef{
+				{ID: "ask", Name: "Ask"},
+				{ID: "code", Name: "Code"},
+			},
+		})
+		assert.Equal(t, "code", conn.GetCurrentModeID())
+	})
+
+	t.Run("SetCachedThinkingEffortState_nil", func(t *testing.T) {
+		conn.SetCachedThinkingEffortState(nil)
+	})
+
+	t.Run("SetCachedThinkingEffortState_with_levels", func(t *testing.T) {
+		conn.SetCachedThinkingEffortState(&ThinkingEffortState{
+			CurrentID: "high",
+			AvailableLevels: []ThinkingEffortDef{
+				{ID: "low", Name: "Low"},
+				{ID: "high", Name: "High"},
+			},
+		})
+		assert.Equal(t, "high", conn.GetCurrentThinkingEffortID())
+	})
+
+	t.Run("SetCachedModelListState_nil", func(t *testing.T) {
+		conn.SetCachedModelListState(nil)
+	})
+
+	t.Run("SetCachedModelListState_with_models", func(t *testing.T) {
+		conn.SetCachedModelListState(&ModelListState{
+			CurrentModelID: "gpt-4",
+			Models: []model.AgentModel{
+				{ID: "gpt-4", Name: "GPT-4"},
+			},
+		})
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+	})
+
+	t.Run("SetCachedConfigState_nil", func(t *testing.T) {
+		conn.SetCachedConfigState(nil)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ACPConnManager
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPConnManager_GetConn(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	// No connection → nil
+	assert.Nil(t, mgr.GetConn("nonexistent"))
+
+	// Add a connection → found
+	agent := &model.Agent{ID: "test-getconn", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-1")
+	mgr.conns["sid-1"] = conn
+	got := mgr.GetConn("sid-1")
+	assert.Equal(t, conn, got)
+}
+
+func TestRefactor_ACPConnManager_GetConnByAgentID(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	agent1 := &model.Agent{ID: "agent-1", Backend: "acp-stdio", AcpCommand: "echo"}
+	agent2 := &model.Agent{ID: "agent-2", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	conn1 := newACPConn(agent1, "sid-1")
+	conn1.alive = true
+	conn2 := newACPConn(agent2, "sid-2")
+	conn2.alive = false
+
+	mgr.conns["sid-1"] = conn1
+	mgr.conns["sid-2"] = conn2
+
+	// Only alive connections match
+	assert.Equal(t, conn1, mgr.GetConnByAgentID("agent-1"))
+	assert.Nil(t, mgr.GetConnByAgentID("agent-2")) // not alive
+	assert.Nil(t, mgr.GetConnByAgentID("nonexistent"))
+}
+
+func TestRefactor_ACPConnManager_MarkIdle(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	agent := &model.Agent{ID: "test-markidle", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-markidle")
+	oldTime := conn.lastUsed
+
+	mgr.conns["sid-markidle"] = conn
+
+	// MarkIdle updates lastUsed
+	mgr.MarkIdle("sid-markidle")
+	conn.mu.Lock()
+	newTime := conn.lastUsed
+	conn.mu.Unlock()
+	assert.True(t, newTime.After(oldTime), "lastUsed should be updated after MarkIdle")
+
+	// MarkIdle on nonexistent session is a no-op
+	mgr.MarkIdle("nonexistent") // should not panic
+}
+
+func TestRefactor_ACPConnManager_CloseConn(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	agent := &model.Agent{ID: "test-closeconn", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-close")
+
+	mgr.conns["sid-close"] = conn
+	mgr.CloseConn("sid-close")
+	assert.Nil(t, mgr.GetConn("sid-close"), "connection should be removed after CloseConn")
+
+	// CloseConn on nonexistent is a no-op
+	mgr.CloseConn("nonexistent") // should not panic
+}
+
+func TestRefactor_ACPConnManager_CancelTurn(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	// CancelTurn on nonexistent session is a no-op
+	mgr.CancelTurn("nonexistent") // should not panic
+
+	// CancelTurn on existing session calls conn.CancelTurn
+	agent := &model.Agent{ID: "test-cancelturn", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-cancel")
+	mgr.conns["sid-cancel"] = conn
+	mgr.CancelTurn("sid-cancel") // conn has no real client, but should not panic
+}
+
+func TestRefactor_ACPConnManager_StopAll(t *testing.T) {
+	stopSweep := make(chan struct{})
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: stopSweep,
+	}
+
+	agent := &model.Agent{ID: "test-stopall", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn1 := newACPConn(agent, "sid-1")
+	conn2 := newACPConn(agent, "sid-2")
+	mgr.conns["sid-1"] = conn1
+	mgr.conns["sid-2"] = conn2
+
+	mgr.StopAll()
+	assert.Empty(t, mgr.conns, "all connections should be removed after StopAll")
+
+	// Verify stopSweep channel is closed
+	select {
+	case <-stopSweep:
+		// Expected: channel is closed
+	default:
+		t.Error("stopSweep channel should be closed after StopAll")
+	}
+}
+
+func TestRefactor_ACPConnManager_SetConnForTest(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	agent := &model.Agent{ID: "test-setconn", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-injected")
+
+	mgr.SetConnForTest("sid-injected", conn)
+	got := mgr.GetConn("sid-injected")
+	assert.Equal(t, conn, got)
+}
+
+func TestRefactor_ACPConnManager_CloseConnsByAgentID(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	agent1 := &model.Agent{ID: "agent-close-1", Backend: "acp-stdio", AcpCommand: "echo"}
+	agent2 := &model.Agent{ID: "agent-close-2", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	conn1 := newACPConn(agent1, "sid-1")
+	conn2 := newACPConn(agent1, "sid-2")
+	conn3 := newACPConn(agent2, "sid-3")
+
+	mgr.conns["sid-1"] = conn1
+	mgr.conns["sid-2"] = conn2
+	mgr.conns["sid-3"] = conn3
+
+	mgr.CloseConnsByAgentID("agent-close-1")
+	assert.Nil(t, mgr.GetConn("sid-1"))
+	assert.Nil(t, mgr.GetConn("sid-2"))
+	assert.Equal(t, conn3, mgr.GetConn("sid-3"), "other agent connections should remain")
+}
+
+func TestRefactor_ACPConnManager_SetSessionRunningChecker(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	called := false
+	mgr.SetSessionRunningChecker(func(sessionID string) bool {
+		called = true
+		return sessionID == "running"
+	})
+	require.NotNil(t, mgr.isSessionRunning)
+	assert.True(t, mgr.isSessionRunning("running"))
+	assert.False(t, mgr.isSessionRunning("idle"))
+	assert.True(t, called)
+}
+
+func TestRefactor_ACPConnManager_GetCachedStateByClawbenchSID(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	// Nonexistent session → empty state
+	state := mgr.GetCachedStateByClawbenchSID("nonexistent")
+	assert.Equal(t, ACPCachedState{}, state)
+
+	// Session with nil agent → empty state
+	connNoAgent := newACPConn(nil, "sid-no-agent")
+	mgr.conns["sid-no-agent"] = connNoAgent
+	state = mgr.GetCachedStateByClawbenchSID("sid-no-agent")
+	assert.Equal(t, ACPCachedState{}, state)
+
+	// Session with agent → populated state from registry
+	agent := &model.Agent{ID: "test-cached-state", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "sid-cached")
+	conn.SetCurrentModeID("code")
+	mgr.conns["sid-cached"] = conn
+	state = mgr.GetCachedStateByClawbenchSID("sid-cached")
+	// The state may be empty if registry has no data for this agent,
+	// but the call should not panic
+	_ = state
+}
+
+func TestRefactor_ACPConnManager_GetCachedStateByAgentID(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	// No capabilities registered → empty state
+	state := mgr.GetCachedStateByAgentID("nonexistent")
+	assert.Equal(t, ACPCachedState{}, state)
+}
+
+func TestRefactor_ACPConnManager_GetCommandsByAgentID(t *testing.T) {
+	mgr := &ACPConnManager{
+		conns:     make(map[string]*ACPConn),
+		stopSweep: make(chan struct{}),
+	}
+
+	// No commands → empty
+	cmds := mgr.GetCommandsByAgentID("nonexistent")
+	assert.Empty(t, cmds)
+}
+
+// ---------------------------------------------------------------------------
+// ACPConn Close / KillProcessForTest
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPConn_Close(t *testing.T) {
+	agent := &model.Agent{ID: "test-close", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-close")
+	conn.alive = true
+	conn.acpSID = "acp-123"
+
+	conn.Close()
+	assert.False(t, conn.IsAlive())
+	assert.Equal(t, "", conn.AcpSID())
+}
+
+func TestRefactor_ACPConn_KillProcessForTest_NoProcess(t *testing.T) {
+	agent := &model.Agent{ID: "test-kill-noproc", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-kill-noproc")
+	err := conn.KillProcessForTest()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no process to kill")
+}
+
+// ---------------------------------------------------------------------------
+// ACPConn.HasNewAvailableModes / IsModeAvailable / HasNewAvailableThinkingEfforts / HasNewAvailableModels
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPConn_HasNewAvailableModes(t *testing.T) {
+	agent := &model.Agent{ID: "test-hasnewmodes", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-hasnewmodes")
+
+	// No modes in registry → all are "new"
+	assert.True(t, conn.HasNewAvailableModes([]ModeDef{{ID: "ask"}, {ID: "code"}}))
+}
+
+func TestRefactor_ACPConn_IsModeAvailable(t *testing.T) {
+	agent := &model.Agent{ID: "test-modeavail", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-modeavail")
+
+	assert.False(t, conn.IsModeAvailable("code"))
+}
+
+func TestRefactor_ACPConn_HasNewAvailableThinkingEfforts(t *testing.T) {
+	agent := &model.Agent{ID: "test-hasnewefforts", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-hasnewefforts")
+
+	assert.True(t, conn.HasNewAvailableThinkingEfforts([]ThinkingEffortDef{{ID: "high"}}))
+}
+
+func TestRefactor_ACPConn_HasNewAvailableModels(t *testing.T) {
+	agent := &model.Agent{ID: "test-hasnewmodels", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-hasnewmodels")
+
+	assert.True(t, conn.HasNewAvailableModels([]model.AgentModel{{ID: "gpt-4", Name: "GPT-4"}}))
+}

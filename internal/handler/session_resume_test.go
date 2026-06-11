@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"clawbench/internal/ai"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
 
@@ -255,4 +256,118 @@ func TestFindExistingACPSessions_NoMatches(t *testing.T) {
 
 	// Suppress unused variable warning
 	_ = env
+}
+
+// --- POST /api/ai/session/acp-load tests (supplementing acp_session_test.go) ---
+
+func TestServeACPLoadSession_MethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/ai/session/acp-load", http.NoBody)
+	withProjectCookie(req, "/some/project")
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestServeACPLoadSession_MissingProject(t *testing.T) {
+	body := `{"agentId":"test","acpSessionId":"sid-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestServeACPLoadSession_MissingAgentIDField(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	body := `{"acpSessionId":"sid-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestServeACPLoadSession_MissingAcpSessionIDField(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	body := `{"agentId":"test-agent"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestServeACPLoadSession_NonACPAgentRejected(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	model.Agents = map[string]*model.Agent{
+		"cli-agent": {ID: "cli-agent", Name: "CLI Agent", Backend: "claude", Transport: "cli"},
+	}
+	model.AgentList = []*model.Agent{model.Agents["cli-agent"]}
+
+	body := `{"agentId":"cli-agent","acpSessionId":"acp-sid-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestServeACPLoadSession_ExistingACPSessionHardDeleted(t *testing.T) {
+	// Tests the path where an existing CB session for the ACP session is found
+	// and hard-deleted before creating a new one.
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-delete"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Name: "ACP Load", Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// Register LoadSession capability in the registry
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	// Insert an existing session for the ACP session ID
+	_, err := service.DB.Exec(
+		"INSERT INTO chat_sessions (id, project_path, backend, title, source_session_id, session_type) VALUES (?, ?, 'acp-stdio', 'Old', ?, 'chat')",
+		"old-cb-session", env.ProjectDir, "acp:existing-acp-sid",
+	)
+	require.NoError(t, err)
+
+	// Insert a chat_history entry for the old session to verify hard delete
+	_, err = service.DB.Exec(
+		"INSERT INTO chat_history (project_path, backend, session_id, role, content) VALUES (?, 'acp-stdio', ?, 'user', 'hello')",
+		env.ProjectDir, "old-cb-session",
+	)
+	require.NoError(t, err)
+
+	// The handler will hard-delete the existing session and then try to
+	// create a new one + LoadSession (which will fail because no real ACP
+	// connection). This exercises the hard-delete path.
+	body := `{"agentId":"acp-load-delete","acpSessionId":"existing-acp-sid"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+
+	// The handler will fail on LoadSession (no real ACP agent), but the
+	// existing session should have been hard-deleted before that point.
+	// Verify the old session is gone
+	var count int
+	err = service.DB.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE id = ?", "old-cb-session").Scan(&count)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, count, "old session should be hard-deleted")
+
+	// The response will be 500 (LoadSession failed) or 404 (resource not found)
+	assert.NotEqual(t, http.StatusOK, w.Code, "should not succeed without a real ACP agent")
 }
