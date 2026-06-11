@@ -459,3 +459,40 @@ func TestQoderModelKeyRe(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadClaudeEnvModelNames(t *testing.T) {
+	t.Run("valid env", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		settingsContent := `{
+			"env": {
+				"ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.1",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4-flash",
+				"ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic"
+			}
+		}`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(settingsContent), 0o644))
+		orig := claudeConfigDir
+		claudeConfigDir = func() string { return tmpDir }
+		defer func() { claudeConfigDir = orig }()
+		m := LoadClaudeEnvModelNames()
+		assert.Equal(t, "glm-5.1", m["sonnet"])
+		assert.Equal(t, "glm-4-flash", m["opus"])
+		assert.Empty(t, m["haiku"])
+	})
+
+	t.Run("no env", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(`{}`), 0o644))
+		orig := claudeConfigDir
+		claudeConfigDir = func() string { return tmpDir }
+		defer func() { claudeConfigDir = orig }()
+		assert.Nil(t, LoadClaudeEnvModelNames())
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		orig := claudeConfigDir
+		claudeConfigDir = func() string { return "/nonexistent" }
+		defer func() { claudeConfigDir = orig }()
+		assert.Nil(t, LoadClaudeEnvModelNames())
+	})
+}
