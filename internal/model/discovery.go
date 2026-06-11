@@ -108,6 +108,17 @@ var BackendRegistry = []BackendSpec{
 		ThinkingEffortLevels: []string{"none", "low", "medium", "high", "xhigh", "max"},
 		AcpCommand:           "copilot --acp",
 	},
+	{
+		ID: "hermes", Backend: "hermes", DefaultCmd: "hermes", Name: "Hermes", Icon: "🏷️", Specialty: "Hermes AI 智能体",
+		DiscoverModelsFunc: DiscoverHermesModels,
+		AcpCommand:         "hermes acp",
+	},
+	{
+		ID: "openclaw", Backend: "openclaw", DefaultCmd: "openclaw", Name: "OpenClaw", Icon: "🐾", Specialty: "OpenClaw 多模型网关",
+		ListModelsCmd: []string{"models", "list", "--plain"}, ParseModels: ParseOpenClawModels,
+		ThinkingEffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"},
+		AcpCommand:           "openclaw acp",
+	},
 }
 
 // CheckCLIExists checks whether a CLI command is available on the system.
@@ -442,6 +453,36 @@ func LoadClaudeModelOverrides() map[string]string {
 	return cfg.ModelOverrides
 }
 
+// LoadClaudeEnvModelNames reads ~/.claude/settings.json env fields set by CC Switch
+// and returns a map from Claude family (sonnet/opus/haiku) to the actual model name.
+// CC Switch configures env vars like ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.1 to route
+// Claude model families to third-party providers. We use these to rename the display
+// name so users see which real model is in use.
+func LoadClaudeEnvModelNames() map[string]string {
+	path := filepath.Join(claudeConfigDir(), "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	if len(cfg.Env) == 0 {
+		return nil
+	}
+	result := make(map[string]string)
+	for _, family := range []string{"sonnet", "opus", "haiku"} {
+		key := "ANTHROPIC_DEFAULT_" + strings.ToUpper(family) + "_MODEL"
+		if name := cfg.Env[key]; name != "" {
+			result[family] = name
+		}
+	}
+	return result
+}
+
 // claudeIsDateStamped returns true if the model ID contains an 8-digit date segment
 // like "claude-opus-4-20250514", which are snapshot aliases we want to skip.
 func claudeIsDateStamped(modelID string) bool {
@@ -539,6 +580,37 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 			}
 		}
 	}
+
+	// Apply CC Switch env model names (e.g. ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.1).
+	// Maps the family portion of claude-sonnet-4-6 to the real model name.
+	if envNames := LoadClaudeEnvModelNames(); len(envNames) > 0 {
+		for i := range models {
+			parts := strings.SplitN(models[i].ID, "-", 3) // ["claude", "sonnet", "4-6"]
+			if len(parts) >= 2 {
+				if realName, ok := envNames[parts[1]]; ok {
+					slog.Debug("claude env model name applied", "id", models[i].ID, "family", parts[1], "name", realName)
+					models[i].Name = realName
+				}
+			}
+		}
+	}
+
+	// Deduplicate models with the same display name (e.g. CC Switch maps all
+	// sonnet/opus/haiku to the same third-party model like "glm-5.1").
+	// Keep the first occurrence (prefer default), mark it as default.
+	seenName := make(map[string]bool)
+	var deduped []AgentModel
+	for _, m := range models {
+		if seenName[m.Name] {
+			continue
+		}
+		seenName[m.Name] = true
+		deduped = append(deduped, m)
+	}
+	if len(deduped) > 0 {
+		deduped[0].Default = true
+	}
+	models = deduped
 
 	// If binary scanning found no models, fall back to known defaults
 	if len(models) == 0 {
@@ -1843,5 +1915,47 @@ func DiscoverCopilotModels() []AgentModel {
 	models := make([]AgentModel, len(copilotDefaultModels))
 	copy(models, copilotDefaultModels)
 	slog.Info("copilot model discovery: using hardcoded defaults", "models", len(models))
+	return models
+}
+
+// --- Hermes model discovery ---
+
+// hermesDefaultModels lists known models for Hermes Agent.
+var hermesDefaultModels = []AgentModel{
+	{ID: "glm-5.1", Name: "GLM-5.1"},
+	{ID: "glm-5", Name: "GLM-5"},
+	{ID: "anthropic/claude-sonnet-4", Name: "Claude Sonnet 4"},
+	{ID: "openai/gpt-4.1", Name: "GPT-4.1"},
+	{ID: "google/gemini-2.5-pro", Name: "Gemini 2.5 Pro"},
+}
+
+// DiscoverHermesModels discovers models for Hermes Agent.
+func DiscoverHermesModels() []AgentModel {
+	if _, err := exec.LookPath("hermes"); err != nil {
+		return nil
+	}
+	models := make([]AgentModel, len(hermesDefaultModels))
+	copy(models, hermesDefaultModels)
+	slog.Info("hermes model discovery: using hardcoded defaults", "models", len(models))
+	return models
+}
+
+// --- OpenClaw model discovery ---
+
+// ParseOpenClawModels parses openclaw models list --plain output.
+// Output format: one "provider/model" per line, same as opencode.
+func ParseOpenClawModels(output string) []AgentModel {
+	var models []AgentModel
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		models = append(models, AgentModel{
+			ID:      line,
+			Name:    line,
+			Default: len(models) == 0,
+		})
+	}
 	return models
 }
