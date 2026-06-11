@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
@@ -121,7 +122,8 @@ func TestDeleteSession_ClosesACPConnForACPTransport(t *testing.T) {
 	assertOK(t, w)
 
 	// After delete, the ACP connection for this session should be gone.
-	assert.Nil(t, mgr.GetConn(sessionID), "ACP connection should be closed by DeleteSession")
+	// CloseConn runs in a goroutine, so wait briefly for it to complete.
+	assert.Eventually(t, func() bool { return mgr.GetConn(sessionID) == nil }, 2*time.Second, 10*time.Millisecond, "ACP connection should be closed by DeleteSession")
 }
 
 func TestDeleteSession_SkipsACPCloseForCLITransport(t *testing.T) {

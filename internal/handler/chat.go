@@ -632,7 +632,7 @@ func executeStreamRun(
 
 	var blocks []model.ContentBlock
 	var responseMetadata *ai.Metadata
-	var rawOutput string // collected from raw_output event for debugging
+	var rawOutput string               // collected from raw_output event for debugging
 	var firstContentTime time.Duration // track time to first content event
 
 	// Incremental persistence: flush every 1s or every 5 events

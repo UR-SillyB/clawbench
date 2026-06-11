@@ -1498,21 +1498,21 @@ func saveAgentToDB(db *sql.DB, agent *Agent) error {
 // This supports manually-defined agents (e.g., acp-mock for E2E testing) that are
 // not in BackendRegistry and thus not auto-discovered by SyncDiscoverAgentsDB.
 type yamlAgent struct {
-	ID                      string          `yaml:"id"`
-	Name                    string          `yaml:"name"`
-	Icon                    string          `yaml:"icon"`
-	Specialty               string          `yaml:"specialty"`
-	Backend                 string          `yaml:"backend"`
-	Command                 string          `yaml:"command"`
-	ThinkingEffort          string          `yaml:"thinking_effort"`
-	ThinkingEffortLevels    []string        `yaml:"thinking_effort_levels"`
-	PreferredModel          string          `yaml:"preferred_model"`
-	PreferredThinkingEffort string          `yaml:"preferred_thinking_effort"`
-	SystemPrompt            string          `yaml:"system_prompt"`
-	Transport               string          `yaml:"transport"`
-	AcpCommand              string          `yaml:"acp_command"`
-	Models                  []AgentModel    `yaml:"models"`
-	SortOrder               int             `yaml:"sort_order"`
+	ID                      string       `yaml:"id"`
+	Name                    string       `yaml:"name"`
+	Icon                    string       `yaml:"icon"`
+	Specialty               string       `yaml:"specialty"`
+	Backend                 string       `yaml:"backend"`
+	Command                 string       `yaml:"command"`
+	ThinkingEffort          string       `yaml:"thinking_effort"`
+	ThinkingEffortLevels    []string     `yaml:"thinking_effort_levels"`
+	PreferredModel          string       `yaml:"preferred_model"`
+	PreferredThinkingEffort string       `yaml:"preferred_thinking_effort"`
+	SystemPrompt            string       `yaml:"system_prompt"`
+	Transport               string       `yaml:"transport"`
+	AcpCommand              string       `yaml:"acp_command"`
+	Models                  []AgentModel `yaml:"models"`
+	SortOrder               int          `yaml:"sort_order"`
 }
 
 // LoadYamlAgents reads agent definitions from config/agents/*.yaml and inserts

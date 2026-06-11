@@ -749,8 +749,8 @@ func TestDeleteSession_ClosesACPConn(t *testing.T) {
 	w := callHandler(DeleteSession, req)
 	assertOK(t, w)
 
-	// Verify the connection was closed
-	assert.Nil(t, mgr.GetConn(sessionID), "ACP connection should be closed after session delete")
+	// Verify the connection was closed (CloseConn runs in goroutine, wait briefly)
+	assert.Eventually(t, func() bool { return mgr.GetConn(sessionID) == nil }, 2*time.Second, 10*time.Millisecond, "ACP connection should be closed after session delete")
 }
 
 func TestDeleteSession_NonACPAgentNoCrash(t *testing.T) {

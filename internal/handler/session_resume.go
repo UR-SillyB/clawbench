@@ -1,3 +1,4 @@
+//nolint:goconst // Domain string constants defined above; remaining repeated strings ("error") are slog attribute keys
 package handler
 
 import (
@@ -13,6 +14,14 @@ import (
 	"clawbench/internal/middleware"
 	"clawbench/internal/model"
 	"clawbench/internal/service"
+)
+
+const (
+	strBlocks    = "blocks"
+	strUser      = "user"
+	strContent   = "content"
+	strSessionID = "sessionId"
+	strError     = "error"
 )
 
 // ServeSessionResume handles POST /api/ai/session/resume — restores a soft-deleted
@@ -113,6 +122,8 @@ func ServeSessionResume(w http.ResponseWriter, r *http.Request) {
 // ServeACPLoadSession handles POST /api/ai/session/acp-load — creates a new ClawBench
 // session by loading an existing ACP session via LoadSession. The agent replays the
 // full conversation history which is collected and saved to chat_history.
+//
+//nolint:gocognit,gocyclo // ServeACPLoadSession orchestrates multi-step ACP session loading with replay collection and batch persistence; refactoring would obscure the sequential flow
 func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -125,9 +136,9 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID       string `json:"agentId"`
-		AcpSessionID  string `json:"acpSessionId"`
-		ProjectID     string `json:"projectId"`
+		AgentID      string `json:"agentId"`
+		AcpSessionID string `json:"acpSessionId"`
+		ProjectID    string `json:"projectId"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -181,8 +192,8 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 			"old_session", existingID,
 			"acp_sid", req.AcpSessionID,
 			"was_deleted", existingDeleted == 1)
-		if err := service.HardDeleteSession(existingID); err != nil {
-			slog.Error("handler: failed to hard-delete existing ACP session", "error", err)
+		if errHardDel := service.HardDeleteSession(existingID); errHardDel != nil {
+			slog.Error("handler: failed to hard-delete existing ACP session", "error", errHardDel)
 			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 			return
 		}
@@ -197,13 +208,13 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set SourceSessionID to track the ACP session origin
-	if err := service.UpdateSessionSourceID(sessionID, "acp:"+req.AcpSessionID); err != nil {
-		slog.Warn("handler: failed to update source_session_id", "session_id", sessionID, "error", err)
+	if errSrc := service.UpdateSessionSourceID(sessionID, "acp:"+req.AcpSessionID); errSrc != nil {
+		slog.Warn("handler: failed to update source_session_id", "session_id", sessionID, "error", errSrc)
 	}
 
 	// Set transport to acp-stdio for ACP-loaded sessions
-	if err := service.UpdateSessionTransport(sessionID, "acp-stdio"); err != nil {
-		slog.Warn("handler: failed to update transport for acp-load session", "session_id", sessionID, "error", err)
+	if errTransport := service.UpdateSessionTransport(sessionID, transportACP); errTransport != nil {
+		slog.Warn("handler: failed to update transport for acp-load session", "session_id", sessionID, "error", errTransport)
 	}
 
 	// Load ACP session via connection manager
@@ -253,10 +264,10 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			blocks = ai.MergeConsecutiveThinkingBlocks(blocks)
-			contentMap := map[string]any{"blocks": blocks}
+			contentMap := map[string]any{strBlocks: blocks}
 			if currentRole == "assistant" {
 				contentMap["metadata"] = map[string]any{
-					"transport": "acp-stdio",
+					"transport": transportACP,
 				}
 			}
 			contentJSON, _ := json.Marshal(contentMap)
@@ -271,7 +282,7 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 			// Determine the role of this notification
 			notifRole := "assistant"
 			if n.Update.UserMessageChunk != nil {
-				notifRole = "user"
+				notifRole = strUser
 			}
 
 			// Flush accumulated blocks when role changes
@@ -284,7 +295,7 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 			// extract text directly from the ACP notification.
 			if n.Update.UserMessageChunk != nil {
 				if text := n.Update.UserMessageChunk.Content.Text; text != nil && text.Text != "" {
-					ai.AccumulateBlock(&blocks, ai.StreamEvent{Type: "content", Content: text.Text})
+					ai.AccumulateBlock(&blocks, ai.StreamEvent{Type: strContent, Content: text.Text})
 				}
 				continue
 			}
@@ -297,7 +308,7 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 			for event := range ch {
 				// Skip non-content events (mode_update, config_update, etc.)
 				switch event.Type {
-				case "content", "thinking", "thinking_done", "tool_use", "tool_result", "warning", "error":
+				case strContent, "thinking", "thinking_done", "tool_use", "tool_result", "warning", strError:
 					ai.AccumulateBlock(&blocks, event)
 				}
 			}
@@ -323,7 +334,7 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 
 	// Set session title from first user message
 	for _, msg := range messages {
-		if msg.role == "user" {
+		if msg.role == strUser {
 			title := service.ExtractPlainText(msg.content)
 			if title != "" {
 				if runes := []rune(title); len(runes) > 50 {
@@ -344,6 +355,6 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 		"messages", len(messages))
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sessionId": sessionID,
+		strSessionID: sessionID,
 	})
 }

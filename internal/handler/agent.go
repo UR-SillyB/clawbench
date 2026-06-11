@@ -96,8 +96,10 @@ func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if ms != nil || es != nil || len(cmds) > 0 || ml != nil {
-				states[a.ID] = &acpState{Mode: ms, Effort: es, Commands: cmds, ModelList: ml,
-					LoadSession: reg.GetLoadSession(a.ID), ListSessions: reg.GetListSessions(a.ID)}
+				states[a.ID] = &acpState{
+					Mode: ms, Effort: es, Commands: cmds, ModelList: ml,
+					LoadSession: reg.GetLoadSession(a.ID), ListSessions: reg.GetListSessions(a.ID),
+				}
 			}
 			// Even without mode/effort/commands/model, include LoadSession/ListSessions
 			if states[a.ID] == nil && (reg.GetLoadSession(a.ID) || reg.GetListSessions(a.ID)) {
@@ -322,6 +324,8 @@ func findProviderSpecForAgent(agentID string) *model.ProviderSpec {
 
 // ServeACPSessions handles GET /api/agents/{id}/acp-sessions — lists ACP sessions
 // for an agent that supports LoadSession + ListSessions.
+//
+//nolint:gocyclo // ServeACPSessions has multiple sequential checks and branches for ACP capability validation; restructuring would reduce readability
 func ServeACPSessions(w http.ResponseWriter, r *http.Request) {
 	// Extract agent ID from path: /api/agents/{id}/acp-sessions
 	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
@@ -454,7 +458,7 @@ func findExistingACPSessions(acpSessionIDs []string) map[string]bool {
 		slog.Warn("handler: failed to query existing ACP sessions for filtering", "error", err)
 		return result
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var sourceID string

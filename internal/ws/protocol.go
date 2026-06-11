@@ -50,4 +50,3 @@ type SummaryUpdateData struct {
 	ProjectPath string `json:"projectPath,omitempty"`
 	SessionID   string `json:"sessionID,omitempty"`
 }
-
