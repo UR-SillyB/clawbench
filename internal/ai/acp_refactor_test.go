@@ -2801,3 +2801,116 @@ func drainStreamEvents(ch chan StreamEvent) []StreamEvent {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Terminal session tests (acp_terminal.go)
+// ---------------------------------------------------------------------------
+
+func TestRefactor_Terminal_CreateAndOutput(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ctx := context.Background()
+
+	resp, err := client.CreateTerminal(ctx, acp.CreateTerminalRequest{
+		Command: "echo hello",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.TerminalId)
+
+	// Wait for completion
+	_, err = client.WaitForTerminalExit(ctx, acp.WaitForTerminalExitRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+
+	// Get output
+	outResp, err := client.TerminalOutput(ctx, acp.TerminalOutputRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, outResp.Output, "hello")
+	assert.NotNil(t, outResp.ExitStatus)
+	assert.NotNil(t, outResp.ExitStatus.ExitCode)
+	assert.Equal(t, 0, *outResp.ExitStatus.ExitCode)
+}
+
+func TestRefactor_Terminal_KillAndRelease(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ctx := context.Background()
+
+	resp, err := client.CreateTerminal(ctx, acp.CreateTerminalRequest{
+		Command: "sleep 60",
+	})
+	require.NoError(t, err)
+
+	// Kill it
+	_, err = client.KillTerminal(ctx, acp.KillTerminalRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+
+	// Release
+	_, err = client.ReleaseTerminal(ctx, acp.ReleaseTerminalRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+
+	// Output should fail after release
+	_, err = client.TerminalOutput(ctx, acp.TerminalOutputRequest{
+		TerminalId: resp.TerminalId,
+	})
+	assert.Error(t, err)
+}
+
+func TestRefactor_Terminal_NotFoundErrors(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ctx := context.Background()
+
+	_, err := client.TerminalOutput(ctx, acp.TerminalOutputRequest{
+		TerminalId: "nonexistent",
+	})
+	assert.Error(t, err)
+
+	_, err = client.WaitForTerminalExit(ctx, acp.WaitForTerminalExitRequest{
+		TerminalId: "nonexistent",
+	})
+	assert.Error(t, err)
+
+	// KillTerminal on nonexistent is a no-op (returns empty response, no error)
+	resp, err := client.KillTerminal(ctx, acp.KillTerminalRequest{
+		TerminalId: "nonexistent",
+	})
+	assert.NoError(t, err)
+	_ = resp
+
+	// ReleaseTerminal on nonexistent is a no-op
+	resp2, err := client.ReleaseTerminal(ctx, acp.ReleaseTerminalRequest{
+		TerminalId: "nonexistent",
+	})
+	assert.NoError(t, err)
+	_ = resp2
+}
+
+func TestRefactor_Terminal_OutputByteLimit(t *testing.T) {
+	client := NewClawBenchACPClient()
+	ctx := context.Background()
+
+	limit := 10
+	resp, err := client.CreateTerminal(ctx, acp.CreateTerminalRequest{
+		Command:         "echo abcdefghijklmnopqrstuvwxyz",
+		OutputByteLimit: &limit,
+	})
+	require.NoError(t, err)
+
+	// Wait for completion
+	_, err = client.WaitForTerminalExit(ctx, acp.WaitForTerminalExitRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+
+	// Output should be truncated
+	outResp, err := client.TerminalOutput(ctx, acp.TerminalOutputRequest{
+		TerminalId: resp.TerminalId,
+	})
+	require.NoError(t, err)
+	assert.True(t, outResp.Truncated, "output should be truncated when exceeding byte limit")
+}
