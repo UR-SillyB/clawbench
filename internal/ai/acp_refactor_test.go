@@ -1,8 +1,10 @@
 package ai
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -1413,12 +1415,14 @@ func TestRefactor_ACPConnManager_MarkIdle(t *testing.T) {
 
 	mgr.conns["sid-markidle"] = conn
 
-	// MarkIdle updates lastUsed
+	// MarkIdle updates lastUsed — use !Before to be tolerant of low-resolution
+	// clocks on Windows where two consecutive time.Now() calls may return the
+	// same value.
 	mgr.MarkIdle("sid-markidle")
 	conn.mu.Lock()
 	newTime := conn.lastUsed
 	conn.mu.Unlock()
-	assert.True(t, newTime.After(oldTime), "lastUsed should be updated after MarkIdle")
+	assert.False(t, newTime.Before(oldTime), "lastUsed should not go backwards after MarkIdle")
 
 	// MarkIdle on nonexistent session is a no-op
 	mgr.MarkIdle("nonexistent") // should not panic
@@ -1639,4 +1643,907 @@ func TestRefactor_ACPConn_HasNewAvailableModels(t *testing.T) {
 	conn := newACPConn(agent, "test-hasnewmodels")
 
 	assert.True(t, conn.HasNewAvailableModels([]model.AgentModel{{ID: "gpt-4", Name: "GPT-4"}}))
+}
+
+// ---------------------------------------------------------------------------
+// isAliveLocked
+// ---------------------------------------------------------------------------
+
+func TestRefactor_IsAliveLocked(t *testing.T) {
+	agent := &model.Agent{ID: "test-isalive", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_conn", func(t *testing.T) {
+		conn := newACPConn(agent, "test-isalive-nil")
+		conn.mu.Lock()
+		assert.False(t, conn.isAliveLocked())
+		conn.mu.Unlock()
+	})
+
+	t.Run("alive_conn", func(t *testing.T) {
+		conn := newACPConn(agent, "test-isalive-alive")
+		conn.SetAliveForTest()
+		conn.mu.Lock()
+		assert.True(t, conn.isAliveLocked())
+		conn.mu.Unlock()
+	})
+
+	t.Run("done_conn", func(t *testing.T) {
+		conn := newACPConn(agent, "test-isalive-done")
+		conn.SetAliveForTest()
+		// Close the pipe to make conn.Done() return immediately
+		conn.close()
+		conn.mu.Lock()
+		assert.False(t, conn.isAliveLocked())
+		conn.mu.Unlock()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// killProcessLocked
+// ---------------------------------------------------------------------------
+
+func TestRefactor_KillProcessLocked(t *testing.T) {
+	agent := &model.Agent{ID: "test-killproc", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_cmd", func(t *testing.T) {
+		conn := newACPConn(agent, "test-killproc-nil")
+		conn.mu.Lock()
+		conn.killProcessLocked() // should not panic
+		conn.mu.Unlock()
+		assert.False(t, conn.alive)
+	})
+
+	t.Run("cmd_with_process", func(t *testing.T) {
+		conn := newACPConn(agent, "test-killproc-proc")
+		cmd := exec.Command("sleep", "60")
+		require.NoError(t, cmd.Start())
+		conn.mu.Lock()
+		conn.cmd = cmd
+		conn.alive = true
+		conn.acpSID = "acp-123"
+		conn.killProcessLocked()
+		conn.mu.Unlock()
+		assert.False(t, conn.alive)
+		assert.Equal(t, "", conn.AcpSID())
+		// Process should be killed
+		assert.Error(t, cmd.Wait()) // process was killed, Wait returns error
+	})
+}
+
+// ---------------------------------------------------------------------------
+// CancelTurn
+// ---------------------------------------------------------------------------
+
+func TestRefactor_CancelTurn(t *testing.T) {
+	agent := &model.Agent{ID: "test-cancel", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_conn_no_acpSID", func(t *testing.T) {
+		conn := newACPConn(agent, "test-cancel-nil")
+		// Should not panic when conn is nil and acpSID is empty
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn.CancelTurn(ctx)
+	})
+
+	t.Run("alive_with_acpSID", func(t *testing.T) {
+		conn := newACPConn(agent, "test-cancel-alive")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-cancel-alive", "acp-sid-123")
+		// Cancel will fail because the pipe-based connection can't actually
+		// process a Cancel RPC, but the call should not panic.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn.CancelTurn(ctx) // should not panic
+	})
+}
+
+// ---------------------------------------------------------------------------
+// SetSessionConfigOption
+// ---------------------------------------------------------------------------
+
+func TestRefactor_SetSessionConfigOption(t *testing.T) {
+	agent := &model.Agent{ID: "test-setconfig", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("shouldSetConfig_skip", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-skip")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-setconfig-skip", "acp-sid-1")
+		// Mark model as already set to same value
+		conn.markConfigSet("model", "gpt-4")
+		conn.SetCurrentModelID("gpt-4")
+		// This should be skipped (same value)
+		ctx := context.Background()
+		conn.SetSessionConfigOption(ctx, "model", "gpt-4")
+		// Value should remain unchanged
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+	})
+
+	t.Run("no_acpSID_skip", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-nosid")
+		conn.SetAliveForTest()
+		// No acpSID set — should return early
+		ctx := context.Background()
+		conn.SetSessionConfigOption(ctx, "model", "claude-3")
+		// Value should not be updated because setSessionConfigOption is skipped
+		assert.Equal(t, "", conn.GetCurrentModelID())
+	})
+
+	t.Run("unsupported_config_return", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-unsupported")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-setconfig-unsupported", "acp-sid-2")
+		// Mark thinkingEffort as unsupported
+		conn.lastSetConfigMu.Lock()
+		conn.unsupportedConfigs = map[string]bool{"thinkingEffort": true}
+		conn.lastSetConfigMu.Unlock()
+		// Should be skipped because shouldSetConfig returns false for unsupported
+		ctx := context.Background()
+		conn.SetSessionConfigOption(ctx, "thinkingEffort", "high")
+	})
+
+	t.Run("mode_switch", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-mode")
+		// Don't set alive — setSessionConfigOption will hit dead-connection path
+		// but SetSessionConfigOption will still update cached state for mode
+		conn.SetSessionMappingForTest("test-setconfig-mode", "acp-sid-3")
+		ctx := context.Background()
+		// The setSessionConfigOption RPC will fail/return early on dead conn,
+		// and since the connection is dead, the switch block won't execute.
+		// Test that it doesn't panic.
+		conn.SetSessionConfigOption(ctx, "mode", "code")
+	})
+
+	t.Run("thinking_effort_aliases", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-effort")
+		conn.SetSessionMappingForTest("test-setconfig-effort", "acp-sid-4")
+		ctx := context.Background()
+		// Test "thinking_effort" alias
+		conn.SetSessionConfigOption(ctx, "thinking_effort", "high")
+		// Test "thought_level" alias
+		conn.SetSessionConfigOption(ctx, "thought_level", "low")
+		// Test "thinkingEffort" directly
+		conn.SetSessionConfigOption(ctx, "thinkingEffort", "medium")
+	})
+
+	t.Run("model_switch", func(t *testing.T) {
+		conn := newACPConn(agent, "test-setconfig-model")
+		conn.SetSessionMappingForTest("test-setconfig-model", "acp-sid-5")
+		ctx := context.Background()
+		conn.SetSessionConfigOption(ctx, "model", "gpt-4")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// setSessionConfigOption (dead-connection paths)
+// ---------------------------------------------------------------------------
+
+func TestRefactor_SetSessionConfigOption_DeadConn(t *testing.T) {
+	agent := &model.Agent{ID: "test-setconfigopt-dead", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("dead_connection_skip", func(t *testing.T) {
+		conn := newACPConn(agent, "test-deadconn")
+		// Not alive, no conn
+		ctx := context.Background()
+		conn.setSessionConfigOption(ctx, "acp-sid-1", "model", "gpt-4")
+		// Should not panic, should return early
+		assert.Equal(t, "", conn.GetCurrentModelID())
+	})
+
+	t.Run("unknown_config_option_marking", func(t *testing.T) {
+		conn := newACPConn(agent, "test-unknown-config")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-unknown-config", "acp-sid-6")
+		// The real RPC will fail since this is a pipe-based test conn,
+		// but the error won't be "Unknown config option" so unsupportedConfigs
+		// should not be populated.
+		ctx := context.Background()
+		conn.setSessionConfigOption(ctx, "acp-sid-6", "model", "gpt-4")
+		assert.False(t, conn.IsConfigUnsupported("model"))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// setConfigOptionWithCrashCheck
+// ---------------------------------------------------------------------------
+
+func TestRefactor_SetConfigOptionWithCrashCheck(t *testing.T) {
+	agent := &model.Agent{ID: "test-crashcheck", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("shouldSetConfig_skip", func(t *testing.T) {
+		conn := newACPConn(agent, "test-crashcheck-skip")
+		conn.markConfigSet("model", "gpt-4")
+		ctx := context.Background()
+		err := conn.setConfigOptionWithCrashCheck(ctx, "acp-sid", configOptionSpec{
+			configID: "model",
+			value:    "gpt-4",
+			label:    "model",
+		})
+		assert.NoError(t, err)
+	})
+
+	t.Run("connection_dead_after_set_returns_configKilledConnectionError", func(t *testing.T) {
+		conn := newACPConn(agent, "test-crashcheck-killed")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-crashcheck-killed", "acp-sid-7")
+		// Kill the connection immediately so setSessionConfigOption fails
+		// and IsAlive returns false after the call
+		conn.close()
+		ctx := context.Background()
+		err := conn.setConfigOptionWithCrashCheck(ctx, "acp-sid-7", configOptionSpec{
+			configID: "mode",
+			value:    "code",
+			label:    "mode",
+		})
+		// Since connection is dead, should return configKilledConnectionError
+		assert.True(t, isConfigKilledConnection(err))
+		var ckErr *configKilledConnectionError
+		assert.True(t, errors.As(err, &ckErr))
+		assert.Equal(t, "mode", ckErr.ConfigID())
+		assert.Equal(t, "code", ckErr.Value())
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Prompt error paths
+// ---------------------------------------------------------------------------
+
+func TestRefactor_Prompt_ErrorPaths(t *testing.T) {
+	agent := &model.Agent{ID: "test-prompt-err", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_conn_error", func(t *testing.T) {
+		conn := newACPConn(agent, "test-prompt-nil")
+		// conn is nil, acpSID is empty
+		ch := make(chan StreamEvent, 64)
+		ctx := context.Background()
+		err := conn.Prompt(ctx, nil, ch, ChatRequest{Prompt: "hello"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "connection not initialized")
+	})
+
+	t.Run("empty_acpSID_error", func(t *testing.T) {
+		conn := newACPConn(agent, "test-prompt-nosid")
+		conn.SetAliveForTest()
+		// acpSID is empty
+		ch := make(chan StreamEvent, 64)
+		ctx := context.Background()
+		err := conn.Prompt(ctx, nil, ch, ChatRequest{Prompt: "hello"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "connection not initialized")
+	})
+
+	t.Run("config_crash_check_error_propagation", func(t *testing.T) {
+		conn := newACPConn(agent, "test-prompt-configcrash")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-prompt-configcrash", "acp-sid-8")
+		// Mark connection as dead without clearing acpSID,
+		// so Prompt reaches the config-check path but the RPC fails.
+		conn.mu.Lock()
+		conn.alive = false
+		conn.mu.Unlock()
+		ch := make(chan StreamEvent, 64)
+		ctx := context.Background()
+		err := conn.Prompt(ctx, []acp.ContentBlock{acp.TextBlock("hello")}, ch, ChatRequest{
+			Prompt: "hello",
+			Model:  "gpt-4",
+		})
+		// The pipe-based connection can't process the config RPC;
+		// we just verify the error is returned (not a panic).
+		assert.Error(t, err)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// CacheNewSessionState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_CacheNewSessionState(t *testing.T) {
+	agent := &model.Agent{ID: "test-cache-new", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_sessResp_early_return", func(t *testing.T) {
+		conn := newACPConn(agent, "test-cache-new-nil")
+		// No lastNewSessionResp set — should return early
+		conn.CacheNewSessionState()
+		assert.Equal(t, "", conn.GetCurrentModeID())
+	})
+
+	t.Run("with_session_response", func(t *testing.T) {
+		conn := newACPConn(agent, "test-cache-new-resp")
+		modeCat := acp.SessionConfigOptionCategoryMode
+		thoughtCat := acp.SessionConfigOptionCategoryThoughtLevel
+		modelCat := acp.SessionConfigOptionCategoryModel
+		sessResp := &acp.NewSessionResponse{
+			SessionId: acp.SessionId("acp-new-1"),
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "code",
+				AvailableModes: []acp.SessionMode{
+					{Id: "ask", Name: "Ask"},
+					{Id: "code", Name: "Code"},
+				},
+			},
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modeCat,
+						Id:           "mode",
+						Name:         "Mode",
+						CurrentValue: "code",
+						Options: acp.SessionConfigSelectOptions{
+							Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+								{Value: "ask", Name: "Ask"},
+								{Value: "code", Name: "Code"},
+							},
+						},
+					},
+				},
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &thoughtCat,
+						Id:           "thinkingEffort",
+						Name:         "Thinking Effort",
+						CurrentValue: "high",
+						Options: acp.SessionConfigSelectOptions{
+							Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+								{Value: "low", Name: "Low"},
+								{Value: "high", Name: "High"},
+							},
+						},
+					},
+				},
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modelCat,
+						Id:           "model",
+						Name:         "Model",
+						CurrentValue: "gpt-4",
+						Options: acp.SessionConfigSelectOptions{
+							Ungrouped: &acp.SessionConfigSelectOptionsUngrouped{
+								{Value: "gpt-4", Name: "GPT-4"},
+							},
+						},
+					},
+				},
+			},
+		}
+		conn.mu.Lock()
+		conn.lastNewSessionResp = sessResp
+		conn.mu.Unlock()
+
+		conn.CacheNewSessionState()
+
+		assert.Equal(t, "code", conn.GetCurrentModeID())
+		assert.Equal(t, "high", conn.GetCurrentThinkingEffortID())
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+
+		// Verify response was cleared
+		assert.Nil(t, conn.GetAndClearNewSessionResp())
+	})
+}
+
+// ---------------------------------------------------------------------------
+// MergeResumedSessionState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_MergeResumedSessionState(t *testing.T) {
+	agent := &model.Agent{ID: "test-merge-resume", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("nil_resumeResp_early_return", func(t *testing.T) {
+		conn := newACPConn(agent, "test-merge-nil")
+		conn.MergeResumedSessionState()
+		assert.Equal(t, "", conn.GetCurrentModeID())
+	})
+
+	t.Run("with_resume_response", func(t *testing.T) {
+		conn := newACPConn(agent, "test-merge-resp")
+		modeCat := acp.SessionConfigOptionCategoryMode
+		resumeResp := &acp.ResumeSessionResponse{
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "ask",
+				AvailableModes: []acp.SessionMode{
+					{Id: "ask", Name: "Ask"},
+					{Id: "code", Name: "Code"},
+				},
+			},
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modeCat,
+						Id:           "mode",
+						Name:         "Mode",
+						CurrentValue: "ask",
+					},
+				},
+			},
+		}
+		conn.mu.Lock()
+		conn.lastResumeSessionResp = resumeResp
+		conn.mu.Unlock()
+
+		conn.MergeResumedSessionState()
+
+		assert.Equal(t, "ask", conn.GetCurrentModeID())
+		// Verify response was cleared
+		assert.Nil(t, conn.GetAndClearResumeSessionResp())
+	})
+
+	t.Run("preserve_existing_selections", func(t *testing.T) {
+		conn := newACPConn(agent, "test-merge-preserve")
+		// Set user's current selections (simulating re-applied config after resume)
+		conn.SetCurrentModeID("code")
+		conn.SetCurrentThinkingEffortID("high")
+		conn.SetCurrentModelID("claude-3")
+
+		modeCat := acp.SessionConfigOptionCategoryMode
+		thoughtCat := acp.SessionConfigOptionCategoryThoughtLevel
+		modelCat := acp.SessionConfigOptionCategoryModel
+		resumeResp := &acp.ResumeSessionResponse{
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "ask", // agent default differs from user selection
+				AvailableModes: []acp.SessionMode{
+					{Id: "ask", Name: "Ask"},
+					{Id: "code", Name: "Code"},
+				},
+			},
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modeCat,
+						Id:           "mode",
+						Name:         "Mode",
+						CurrentValue: "ask",
+					},
+				},
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &thoughtCat,
+						Id:           "thinkingEffort",
+						Name:         "Thinking",
+						CurrentValue: "low",
+					},
+				},
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modelCat,
+						Id:           "model",
+						Name:         "Model",
+						CurrentValue: "gpt-4",
+					},
+				},
+			},
+		}
+		conn.mu.Lock()
+		conn.lastResumeSessionResp = resumeResp
+		conn.mu.Unlock()
+
+		conn.MergeResumedSessionState()
+
+		// preserveExisting=true: user selections should be kept over agent defaults
+		assert.Equal(t, "code", conn.GetCurrentModeID())
+		assert.Equal(t, "high", conn.GetCurrentThinkingEffortID())
+		assert.Equal(t, "claude-3", conn.GetCurrentModelID())
+	})
+}
+
+// ---------------------------------------------------------------------------
+// extractSessionState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ExtractSessionState(t *testing.T) {
+	agent := &model.Agent{ID: "test-extract-state", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-extract-state")
+
+	t.Run("newResp_branch", func(t *testing.T) {
+		modeCat := acp.SessionConfigOptionCategoryMode
+		newResp := &acp.NewSessionResponse{
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "code",
+				AvailableModes: []acp.SessionMode{
+					{Id: "code", Name: "Code"},
+				},
+			},
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modeCat,
+						Id:           "mode",
+						Name:         "Mode",
+						CurrentValue: "code",
+					},
+				},
+			},
+		}
+		ext := conn.extractSessionState(func() (*acp.NewSessionResponse, *acp.ResumeSessionResponse) {
+			return newResp, nil
+		})
+		assert.Equal(t, "code", ext.modeCurrentID)
+		require.Len(t, ext.modes, 1)
+		assert.Equal(t, "code", ext.modes[0].ID)
+		require.NotNil(t, ext.configState)
+		assert.Equal(t, "code", ext.configState.CurrentID)
+	})
+
+	t.Run("resumeResp_branch", func(t *testing.T) {
+		resumeResp := &acp.ResumeSessionResponse{
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "architect",
+				AvailableModes: []acp.SessionMode{
+					{Id: "architect", Name: "Architect"},
+				},
+			},
+		}
+		ext := conn.extractSessionState(func() (*acp.NewSessionResponse, *acp.ResumeSessionResponse) {
+			return nil, resumeResp
+		})
+		assert.Equal(t, "architect", ext.modeCurrentID)
+		require.Len(t, ext.modes, 1)
+		assert.Equal(t, "architect", ext.modes[0].ID)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// applyExtractedState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ApplyExtractedState(t *testing.T) {
+	agent := &model.Agent{ID: "test-apply-state", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("preserveExisting_false_uses_response_values", func(t *testing.T) {
+		conn := newACPConn(agent, "test-apply-false")
+		ext := sessionStateExtracted{
+			modes:           []ModeDef{{ID: "ask", Name: "Ask"}, {ID: "code", Name: "Code"}},
+			modeCurrentID:   "code",
+			effortCurrentID: "high",
+			modelCurrentID:  "gpt-4",
+		}
+		conn.applyExtractedState(ext, false)
+		assert.Equal(t, "code", conn.GetCurrentModeID())
+		assert.Equal(t, "high", conn.GetCurrentThinkingEffortID())
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+	})
+
+	t.Run("preserveExisting_true_keeps_user_selections", func(t *testing.T) {
+		conn := newACPConn(agent, "test-apply-true")
+		// Set existing user selections
+		conn.SetCurrentModeID("architect")
+		conn.SetCurrentThinkingEffortID("low")
+		conn.SetCurrentModelID("claude-3")
+
+		ext := sessionStateExtracted{
+			modes:           []ModeDef{{ID: "ask", Name: "Ask"}},
+			modeCurrentID:   "ask",
+			effortCurrentID: "high",
+			modelCurrentID:  "gpt-4",
+		}
+		conn.applyExtractedState(ext, true)
+		// User selections should be preserved
+		assert.Equal(t, "architect", conn.GetCurrentModeID())
+		assert.Equal(t, "low", conn.GetCurrentThinkingEffortID())
+		assert.Equal(t, "claude-3", conn.GetCurrentModelID())
+	})
+
+	t.Run("preserveExisting_true_no_existing_uses_response", func(t *testing.T) {
+		conn := newACPConn(agent, "test-apply-true-noexisting")
+		// No existing selections (all empty)
+		ext := sessionStateExtracted{
+			modeCurrentID:   "ask",
+			effortCurrentID: "medium",
+			modelCurrentID:  "gpt-4",
+		}
+		conn.applyExtractedState(ext, true)
+		// Since existing is empty, response values should be used
+		assert.Equal(t, "ask", conn.GetCurrentModeID())
+		assert.Equal(t, "medium", conn.GetCurrentThinkingEffortID())
+		assert.Equal(t, "gpt-4", conn.GetCurrentModelID())
+	})
+
+	t.Run("preserveExisting_with_configState", func(t *testing.T) {
+		conn := newACPConn(agent, "test-apply-configstate")
+		conn.SetCurrentModeID("code")
+
+		configState := &ConfigOptionState{
+			ConfigID:  "mode",
+			CurrentID: "ask",
+			Options: []ConfigOptionDef{
+				{ID: "mode", Category: "mode", Values: []ConfigOptionValue{{ID: "ask"}, {ID: "code"}}},
+			},
+		}
+		ext := sessionStateExtracted{
+			modeCurrentID: "ask",
+			configState:   configState,
+		}
+		conn.applyExtractedState(ext, true)
+		// configState.CurrentID should be updated to existing user selection
+		assert.Equal(t, "code", configState.CurrentID)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// EmitSessionStateEvents
+// ---------------------------------------------------------------------------
+
+func TestRefactor_EmitSessionStateEvents(t *testing.T) {
+	agent := &model.Agent{ID: "test-emit-state", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("with_registry_data", func(t *testing.T) {
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateModes("test-emit-state", []ModeDef{{ID: "ask", Name: "Ask"}, {ID: "code", Name: "Code"}})
+		reg.UpdateThinkingEfforts("test-emit-state", []ThinkingEffortDef{{ID: "low", Name: "Low"}, {ID: "high", Name: "High"}})
+		reg.UpdateModels("test-emit-state", []model.AgentModel{{ID: "gpt-4", Name: "GPT-4"}})
+
+		conn := newACPConn(agent, "test-emit-state")
+		conn.SetCurrentModeID("code")
+		conn.SetCurrentThinkingEffortID("high")
+		conn.SetCurrentModelID("gpt-4")
+
+		ch := make(chan StreamEvent, 64)
+		conn.EmitSessionStateEvents(ch)
+
+		// Should emit mode_update, thinking_effort_update, model_list_update
+		events := drainStreamEvents(ch)
+		eventTypes := make(map[string]bool)
+		for _, e := range events {
+			eventTypes[e.Type] = true
+		}
+		assert.True(t, eventTypes["mode_update"], "expected mode_update event")
+		assert.True(t, eventTypes["thinking_effort_update"], "expected thinking_effort_update event")
+		assert.True(t, eventTypes["model_list_update"], "expected model_list_update event")
+
+		// Verify mode_update content
+		for _, e := range events {
+			if e.Type == "mode_update" {
+				require.NotNil(t, e.Mode)
+				assert.Equal(t, "code", e.Mode.CurrentModeID)
+				require.Len(t, e.Mode.AvailableModes, 2)
+			}
+			if e.Type == "thinking_effort_update" {
+				require.NotNil(t, e.ThinkingEffort)
+				assert.Equal(t, "high", e.ThinkingEffort.CurrentID)
+			}
+			if e.Type == "model_list_update" {
+				require.NotNil(t, e.ModelList)
+				assert.Equal(t, "gpt-4", e.ModelList.CurrentModelID)
+			}
+		}
+	})
+
+	t.Run("no_registry_data", func(t *testing.T) {
+		agent2 := &model.Agent{ID: "test-emit-empty", Backend: "acp-stdio", AcpCommand: "echo"}
+		conn := newACPConn(agent2, "test-emit-empty")
+		ch := make(chan StreamEvent, 64)
+		conn.EmitSessionStateEvents(ch)
+		events := drainStreamEvents(ch)
+		assert.Empty(t, events, "no events expected when registry has no data")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// EmitCommandsUpdate
+// ---------------------------------------------------------------------------
+
+func TestRefactor_EmitCommandsUpdate(t *testing.T) {
+	agent := &model.Agent{ID: "test-emit-cmds", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("with_registry_commands", func(t *testing.T) {
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateCommands("test-emit-cmds-registry", []AvailableCommandInfo{
+			{Name: "/fix", Description: "Fix issues"},
+		})
+
+		conn := newACPConn(&model.Agent{ID: "test-emit-cmds-registry", Backend: "acp-stdio", AcpCommand: "echo"}, "test-emit-cmds-registry")
+		ch := make(chan StreamEvent, 64)
+		conn.EmitCommandsUpdate(ch)
+
+		events := drainStreamEvents(ch)
+		require.Len(t, events, 1)
+		assert.Equal(t, "commands_update", events[0].Type)
+		require.Len(t, events[0].Commands, 1)
+		assert.Equal(t, "/fix", events[0].Commands[0].Name)
+	})
+
+	t.Run("with_client_fallback", func(t *testing.T) {
+		conn := newACPConn(agent, "test-emit-cmds-client")
+		// Set up client with commands but no registry commands
+		client := NewClawBenchACPClient()
+		client.commands = []acp.AvailableCommand{
+			{Name: "/help", Description: "Show help"},
+		}
+		conn.SetClientForTest(client)
+
+		ch := make(chan StreamEvent, 64)
+		conn.EmitCommandsUpdate(ch)
+
+		events := drainStreamEvents(ch)
+		require.Len(t, events, 1)
+		assert.Equal(t, "commands_update", events[0].Type)
+		require.Len(t, events[0].Commands, 1)
+		assert.Equal(t, "/help", events[0].Commands[0].Name)
+	})
+
+	t.Run("no_commands_anywhere", func(t *testing.T) {
+		agent3 := &model.Agent{ID: "test-emit-cmds-none", Backend: "acp-stdio", AcpCommand: "echo"}
+		conn := newACPConn(agent3, "test-emit-cmds-none")
+		ch := make(chan StreamEvent, 64)
+		conn.EmitCommandsUpdate(ch)
+		events := drainStreamEvents(ch)
+		assert.Empty(t, events, "no events expected when no commands available")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// emitSessionAndCacheState
+// ---------------------------------------------------------------------------
+
+func TestRefactor_EmitSessionAndCacheState(t *testing.T) {
+	agent := &model.Agent{ID: "test-emit-session", Backend: "acp-stdio", AcpCommand: "echo"}
+
+	t.Run("isNew_true_path", func(t *testing.T) {
+		conn := newACPConn(agent, "test-emit-new")
+		conn.SetAliveForTest()
+		conn.SetSessionMappingForTest("test-emit-new", "acp-sid-new")
+
+		// Set up a session response so CacheNewSessionState has data
+		modeCat := acp.SessionConfigOptionCategoryMode
+		sessResp := &acp.NewSessionResponse{
+			SessionId: acp.SessionId("acp-sid-new"),
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "code",
+				AvailableModes: []acp.SessionMode{
+					{Id: "code", Name: "Code"},
+				},
+			},
+			ConfigOptions: []acp.SessionConfigOption{
+				{
+					Select: &acp.SessionConfigOptionSelect{
+						Category:     &modeCat,
+						Id:           "mode",
+						Name:         "Mode",
+						CurrentValue: "code",
+					},
+				},
+			},
+		}
+		conn.mu.Lock()
+		conn.lastNewSessionResp = sessResp
+		conn.mu.Unlock()
+
+		// Register modes in registry so EmitSessionStateEvents has data
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateModes("test-emit-new", []ModeDef{{ID: "code", Name: "Code"}})
+
+		backend := &ACPBackend{agent: agent}
+		ch := make(chan StreamEvent, 64)
+		backend.emitSessionAndCacheState(conn, true, ch)
+
+		events := drainStreamEvents(ch)
+		eventTypes := make(map[string]bool)
+		for _, e := range events {
+			eventTypes[e.Type] = true
+		}
+		assert.True(t, eventTypes["session_capture"], "expected session_capture for isNew=true")
+		assert.True(t, eventTypes["mode_update"], "expected mode_update")
+	})
+
+	t.Run("isNew_false_path", func(t *testing.T) {
+		conn := newACPConn(agent, "test-emit-resume")
+		conn.SetSessionMappingForTest("test-emit-resume", "acp-sid-resume")
+
+		// Set up a resume response
+		resumeResp := &acp.ResumeSessionResponse{
+			Modes: &acp.SessionModeState{
+				CurrentModeId: "code",
+				AvailableModes: []acp.SessionMode{
+					{Id: "code", Name: "Code"},
+				},
+			},
+		}
+		conn.mu.Lock()
+		conn.lastResumeSessionResp = resumeResp
+		conn.mu.Unlock()
+
+		reg := GetAgentCapabilityRegistry()
+		reg.UpdateModes("test-emit-session", []ModeDef{{ID: "code", Name: "Code"}})
+
+		backend := &ACPBackend{agent: agent}
+		ch := make(chan StreamEvent, 64)
+		backend.emitSessionAndCacheState(conn, false, ch)
+
+		events := drainStreamEvents(ch)
+		eventTypes := make(map[string]bool)
+		for _, e := range events {
+			eventTypes[e.Type] = true
+		}
+		// isNew=false: no session_capture, but should still emit state events
+		assert.False(t, eventTypes["session_capture"], "no session_capture for isNew=false")
+	})
+
+	t.Run("with_plan_state", func(t *testing.T) {
+		conn := newACPConn(agent, "test-emit-plan")
+		conn.SetSessionMappingForTest("test-emit-plan", "acp-sid-plan")
+		conn.SetCachedPlanState(&PlanState{
+			Entries: []PlanEntry{{Content: "do stuff", Priority: "high", Status: "in_progress"}},
+		})
+
+		backend := &ACPBackend{agent: agent}
+		ch := make(chan StreamEvent, 64)
+		backend.emitSessionAndCacheState(conn, false, ch)
+
+		events := drainStreamEvents(ch)
+		found := false
+		for _, e := range events {
+			if e.Type == "plan_update" {
+				found = true
+				require.NotNil(t, e.Plan)
+				require.Len(t, e.Plan.Entries, 1)
+				assert.Equal(t, "do stuff", e.Plan.Entries[0].Content)
+			}
+		}
+		assert.True(t, found, "expected plan_update event")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ACPBackend.buildPromptBlocks (extended — with ShouldInjectSystemPrompt)
+// ---------------------------------------------------------------------------
+
+func TestRefactor_ACPBackend_BuildPromptBlocks_Extended(t *testing.T) {
+	backend := &ACPBackend{}
+
+	t.Run("with_system_prompt_no_resume", func(t *testing.T) {
+		req := ChatRequest{
+			Prompt:       "fix the bug",
+			SystemPrompt: "You are a helpful assistant",
+			Resume:       false,
+		}
+		blocks := backend.buildPromptBlocks(req)
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].Text)
+		text := blocks[0].Text.Text
+		assert.Contains(t, text, "[System Instructions: You are a helpful assistant]")
+		assert.Contains(t, text, "fix the bug")
+	})
+
+	t.Run("with_system_prompt_resume", func(t *testing.T) {
+		req := ChatRequest{
+			Prompt:       "continue",
+			SystemPrompt: "You are a helpful assistant",
+			Resume:       true,
+		}
+		blocks := backend.buildPromptBlocks(req)
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].Text)
+		text := blocks[0].Text.Text
+		// Resume=true → ShouldInjectSystemPrompt returns false
+		assert.NotContains(t, text, "[System Instructions:")
+		assert.Equal(t, "continue", text)
+	})
+
+	t.Run("empty_system_prompt", func(t *testing.T) {
+		req := ChatRequest{
+			Prompt:       "hello",
+			SystemPrompt: "",
+		}
+		blocks := backend.buildPromptBlocks(req)
+		require.Len(t, blocks, 1)
+		require.NotNil(t, blocks[0].Text)
+		assert.Equal(t, "hello", blocks[0].Text.Text)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// drainStreamEvents helper
+// ---------------------------------------------------------------------------
+
+// drainStreamEvents reads all available events from a channel.
+func drainStreamEvents(ch chan StreamEvent) []StreamEvent {
+	var events []StreamEvent
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				return events
+			}
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
 }

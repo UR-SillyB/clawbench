@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -487,4 +489,485 @@ func TestServeACPLoadSession_SessionMetadataBeforeLoad(t *testing.T) {
 		assert.Equal(t, "acp:"+acpSessionID, sourceID, "source_session_id should be 'acp:<acpSessionId>'")
 		assert.Equal(t, "acp-stdio", transport, "transport should be 'acp-stdio'")
 	}
+}
+
+// --- ServeACPSessions: uncovered path tests ---
+
+func TestServeACPSessions_EmptyAgentID(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Path with empty agent ID: /api/agents//acp-sessions
+	req := newRequest(t, http.MethodGet, "/api/agents//acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestServeACPSessions_AgentIDWithSlash(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	// Path with slash in agent ID: /api/agents/foo/bar/acp-sessions
+	req := newRequest(t, http.MethodGet, "/api/agents/foo/bar/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestServeACPSessions_LoadSessionOnlyNotListSessions(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-only"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// Register LoadSession=true but ListSessions=false
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	// LoadSession supported but ListSessions not → 501
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+func TestServeACPSessions_ListSessionsSuccess(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-list-ok"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// Register both capabilities
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, true)
+
+	// Inject a mock alive connection that the handler will find via GetConnByAgentID
+	mgr := ai.GetACPConnManager()
+	connKey := "__list_sessions__:" + agentID
+	agent := model.Agents[agentID]
+	conn := newACPConnForHandlerTest(agent, connKey)
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest(connKey, "acp-sid-list")
+	conn.SetListSessionsFnForTest(func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+		return []acp.SessionInfo{
+			{SessionId: "acp-session-1", Title: stringPtr("Session 1")},
+			{SessionId: "acp-session-2", Title: stringPtr("Session 2")},
+		}, nil, nil
+	})
+	mgr.SetConnForTest(connKey, conn)
+	defer mgr.CloseConn(connKey)
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	sessions, ok := resp["sessions"].([]any)
+	require.True(t, ok, "sessions should be an array")
+	assert.Len(t, sessions, 2)
+}
+
+func TestServeACPSessions_ListSessionsWithCursor(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-list-cursor"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, true)
+
+	mgr := ai.GetACPConnManager()
+	connKey := "__list_sessions__:" + agentID
+	agent := model.Agents[agentID]
+	conn := newACPConnForHandlerTest(agent, connKey)
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest(connKey, "acp-sid-cursor")
+	conn.SetListSessionsFnForTest(func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+		if cursor != nil && *cursor == "page2" {
+			return []acp.SessionInfo{{SessionId: "acp-session-3"}}, nil, nil
+		}
+		nextCursor := "page2"
+		return []acp.SessionInfo{{SessionId: "acp-session-1"}}, &nextCursor, nil
+	})
+	mgr.SetConnForTest(connKey, conn)
+	defer mgr.CloseConn(connKey)
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions?cursor=page2", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestServeACPSessions_ListSessionsError(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-list-err"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, true)
+
+	mgr := ai.GetACPConnManager()
+	connKey := "__list_sessions__:" + agentID
+	agent := model.Agents[agentID]
+	conn := newACPConnForHandlerTest(agent, connKey)
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest(connKey, "acp-sid-err")
+	conn.SetListSessionsFnForTest(func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+		return nil, nil, fmt.Errorf("internal error")
+	})
+	mgr.SetConnForTest(connKey, conn)
+	defer mgr.CloseConn(connKey)
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestServeACPSessions_FilterExistingSessions(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-list-filter"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, true)
+
+	// Pre-create a CB session for one of the ACP sessions
+	_, err := service.DB.Exec(
+		"INSERT INTO chat_sessions (id, project_path, backend, title, source_session_id, session_type) VALUES (?, ?, 'acp-stdio', 'Existing', ?, 'chat')",
+		"cb-existing-1", env.ProjectDir, "acp:acp-session-1",
+	)
+	require.NoError(t, err)
+
+	mgr := ai.GetACPConnManager()
+	connKey := "__list_sessions__:" + agentID
+	agent := model.Agents[agentID]
+	conn := newACPConnForHandlerTest(agent, connKey)
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest(connKey, "acp-sid-filter")
+	conn.SetListSessionsFnForTest(func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error) {
+		return []acp.SessionInfo{
+			{SessionId: "acp-session-1", Title: stringPtr("Already loaded")},
+			{SessionId: "acp-session-2", Title: stringPtr("New session")},
+		}, nil, nil
+	})
+	mgr.SetConnForTest(connKey, conn)
+	defer mgr.CloseConn(connKey)
+
+	req := newRequest(t, http.MethodGet, "/api/agents/"+agentID+"/acp-sessions", nil)
+	req = withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPSessions(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err = json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	sessions, ok := resp["sessions"].([]any)
+	require.True(t, ok, "sessions should be an array")
+	assert.Len(t, sessions, 1, "existing ACP session should be filtered out")
+}
+
+// --- ServeACPLoadSession: replay path tests ---
+
+func TestServeACPLoadSession_SuccessWithReplay(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-replay"
+	acpSessionID := "acp-sid-replay-001"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Name: "ACP Replay", Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	// Register LoadSession capability
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	// Set up mock connection that will be returned by getOrCreateConnForLoad
+	mgr := ai.GetACPConnManager()
+	agent := model.Agents[agentID]
+	mockConn := ai.NewACPConnForTest(agent, "mock-session-replay")
+	mockConn.SetAliveForTest()
+	mockConn.SetSessionMappingForTest("mock-session-replay", "acp-sid-replay-001")
+	client := ai.NewClawBenchACPClient()
+	client.SetLoadSessionBufForTest([]acp.SessionNotification{
+		{
+			Update: acp.SessionUpdate{
+				UserMessageChunk: &acp.SessionUpdateUserMessageChunk{
+					Content: acp.TextBlock("Hello from replay"),
+				},
+			},
+		},
+		{
+			Update: acp.SessionUpdate{
+				AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+					Content: acp.TextBlock("Hi there from assistant"),
+				},
+			},
+		},
+	})
+	mockConn.SetClientForTest(client)
+
+	// Override getOrCreateConnForLoad to return our mock connection
+	origFn := getOrCreateConnForLoad
+	getOrCreateConnForLoad = func(ctx context.Context, ag *model.Agent, clawbenchSID, acpSID, cwd string) (*ai.ACPConn, error) {
+		// Register in pool so CloseConn can find it
+		mgr.SetConnForTest(clawbenchSID, mockConn)
+		return mockConn, nil
+	}
+	defer func() { getOrCreateConnForLoad = origFn }()
+
+	body := fmt.Sprintf(`{"agentId":%q,"acpSessionId":%q}`, agentID, acpSessionID)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	// The session ID should be in the response
+	_, hasSID := resp["sessionId"]
+	assert.True(t, hasSID, "response should contain sessionId")
+
+	sid := resp["sessionId"].(string)
+
+	// Verify messages were saved to chat_history
+	var msgCount int
+	err = service.DB.QueryRow(
+		"SELECT COUNT(*) FROM chat_history WHERE session_id = ?",
+		sid,
+	).Scan(&msgCount)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, msgCount, "should have 2 replay messages (user + assistant)")
+
+	// Verify title was set from first user message
+	var title string
+	err = service.DB.QueryRow(
+		"SELECT title FROM chat_sessions WHERE id = ?",
+		sid,
+	).Scan(&title)
+	assert.NoError(t, err)
+	assert.Equal(t, "Hello from replay", title)
+}
+
+func TestServeACPLoadSession_SuccessWithEmptyReplay(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-empty-replay"
+	acpSessionID := "acp-sid-empty-replay"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Name: "ACP Empty Replay", Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	mgr := ai.GetACPConnManager()
+	agent := model.Agents[agentID]
+	mockConn := ai.NewACPConnForTest(agent, "mock-session-empty")
+	mockConn.SetAliveForTest()
+	mockConn.SetSessionMappingForTest("mock-session-empty", "acp-sid-empty-replay")
+	client := ai.NewClawBenchACPClient()
+	// Empty replay buffer
+	client.SetLoadSessionBufForTest(nil)
+	mockConn.SetClientForTest(client)
+
+	origFn := getOrCreateConnForLoad
+	getOrCreateConnForLoad = func(ctx context.Context, ag *model.Agent, clawbenchSID, acpSID, cwd string) (*ai.ACPConn, error) {
+		mgr.SetConnForTest(clawbenchSID, mockConn)
+		return mockConn, nil
+	}
+	defer func() { getOrCreateConnForLoad = origFn }()
+
+	body := fmt.Sprintf(`{"agentId":%q,"acpSessionId":%q}`, agentID, acpSessionID)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	sid := resp["sessionId"].(string)
+
+	// No messages saved since replay buffer was empty
+	var msgCount int
+	err = service.DB.QueryRow(
+		"SELECT COUNT(*) FROM chat_history WHERE session_id = ?",
+		sid,
+	).Scan(&msgCount)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, msgCount, "should have 0 replay messages for empty buffer")
+}
+
+func TestServeACPLoadSession_SuccessNilClient(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-nil-client"
+	acpSessionID := "acp-sid-nil-client"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Name: "ACP Nil Client", Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	mgr := ai.GetACPConnManager()
+	agent := model.Agents[agentID]
+	mockConn := ai.NewACPConnForTest(agent, "mock-session-nil")
+	mockConn.SetAliveForTest()
+	mockConn.SetSessionMappingForTest("mock-session-nil", "acp-sid-nil-client")
+	// No client set (client=nil by default)
+
+	origFn := getOrCreateConnForLoad
+	getOrCreateConnForLoad = func(ctx context.Context, ag *model.Agent, clawbenchSID, acpSID, cwd string) (*ai.ACPConn, error) {
+		mgr.SetConnForTest(clawbenchSID, mockConn)
+		return mockConn, nil
+	}
+	defer func() { getOrCreateConnForLoad = origFn }()
+
+	body := fmt.Sprintf(`{"agentId":%q,"acpSessionId":%q}`, agentID, acpSessionID)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+
+	// Should succeed — the client==nil branch skips replay collection
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	_, hasSID := resp["sessionId"]
+	assert.True(t, hasSID, "response should contain sessionId")
+}
+
+func TestServeACPLoadSession_ReplayWithTitleTruncation(t *testing.T) {
+	env, teardown := setupTestEnv(t)
+	defer teardown()
+
+	agentID := "acp-load-truncate"
+	acpSessionID := "acp-sid-truncate"
+	model.Agents = map[string]*model.Agent{
+		agentID: {ID: agentID, Name: "ACP Truncate", Backend: "acp-stdio", Transport: "acp-stdio", AcpCommand: "echo"},
+	}
+	model.AgentList = []*model.Agent{model.Agents[agentID]}
+
+	ai.GetAgentCapabilityRegistry().ForceUpdateIfNeeded(agentID, nil, nil, nil, nil, nil, true, false)
+
+	mgr := ai.GetACPConnManager()
+	agent := model.Agents[agentID]
+	mockConn := ai.NewACPConnForTest(agent, "mock-session-truncate")
+	mockConn.SetAliveForTest()
+	mockConn.SetSessionMappingForTest("mock-session-truncate", "acp-sid-truncate")
+
+	// Create a user message that's longer than 50 characters
+	longText := "This is a very long user message that should be truncated to fifty characters when used as a session title"
+	client := ai.NewClawBenchACPClient()
+	client.SetLoadSessionBufForTest([]acp.SessionNotification{
+		{
+			Update: acp.SessionUpdate{
+				UserMessageChunk: &acp.SessionUpdateUserMessageChunk{
+					Content: acp.TextBlock(longText),
+				},
+			},
+		},
+	})
+	mockConn.SetClientForTest(client)
+
+	origFn := getOrCreateConnForLoad
+	getOrCreateConnForLoad = func(ctx context.Context, ag *model.Agent, clawbenchSID, acpSID, cwd string) (*ai.ACPConn, error) {
+		mgr.SetConnForTest(clawbenchSID, mockConn)
+		return mockConn, nil
+	}
+	defer func() { getOrCreateConnForLoad = origFn }()
+
+	body := fmt.Sprintf(`{"agentId":%q,"acpSessionId":%q}`, agentID, acpSessionID)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/session/acp-load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withProjectCookie(req, env.ProjectDir)
+	w := httptest.NewRecorder()
+	ServeACPLoadSession(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	sid := resp["sessionId"].(string)
+
+	// Verify title was truncated
+	var title string
+	err = service.DB.QueryRow(
+		"SELECT title FROM chat_sessions WHERE id = ?",
+		sid,
+	).Scan(&title)
+	assert.NoError(t, err)
+	assert.LessOrEqual(t, len([]rune(title)), 53, "title should be truncated to 50 chars + '...'")
+	assert.True(t, strings.HasSuffix(title, "..."), "truncated title should end with '...'")
+}
+
+// --- helper functions ---
+
+// newACPConnForHandlerTest creates an *ai.ACPConn for handler-level testing.
+// Since ACPConn is in the ai package, we use the exported test helpers.
+func newACPConnForHandlerTest(agent *model.Agent, clawbenchSID string) *ai.ACPConn {
+	mgr := ai.GetACPConnManager()
+	// Use the special key format to create a conn entry
+	connKey := clawbenchSID
+	mgr.SetConnForTest(connKey, ai.NewACPConnForTest(agent, connKey))
+	conn := mgr.GetConn(connKey)
+	return conn
+}
+
+// stringPtr returns a pointer to the given string.
+func stringPtr(s string) *string {
+	return &s
 }

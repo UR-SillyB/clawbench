@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,19 @@ const (
 	strSessionID = "sessionId"
 	strError     = "error"
 )
+
+// getOrCreateConnForLoadFn is the function signature for obtaining an ACP
+// connection for loading a session. Used to allow test overrides.
+type getOrCreateConnForLoadFn func(ctx context.Context, agent *model.Agent, clawbenchSID, acpSessionID, cwd string) (*ai.ACPConn, error)
+
+// getOrCreateConnForLoad is the function used by ServeACPLoadSession to obtain
+// an ACP connection for loading a session. Defaults to the real implementation;
+// can be overridden in tests.
+var getOrCreateConnForLoad getOrCreateConnForLoadFn = defaultGetOrCreateConnForLoad
+
+func defaultGetOrCreateConnForLoad(ctx context.Context, agent *model.Agent, clawbenchSID, acpSessionID, cwd string) (*ai.ACPConn, error) {
+	return ai.GetACPConnManager().GetOrCreateConnForLoad(ctx, agent, clawbenchSID, acpSessionID, cwd)
+}
 
 // ServeSessionResume handles POST /api/ai/session/resume — restores a soft-deleted
 // session and returns the session ID. Validates project ownership and session count limits.
@@ -218,14 +232,13 @@ func ServeACPLoadSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load ACP session via connection manager
-	mgr := ai.GetACPConnManager()
-	conn, err := mgr.GetOrCreateConnForLoad(r.Context(), agent, sessionID, req.AcpSessionID, projectPath)
+	conn, err := getOrCreateConnForLoad(r.Context(), agent, sessionID, req.AcpSessionID, projectPath)
 	if err != nil {
 		slog.Error("handler: LoadSession failed", "agent", req.AgentID, "acp_sid", req.AcpSessionID, "error", err)
 		// Clean up the session we just created
 		_ = service.DeleteSession(projectPath, agent.Backend, sessionID)
 		// Clean up the dead connection from the pool
-		mgr.CloseConn(sessionID)
+		ai.GetACPConnManager().CloseConn(sessionID)
 		// Detect "Resource not found" from ACP agent — session no longer exists
 		if ai.IsACPResourceNotFound(err) {
 			writeLocalizedErrorf(w, r, http.StatusNotFound, "ACPSessionNotFound")

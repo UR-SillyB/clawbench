@@ -40,7 +40,13 @@ func (c *ACPConn) ListSessions(ctx context.Context, cursor *string) ([]acp.Sessi
 		return nil, nil, fmt.Errorf("acp: connection not alive for ListSessions")
 	}
 	conn := c.conn
+	fn := c.listSessionsFn
 	c.mu.Unlock()
+
+	// Use test override if set
+	if fn != nil {
+		return fn(ctx, cursor)
+	}
 
 	req := acp.ListSessionsRequest{}
 	if cursor != nil {
@@ -395,14 +401,16 @@ func (c *ACPConn) watchProcessDeath() {
 	diag := c.collectCrashDiagnostics()
 
 	if diag.ExitCode == 0 && diag.Signal == "" {
-		slog.Info("acp conn: agent process exited",
+		slog.Info(
+			"acp conn: agent process exited",
 			"agent_id", agentID,
 			"clawbench_sid", c.clawbenchSID,
 			"exit_code", diag.ExitCode,
 			"uptime", diag.Uptime.Round(time.Second),
 		)
 	} else {
-		slog.Error("acp conn: agent process died",
+		slog.Error(
+			"acp conn: agent process died",
 			"agent_id", agentID,
 			"clawbench_sid", c.clawbenchSID,
 			"exit_code", diag.ExitCode,

@@ -126,6 +126,14 @@ func (c *ClawBenchACPClient) GetAndClearLoadSessionBuf() []acp.SessionNotificati
 	return buf
 }
 
+// SetLoadSessionBufForTest injects replay notifications for testing.
+// Production code must not use this.
+func (c *ClawBenchACPClient) SetLoadSessionBufForTest(buf []acp.SessionNotification) {
+	c.loadSessionBufMu.Lock()
+	c.loadSessionBuf = buf
+	c.loadSessionBufMu.Unlock()
+}
+
 // GetCommandsAsInfo returns cached commands as AvailableCommandInfo slices
 // for JSON serialization to the frontend.
 func (c *ClawBenchACPClient) GetCommandsAsInfo() []AvailableCommandInfo {
@@ -304,7 +312,8 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 			}
 		}
 		if allowOptionID != "" {
-			slog.Info("acp: auto-approving permission request",
+			slog.Info(
+				"acp: auto-approving permission request",
 				"session_id", sessionID,
 				"tool_call_id", toolCallID,
 				"tool_name", toolName,
@@ -331,7 +340,8 @@ func (c *ClawBenchACPClient) RequestPermission(ctx context.Context, p acp.Reques
 			}, nil
 		}
 		// No allow option found — fall through to normal interactive flow
-		slog.Warn("acp: auto-approve mode but no allow option found, falling back to interactive",
+		slog.Warn(
+			"acp: auto-approve mode but no allow option found, falling back to interactive",
 			"session_id", sessionID,
 			"tool_call_id", toolCallID,
 		)

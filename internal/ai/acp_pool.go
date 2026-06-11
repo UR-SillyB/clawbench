@@ -570,6 +570,10 @@ type ACPConn struct {
 
 	// unsupportedConfigs tracks config IDs that the agent reported as unknown.
 	unsupportedConfigs map[string]bool
+
+	// listSessionsFn overrides ListSessions for testing. If nil, the real
+	// ACP JSON-RPC call is used.
+	listSessionsFn func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error)
 }
 
 // newACPConn creates a new (uninitialized) ACPConn.
@@ -989,4 +993,34 @@ func (c *ACPConn) KillProcessForTest() error {
 	p := c.cmd.Process
 	c.mu.Unlock()
 	return p.Kill()
+}
+
+// SetListSessionsFnForTest overrides the ListSessions implementation for testing.
+// If fn is non-nil, it is called instead of the real ACP JSON-RPC call.
+func (c *ACPConn) SetListSessionsFnForTest(fn func(ctx context.Context, cursor *string) ([]acp.SessionInfo, *string, error)) {
+	c.mu.Lock()
+	c.listSessionsFn = fn
+	c.mu.Unlock()
+}
+
+// InjectAliveConnForTest creates and registers an alive ACPConn for testing.
+// The connection is marked as alive with a session mapping and optional client,
+// so that GetOrCreateConnForLoad will find and reuse it (ensureAliveWithSession
+// returns early when alive + acpSID is set). Returns the conn and a cleanup function.
+// Production code must not use this.
+func (m *ACPConnManager) InjectAliveConnForTest(clawbenchSID string, agent *model.Agent, acpSID string, client *ClawBenchACPClient) *ACPConn {
+	conn := newACPConn(agent, clawbenchSID)
+	conn.SetAliveForTest()
+	conn.SetSessionMappingForTest(clawbenchSID, acpSID)
+	if client != nil {
+		conn.SetClientForTest(client)
+	}
+	m.SetConnForTest(clawbenchSID, conn)
+	return conn
+}
+
+// NewACPConnForTest creates a new (uninitialized) ACPConn for testing.
+// Production code must not use this.
+func NewACPConnForTest(agent *model.Agent, clawbenchSID string) *ACPConn {
+	return newACPConn(agent, clawbenchSID)
 }
