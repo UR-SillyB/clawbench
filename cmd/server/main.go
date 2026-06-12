@@ -595,7 +595,6 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 			}
 		}()
 	}
->>>>>>> f65df58a (feat: auto-refresh model list with configurable interval and DB persistence)
 
 	// Set default agent ID from config, or fall back to first agent
 	if cfg.DefaultAgent != "" {
