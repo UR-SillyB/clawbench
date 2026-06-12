@@ -583,7 +583,8 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 
 	// Apply CC Switch env model names (e.g. ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.1).
 	// Maps the family portion of claude-sonnet-4-6 to the real model name.
-	if envNames := LoadClaudeEnvModelNames(); len(envNames) > 0 {
+	envNames := LoadClaudeEnvModelNames()
+	if len(envNames) > 0 {
 		for i := range models {
 			parts := strings.SplitN(models[i].ID, "-", 3) // ["claude", "sonnet", "4-6"]
 			if len(parts) >= 2 {
@@ -595,56 +596,68 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 		}
 	}
 
-	// Deduplicate models with the same display name within the same family
-	// (e.g. CC Switch maps all sonnet/opus/haiku to the same third-party model like "glm-5.1").
-	// Different families (sonnet vs opus vs haiku) are NOT deduplicated even
-	// if they share a display name — each family represents a distinct capability
-	// tier that the user should be able to select.
-	// Key: "family:name" — e.g., "sonnet:free" and "opus:free" are distinct.
-	seenKey := make(map[string]bool)
-	var deduped []AgentModel
-	for _, m := range models {
-		parts := strings.SplitN(m.ID, "-", 3) // ["claude", "sonnet", "4-6"]
-		family := "other"
-		if len(parts) >= 2 {
-			family = parts[1]
+	// When CC Switch maps all families to the same model (e.g., "free"),
+	// merge everything into a single entry using an alias ID (works in both
+	// CLI and ACP modes) with the CC Switch display name.
+	// Otherwise, keep per-family deduped entries + prepend alias fallbacks.
+	if len(envNames) > 0 {
+		// Check if all mapped families share the same name
+		uniqueNames := make(map[string]bool)
+		for _, name := range envNames {
+			uniqueNames[name] = true
 		}
-		key := family + ":" + m.Name
-		if seenKey[key] {
-			continue
+		if len(uniqueNames) == 1 {
+			// All families route to the same model - single entry
+			singleName := ""
+			for _, name := range envNames {
+				singleName = name
+				break
+			}
+			models = []AgentModel{
+				{ID: "sonnet", Name: singleName, Default: true},
+			}
+			slog.Debug("claude model discovery: CC Switch merged all families into single model", "name", singleName)
 		}
-		seenKey[key] = true
-		deduped = append(deduped, m)
 	}
-	if len(deduped) > 0 {
-		deduped[0].Default = true
-	}
-	models = deduped
 
-	// Prepend well-known Claude alias models that are always valid regardless
-	// of API version or proxy configuration. These aliases (sonnet, opus, haiku)
-	// are resolved by Claude CLI internally and never cause 422 errors.
-	// They are placed first to act as safe defaults when discovered models
-	// may not all be available on the user's API endpoint.
-	aliasModels := []AgentModel{
-		{ID: "sonnet", Name: "Claude Sonnet (alias)"},
-		{ID: "opus", Name: "Claude Opus (alias)"},
-		{ID: "haiku", Name: "Claude Haiku (alias)"},
-	}
-	// Only add aliases not already present by ID
-	seenID := make(map[string]bool, len(models))
-	for _, m := range models {
-		seenID[m.ID] = true
-	}
-	aliasInserted := 0
-	for i := len(aliasModels) - 1; i >= 0; i-- {
-		if !seenID[aliasModels[i].ID] {
-			models = append([]AgentModel{aliasModels[i]}, models...)
-			aliasInserted++
+	// If CC Switch didn't collapse into one, do per-family dedup and add aliases
+	if len(models) > 1 {
+		// Deduplicate within same family by display name
+		seenKey := make(map[string]bool)
+		var deduped []AgentModel
+		for _, m := range models {
+			parts := strings.SplitN(m.ID, "-", 3)
+			family := "other"
+			if len(parts) >= 2 {
+				family = parts[1]
+			}
+			key := family + ":" + m.Name
+			if seenKey[key] {
+				continue
+			}
+			seenKey[key] = true
+			deduped = append(deduped, m)
 		}
-	}
-	if aliasInserted > 0 {
-		slog.Debug("claude model discovery: added alias models", "count", aliasInserted)
+		if len(deduped) > 0 {
+			deduped[0].Default = true
+		}
+		models = deduped
+
+		// Prepend well-known alias models as safe fallbacks
+		aliasModels := []AgentModel{
+			{ID: "sonnet", Name: "Claude Sonnet (alias)"},
+			{ID: "opus", Name: "Claude Opus (alias)"},
+			{ID: "haiku", Name: "Claude Haiku (alias)"},
+		}
+		seenID := make(map[string]bool, len(models))
+		for _, m := range models {
+			seenID[m.ID] = true
+		}
+		for i := len(aliasModels) - 1; i >= 0; i-- {
+			if !seenID[aliasModels[i].ID] {
+				models = append([]AgentModel{aliasModels[i]}, models...)
+			}
+		}
 	}
 
 	// If binary scanning found no models, fall back to known defaults
