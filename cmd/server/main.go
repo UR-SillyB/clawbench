@@ -554,20 +554,27 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	slog.Info("agents loaded", slog.Int("count", len(model.AgentList)))
 
 	// refreshModelCache discovers models, writes cache, updates in-memory agents, and persists to DB.
+	// DiscoverModels is called WITHOUT configMutex (it can be slow — e.g., ExtractStrings
+	// on 200MB+ binaries). The write lock is only held briefly when mutating agent.Models
+	// to avoid blocking concurrent GET /api/agents requests.
 	refreshModelCache := func() {
 		for _, spec := range model.BackendRegistry {
 			if !model.CanDiscoverModels(spec) {
 				continue
 			}
+			// Discovery is slow — do NOT hold configMutex here.
 			models := model.DiscoverModels(spec)
 			if len(models) == 0 {
 				continue
 			}
 			slog.Info("refreshed model cache", "backend", spec.Backend, "count", len(models))
 
+			// Briefly acquire write lock only to mutate agent.Models.
+			handler.UpdateAgentModelsInMemory(spec.Backend, models)
+
+			// DB writes are thread-safe — no configMutex needed.
 			for _, agent := range model.AgentList {
 				if agent.Backend == spec.Backend && agent.ModelsAutoDetected {
-					agent.Models = models
 					if err := service.SaveAgent(service.DB, agent); err != nil {
 						slog.Warn("failed to persist refreshed models to DB", "agent", agent.ID, "error", err)
 					}

@@ -234,10 +234,15 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	configMutex.Lock()
-	defer configMutex.Unlock()
-
+	// Lookup agent under read lock, then release before slow discovery.
+	configMutex.RLock()
 	agent, ok := model.Agents[agentID]
+	agentBackend := ""
+	if ok {
+		agentBackend = agent.Backend
+	}
+	configMutex.RUnlock()
+
 	if !ok {
 		writeLocalizedErrorf(w, r, http.StatusNotFound, "AgentNotFound")
 		return
@@ -250,7 +255,9 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 	providerSpec := findProviderSpecForAgent(agentID)
 
 	// Strategy 1: CLI model discovery via BackendSpec
-	spec := model.FindSpecByBackend(agent.Backend)
+	// NOTE: DiscoverModels can be slow (e.g., ExtractStrings on 200MB+ binary).
+	// Do NOT hold configMutex during discovery to avoid blocking GET /api/agents.
+	spec := model.FindSpecByBackend(agentBackend)
 	if spec != nil && model.CanDiscoverModels(*spec) {
 		canDiscover = true
 		discovered := model.DiscoverModels(*spec)
@@ -302,11 +309,19 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update in-memory agent (regardless of ModelsAutoDetected — manual refresh always overrides)
+	// Update in-memory agent under write lock (regardless of ModelsAutoDetected — manual refresh always overrides)
+	configMutex.Lock()
+	agent, ok = model.Agents[agentID]
+	if !ok {
+		configMutex.Unlock()
+		writeLocalizedErrorf(w, r, http.StatusNotFound, "AgentNotFound")
+		return
+	}
 	agent.Models = models
 	agent.ModelsAutoDetected = true
+	configMutex.Unlock()
 
-	// Update database
+	// Update database (no lock needed — DB is thread-safe)
 	if err := service.SaveAgent(service.DB, agent); err != nil {
 		slog.Warn("failed to persist model refresh to DB", "agent", agentID, "error", err)
 	}
@@ -314,6 +329,19 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models": models,
 	})
+}
+
+// UpdateAgentModelsInMemory safely updates the Models field on all agents matching
+// the given backend (when ModelsAutoDetected is true) under the configMutex write lock.
+// Used by background refreshModelCache to avoid data races with concurrent GET /api/agents.
+func UpdateAgentModelsInMemory(backend string, models []model.AgentModel) {
+	configMutex.Lock()
+	for _, agent := range model.AgentList {
+		if agent.Backend == backend && agent.ModelsAutoDetected {
+			agent.Models = models
+		}
+	}
+	configMutex.Unlock()
 }
 
 // findProviderSpecForAgent looks up the provider for an agent from the agent_api_keys table
