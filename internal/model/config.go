@@ -33,7 +33,8 @@ type Config struct {
 	Host         string `yaml:"host"`      // Bind address (empty = 0.0.0.0, "localhost" = 127.0.0.1 only)
 	LogLevel     string `yaml:"log_level"` // Log level: "debug", "info", "warn", "error" (default: "info")
 	Password     string `yaml:"password"`
-	DefaultAgent string `yaml:"default_agent"`
+	DefaultAgent         string `yaml:"default_agent"`
+	ModelRefreshInterval string `yaml:"model_refresh_interval"` // Auto-refresh interval for model list (e.g. "30m", "1h"; empty = disabled)
 	LogDir       string `yaml:"log_dir"`
 	LogMaxDays   int    `yaml:"log_max_days"`
 	TLS          struct {

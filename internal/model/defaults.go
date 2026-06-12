@@ -229,5 +229,9 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string { //nolint:goco
 		cfg.Terminal.MaxSessions = 10
 	}
 
+	if cfg.ModelRefreshInterval == "" {
+		cfg.ModelRefreshInterval = "30m"
+	}
+
 	return autoPassword
 }

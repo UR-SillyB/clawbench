@@ -553,8 +553,49 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 
 	slog.Info("agents loaded", slog.Int("count", len(model.AgentList)))
 
+	// refreshModelCache discovers models, writes cache, updates in-memory agents, and persists to DB.
+	refreshModelCache := func() {
+		for _, spec := range model.BackendRegistry {
+			if !model.CanDiscoverModels(spec) {
+				continue
+			}
+			models := model.DiscoverModels(spec)
+			if len(models) == 0 {
+				continue
+			}
+			slog.Info("refreshed model cache", "backend", spec.Backend, "count", len(models))
+
+			for _, agent := range model.AgentList {
+				if agent.Backend == spec.Backend && agent.ModelsAutoDetected {
+					agent.Models = models
+					if err := service.SaveAgent(service.DB, agent); err != nil {
+						slog.Warn("failed to persist refreshed models to DB", "agent", agent.ID, "error", err)
+					}
+				}
+			}
+		}
+	}
+
 	// 4. Async: refresh model cache in background (non-blocking)
-	model.AsyncRefreshModelCache(service.DB)
+	go refreshModelCache()
+
+	// 5. Periodic model auto-refresh (configurable interval)
+	if cfg.ModelRefreshInterval != "" {
+		interval, err := time.ParseDuration(cfg.ModelRefreshInterval)
+		if err != nil {
+			slog.Warn("invalid model_refresh_interval, using default 30m", "value", cfg.ModelRefreshInterval, "error", err)
+			interval = 30 * time.Minute
+		}
+		slog.Info("model auto-refresh enabled", slog.String("interval", interval.String()))
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				refreshModelCache()
+			}
+		}()
+	}
+>>>>>>> f65df58a (feat: auto-refresh model list with configurable interval and DB persistence)
 
 	// Set default agent ID from config, or fall back to first agent
 	if cfg.DefaultAgent != "" {

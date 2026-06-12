@@ -180,6 +180,13 @@ summarize:
 # Available agents depend on your database / 可用智能体取决于数据库
 default_agent: "codebuddy"
 
+# Model auto-refresh interval (default: "30m"; empty = disabled)
+# Automatically refreshes model lists for all backends at the configured interval.
+# 模型列表自动刷新间隔（默认: "30m"；为空则禁用）
+# 按配置间隔自动刷新所有后端的模型列表。
+# Supports: "30s", "5m", "1h", "2h30m", etc. / 支持: "30s", "5m", "1h", "2h30m" 等
+# model_refresh_interval: "30m"
+
 # Logging configuration (optional) / 日志配置（可选）
 # Default: .clawbench/logs under the binary directory / 默认：二进制同级目录下的 .clawbench/logs/
 log_dir: ".clawbench/logs"
