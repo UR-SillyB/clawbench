@@ -6,20 +6,22 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch: # 支持手动触发
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync upstream changes
+      - name: Sync upstream via rebase
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -27,19 +29,42 @@ jobs:
           git remote add upstream https://github.com/clawbench-dev/clawbench.git
           git fetch upstream main
 
-          # Check if there are new commits
-          NEW_COMMITS=$(git log --oneline HEAD..upstream/main | wc -l)
+          # Check if there are new upstream commits
+          NEW_COMMITS=$(git log --oneline HEAD..upstream/main | wc -l | tr -d ' ')
           if [ "$NEW_COMMITS" -eq 0 ]; then
-            echo "✅ Already up to date, nothing to sync."
+            echo "✅ Already up to date."
             exit 0
           fi
 
-          echo "📥 Found $NEW_COMMITS new commit(s) from upstream:"
+          echo "📥 Found $NEW_COMMITS new upstream commit(s):"
           git log --oneline HEAD..upstream/main
 
-          # Merge with ours strategy to preserve fork changes
-          git merge upstream/main -X ours \
-            -m "chore: auto-sync upstream (resolve conflicts with ours strategy)"
+          # Check fork-only commits
+          FORK_COMMITS=$(git log --oneline upstream/main..HEAD)
+          FORK_COUNT=$(echo "$FORK_COMMITS" | grep -c . || true)
 
-          git push origin main
-          echo "✅ Upstream changes merged and pushed."
+          if [ "$FORK_COUNT" -eq 0 ]; then
+            echo "No fork-only commits, fast-forwarding..."
+            git merge --ff-only upstream/main
+            git push origin main
+            echo "✅ Fast-forward sync complete."
+            exit 0
+          fi
+
+          echo "📋 Rebasing $FORK_COUNT fork commit(s) onto upstream:"
+          echo "$FORK_COMMITS"
+
+          # Rebase fork commits on top of upstream
+          if ! git rebase upstream/main; then
+            echo ""
+            echo "❌ Rebase conflict detected — cannot auto-resolve."
+            echo "Fork-only commits that conflicted:"
+            git rebase --abort 2>/dev/null || true
+            echo ""
+            echo "::error::Rebase conflicts — manual sync required. Run locally: git fetch upstream && git rebase upstream/main"
+            exit 1
+          fi
+
+          # Rebase succeeded, force push the clean history
+          git push origin main --force
+          echo "✅ Rebase sync complete. $FORK_COUNT fork commit(s) rebased onto $NEW_COMMITS upstream commit(s)."
