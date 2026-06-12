@@ -595,22 +595,57 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 		}
 	}
 
-	// Deduplicate models with the same display name (e.g. CC Switch maps all
-	// sonnet/opus/haiku to the same third-party model like "glm-5.1").
-	// Keep the first occurrence (prefer default), mark it as default.
-	seenName := make(map[string]bool)
+	// Deduplicate models with the same display name within the same family
+	// (e.g. CC Switch maps all sonnet/opus/haiku to the same third-party model like "glm-5.1").
+	// Different families (sonnet vs opus vs haiku) are NOT deduplicated even
+	// if they share a display name — each family represents a distinct capability
+	// tier that the user should be able to select.
+	// Key: "family:name" — e.g., "sonnet:free" and "opus:free" are distinct.
+	seenKey := make(map[string]bool)
 	var deduped []AgentModel
 	for _, m := range models {
-		if seenName[m.Name] {
+		parts := strings.SplitN(m.ID, "-", 3) // ["claude", "sonnet", "4-6"]
+		family := "other"
+		if len(parts) >= 2 {
+			family = parts[1]
+		}
+		key := family + ":" + m.Name
+		if seenKey[key] {
 			continue
 		}
-		seenName[m.Name] = true
+		seenKey[key] = true
 		deduped = append(deduped, m)
 	}
 	if len(deduped) > 0 {
 		deduped[0].Default = true
 	}
 	models = deduped
+
+	// Prepend well-known Claude alias models that are always valid regardless
+	// of API version or proxy configuration. These aliases (sonnet, opus, haiku)
+	// are resolved by Claude CLI internally and never cause 422 errors.
+	// They are placed first to act as safe defaults when discovered models
+	// may not all be available on the user's API endpoint.
+	aliasModels := []AgentModel{
+		{ID: "sonnet", Name: "Claude Sonnet (alias)"},
+		{ID: "opus", Name: "Claude Opus (alias)"},
+		{ID: "haiku", Name: "Claude Haiku (alias)"},
+	}
+	// Only add aliases not already present by ID
+	seenID := make(map[string]bool, len(models))
+	for _, m := range models {
+		seenID[m.ID] = true
+	}
+	aliasInserted := 0
+	for i := len(aliasModels) - 1; i >= 0; i-- {
+		if !seenID[aliasModels[i].ID] {
+			models = append([]AgentModel{aliasModels[i]}, models...)
+			aliasInserted++
+		}
+	}
+	if aliasInserted > 0 {
+		slog.Debug("claude model discovery: added alias models", "count", aliasInserted)
+	}
 
 	// If binary scanning found no models, fall back to known defaults
 	if len(models) == 0 {
@@ -629,6 +664,9 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 // claudeDefaultModels lists known Claude models as a fallback when binary
 // scanning fails (e.g. claude CLI not found or ExtractStrings returns nothing).
 var claudeDefaultModels = []AgentModel{
+	{ID: "sonnet", Name: "Claude Sonnet", Default: true},
+	{ID: "opus", Name: "Claude Opus"},
+	{ID: "haiku", Name: "Claude Haiku"},
 	{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4"},
 	{ID: "claude-opus-4-20250514", Name: "Claude Opus 4"},
 	{ID: "claude-haiku-3-5-20241022", Name: "Claude 3.5 Haiku"},
