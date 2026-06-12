@@ -1,0 +1,45 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每天 UTC 02:00 (北京时间 10:00) 自动同步
+    - cron: '0 2 * * *'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Sync upstream changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/clawbench-dev/clawbench.git
+          git fetch upstream main
+
+          # Check if there are new commits
+          NEW_COMMITS=$(git log --oneline HEAD..upstream/main | wc -l)
+          if [ "$NEW_COMMITS" -eq 0 ]; then
+            echo "✅ Already up to date, nothing to sync."
+            exit 0
+          fi
+
+          echo "📥 Found $NEW_COMMITS new commit(s) from upstream:"
+          git log --oneline HEAD..upstream/main
+
+          # Merge with ours strategy to preserve fork changes
+          git merge upstream/main -X ours \
+            -m "chore: auto-sync upstream (resolve conflicts with ours strategy)"
+
+          git push origin main
+          echo "✅ Upstream changes merged and pushed."
