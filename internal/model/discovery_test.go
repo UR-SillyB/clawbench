@@ -413,8 +413,12 @@ func TestDiscoverClaudeModels_WithRealCLI(t *testing.T) {
 		t.Skip("claude model discovery returned no models (strings may not be available)")
 	}
 
+	// Known human-friendly aliases produced by the discovery logic alongside
+	// the full versioned IDs (e.g. claude-sonnet-4-6).
 	for _, m := range models {
-		assert.True(t, strings.HasPrefix(m.ID, "claude-"), "model ID should start with claude-, got: %s", m.ID)
+		isAlias := model.KnownClaudeAlias(m.ID)
+		assert.True(t, strings.HasPrefix(m.ID, "claude-") || isAlias,
+			"model ID should start with claude- or be a known alias, got: %s", m.ID)
 		assert.NotEmpty(t, m.Name, "model should have a name")
 	}
 	assert.True(t, models[0].Default, "first model should be default")

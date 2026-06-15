@@ -419,6 +419,14 @@ var claudeModelRe = regexp.MustCompile(`^claude-(sonnet|opus|haiku)-\d+-\d+$`)
 // claudeModelOrder defines the preferred display order: sonnet first (default), then opus, then haiku.
 var claudeModelOrder = map[string]int{"sonnet": 0, "opus": 1, "haiku": 2}
 
+// knownClaudeAlias lists the short alias IDs that discovery appends as safe
+// fallbacks alongside the full versioned Claude model IDs.
+var knownClaudeAlias = map[string]bool{"sonnet": true, "opus": true, "haiku": true}
+
+// KnownClaudeAlias reports whether id is one of the short alias IDs
+// (sonnet/opus/haiku) produced by Claude model discovery.
+func KnownClaudeAlias(id string) bool { return knownClaudeAlias[id] }
+
 // claudeModelNames maps model ID prefixes to human-readable names.
 var claudeModelNames = map[string]string{
 	"sonnet": "Sonnet",
@@ -643,7 +651,8 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 		}
 		models = deduped
 
-		// Prepend well-known alias models as safe fallbacks
+		// Append well-known alias models as safe fallbacks after the versioned
+		// models, so the first entry remains the default versioned model.
 		aliasModels := []AgentModel{
 			{ID: "sonnet", Name: "Claude Sonnet (alias)"},
 			{ID: "opus", Name: "Claude Opus (alias)"},
@@ -653,9 +662,9 @@ func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary s
 		for _, m := range models {
 			seenID[m.ID] = true
 		}
-		for i := len(aliasModels) - 1; i >= 0; i-- {
-			if !seenID[aliasModels[i].ID] {
-				models = append([]AgentModel{aliasModels[i]}, models...)
+		for _, am := range aliasModels {
+			if !seenID[am.ID] {
+				models = append(models, am)
 			}
 		}
 	}
