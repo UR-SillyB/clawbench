@@ -1774,5 +1774,15 @@ public class MainActivity extends AppCompatActivity {
         public void stopLogCapture() {
             AppLog.stopCapture();
         }
+
+        /**
+         * Update the active terminal session count shown in the background notification.
+         * Called from the WebView when terminal tabs are created/closed.
+         * The notification text shows "N 个终端" alongside port forward count.
+         */
+        @JavascriptInterface
+        public void setTerminalSessionCount(int count) {
+            BackgroundService.setTerminalSessionCount(count);
+        }
     }
 }

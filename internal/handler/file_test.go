@@ -11,6 +11,7 @@ import (
 	"clawbench/internal/model"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestListDir(t *testing.T) {
@@ -798,5 +799,54 @@ func TestServeFileBatchExists(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "none", results["*.class"])    // glob → none (no os.Stat)
 		assert.Equal(t, "file", results["test.class"]) // real path → file
+	})
+}
+
+func TestGetFile_BrokenSymlink(t *testing.T) {
+	t.Run("DanglingSymlink_Returns404BrokenSymlink", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		// Create a dangling symlink (target doesn't exist)
+		linkPath := filepath.Join(env.ProjectDir, "broken_link")
+		if err := os.Symlink("/nonexistent/target/file.txt", linkPath); err != nil {
+			t.Fatalf("failed to create symlink: %v", err)
+		}
+
+		req := newRequest(t, http.MethodGet, "/api/file/broken_link", nil)
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(GetFile, req)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+
+		var result map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+		// Should have the BrokenSymlink error key
+		errKey, _ := result["error"].(map[string]any)
+		if errKey != nil {
+			assert.Equal(t, "BrokenSymlink", errKey["key"])
+			details, _ := errKey["details"].(map[string]any)
+			if details != nil {
+				assert.Equal(t, "/nonexistent/target/file.txt", details["Target"])
+			}
+		}
+	})
+
+	t.Run("ValidSymlink_ReturnsFileContent", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		// Create a real file and a symlink pointing to it
+		createTestFile(t, env.ProjectDir, "real_file.txt", "hello from real file")
+		linkPath := filepath.Join(env.ProjectDir, "good_link")
+		if err := os.Symlink("real_file.txt", linkPath); err != nil {
+			t.Fatalf("failed to create symlink: %v", err)
+		}
+
+		req := newRequest(t, http.MethodGet, "/api/file/good_link", nil)
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(GetFile, req)
+		assert.Equal(t, http.StatusOK, w.Code)
 	})
 }

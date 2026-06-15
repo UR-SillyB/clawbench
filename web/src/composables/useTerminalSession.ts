@@ -1,5 +1,4 @@
-import { ref, type Ref } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { ref, computed, type Ref } from 'vue'
 import { useReconnect } from './useReconnect'
 import {
   NO_RECONNECT_CODES,
@@ -18,8 +17,16 @@ export interface TerminalStatus {
   cwd: string
 }
 
-export function useTerminalSession(getWsUrl: () => string) {
-  const { t } = useI18n()
+/** Error messages used by useTerminalSession — caller provides localized strings. */
+export interface TerminalErrorMessages {
+  shellStartFailed: string
+  websocketFailed: string
+}
+
+export function useTerminalSession(
+  getWsUrl: () => string,
+  errorMessages?: TerminalErrorMessages,
+) {
   const connectionState: Ref<ConnectionState> = ref('disconnected')
   const errorMessage = ref('')
   const errorCode = ref('')
@@ -81,7 +88,7 @@ export function useTerminalSession(getWsUrl: () => string) {
         }
         if (result.state.errorCode) {
           errorCode.value = result.state.errorCode
-          errorMessage.value = t('terminal.shellStartFailed')
+          errorMessage.value = errorMessages?.shellStartFailed || 'Shell start failed'
         }
         if (result.state.fatalError) {
           fatalError = true
@@ -97,7 +104,7 @@ export function useTerminalSession(getWsUrl: () => string) {
         // Don't set error state here — onclose will fire next and handle it
         // Just remember this was a connection failure
         if (connectionState.value !== 'error') {
-          errorMessage.value = t('terminal.websocketFailed')
+          errorMessage.value = errorMessages?.websocketFailed || 'WebSocket connection failed'
           connectionState.value = 'error'
         }
         reject(new Error(errorMessage.value))
@@ -108,7 +115,7 @@ export function useTerminalSession(getWsUrl: () => string) {
   function disconnect() {
     reconnect.reset()
     fatalError = false
-    sessionId.value = '' // intentional close = next connect creates new session
+    // sessionId intentionally NOT cleared — allows reattach to existing PTY on next connect()
     if (ws.value) {
       ws.value.close()
       ws.value = null
@@ -133,7 +140,7 @@ export function useTerminalSession(getWsUrl: () => string) {
   function tryReconnect() {
     if (!reconnect.shouldReconnect()) {
       connectionState.value = 'error'
-      errorMessage.value = errorMessage.value || t('terminal.websocketFailed')
+      errorMessage.value = errorMessage.value || errorMessages?.websocketFailed || 'WebSocket connection failed'
       return
     }
     connectionState.value = 'reconnecting'
@@ -190,7 +197,12 @@ export function useTerminalSession(getWsUrl: () => string) {
       ws.value.send(JSON.stringify({ type: 'close' }))
     }
     disconnect()
+    // Explicit close kills the PTY — clear sessionId so next connect creates a new session
+    sessionId.value = ''
   }
+
+  /** Whether the WebSocket is currently open. */
+  const wsOpen = computed(() => ws.value?.readyState === WebSocket.OPEN)
 
   return {
     connectionState,
@@ -198,6 +210,7 @@ export function useTerminalSession(getWsUrl: () => string) {
     errorCode,
     currentCwd,
     sessionId,
+    wsOpen,
     connect,
     disconnect,
     reset,

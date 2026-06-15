@@ -30,6 +30,15 @@ func setupTestDBForChatSummary(t *testing.T) (*sql.DB, func()) {
 
 	// Create minimal tables needed for enrichMessagesWithSummaries
 	_, _ = db.Exec(`
+		CREATE TABLE IF NOT EXISTS chat_sessions (
+			id TEXT PRIMARY KEY,
+			project_path TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			title TEXT NOT NULL,
+			deleted INTEGER NOT NULL DEFAULT 0
+		);
+	`)
+	_, _ = db.Exec(`
 		CREATE TABLE IF NOT EXISTS chat_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT NOT NULL,
@@ -171,11 +180,102 @@ func TestTriggerChatSummarization_Disabled(t *testing.T) {
 	defer teardown()
 
 	origEnabled := chatSummaryEnabled.Load()
-	defer func() { chatSummaryEnabled.Store(origEnabled) }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
 
 	chatSummaryEnabled.Store(false)
 	// Should return immediately without error
 	triggerChatSummarization("nonexistent-session")
+}
+
+func TestTriggerChatSummarization_DisabledMode(t *testing.T) {
+	_, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
+
+	// mode == "" means disabled, even if chatSummaryEnabled is true
+	SetChatSummaryMode("")
+	chatSummaryEnabled.Store(true)
+	triggerChatSummarization("nonexistent-session")
+}
+
+func TestTriggerChatSummarization_SimpleMode_ExtractsLastAnswer(t *testing.T) {
+	db, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
+
+	SetChatSummaryMode("simple")
+	chatSummaryEnabled.Store(true)
+
+	// Insert session + messages
+	sessionID := "test-simple-session"
+	_, _ = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/test', 'claude', 'test')", sessionID)
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (100, '/test', 'user', 'hello', ?, 0)", sessionID)
+	assistantContent := `{"blocks":[{"type":"text","text":"Let me check."},{"type":"tool_use","name":"Bash","id":"t1"},{"type":"text","text":"The answer is 42."}]}`
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (101, '/test', 'assistant', ?, ?, 0)", assistantContent, sessionID)
+
+	triggerChatSummarization(sessionID)
+
+	// Should have saved the last text block as summary
+	summary, found := GetSummary("chat_message", 101)
+	assert.True(t, found)
+	assert.Equal(t, "The answer is 42.", summary)
+}
+
+func TestTriggerChatSummarization_SimpleMode_NoTextAfterToolUse(t *testing.T) {
+	db, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
+
+	SetChatSummaryMode("simple")
+	chatSummaryEnabled.Store(true)
+
+	sessionID := "test-simple-notext"
+	_, _ = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/test', 'claude', 'test')", sessionID)
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (110, '/test', 'user', 'hello', ?, 0)", sessionID)
+	assistantContent := `{"blocks":[{"type":"tool_use","name":"Bash","id":"t1"}]}`
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (111, '/test', 'assistant', ?, ?, 0)", assistantContent, sessionID)
+
+	triggerChatSummarization(sessionID)
+
+	// No text block at all → no summary saved
+	_, found := GetSummary("chat_message", 111)
+	assert.False(t, found)
+}
+
+func TestSetChatSummaryMode(t *testing.T) {
+	origMode := GetChatSummaryMode()
+	defer SetChatSummaryMode(origMode)
+
+	SetChatSummaryMode("simple")
+	assert.Equal(t, "simple", GetChatSummaryMode())
+
+	SetChatSummaryMode("ai")
+	assert.Equal(t, "ai", GetChatSummaryMode())
+
+	SetChatSummaryMode("")
+	assert.Equal(t, "", GetChatSummaryMode())
 }
 
 func TestSetChatSummaryEnabled(t *testing.T) {

@@ -152,6 +152,7 @@ func TestSetupProviders_EachHasRequiredFields(t *testing.T) {
 
 func TestSetupModels_KnownModelsProvider(t *testing.T) {
 	defer setupAgentTestEnv(t)()
+	setupTestProviderModels(t)
 
 	body := map[string]any{
 		"provider":   "anthropic",
@@ -441,6 +442,7 @@ func TestSetupModels_EmptyProviderNoCustomURL(t *testing.T) {
 // Uses a mock server to avoid hitting real endpoints.
 func TestSetupModels_OpenAIProviderHTTPFetch(t *testing.T) {
 	defer setupAgentTestEnv(t)()
+	setupTestProviderModels(t)
 
 	// Start a mock server that returns models in OpenAI format
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -479,6 +481,7 @@ func TestSetupModels_OpenAIProviderHTTPFetch(t *testing.T) {
 // TestSetupModels_KnownModelsFields tests that KnownModels entries have expected fields.
 func TestSetupModels_KnownModelsFields(t *testing.T) {
 	defer setupAgentTestEnv(t)()
+	setupTestProviderModels(t)
 
 	body := map[string]any{
 		"provider": "anthropic",

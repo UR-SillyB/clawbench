@@ -4,6 +4,8 @@ import { nextTick } from 'vue'
 import BottomSheet from '@/components/common/BottomSheet.vue'
 
 describe('BottomSheet', () => {
+  const TeleportStub = { template: '<div><slot /></div>' }
+
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -13,7 +15,7 @@ describe('BottomSheet', () => {
       props: { open: true, ...props },
       slots,
       global: {
-        stubs: { teleport: true },
+        stubs: { Teleport: TeleportStub },
       },
     })
   }
@@ -160,7 +162,7 @@ describe('BottomSheet', () => {
   it('does not render when never opened', () => {
     const wrapper = mount(BottomSheet, {
       props: { open: false },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
 
     expect(wrapper.find('.bs-overlay').exists()).toBe(false)
@@ -170,7 +172,7 @@ describe('BottomSheet', () => {
     const wrapper = mount(BottomSheet, {
       props: { open: false },
       slots: { default: '<div class="content">Hello</div>' },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
 
     expect(wrapper.find('.bs-overlay').exists()).toBe(false)

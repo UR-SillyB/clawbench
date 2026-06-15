@@ -178,7 +178,7 @@ func TestLocalizerForLocale_EmptyDefaultsToEnglish(t *testing.T) {
 
 func TestLocalizerForLocale_PushNotificationKeys(t *testing.T) {
 	// Verify all push notification i18n keys exist in both languages
-	keys := []string{"PushTaskCompleted", "PushSessionEnded", "PushScheduledTaskDone"}
+	keys := []string{"PushTaskCompleted", "PushSessionEnded", "PushScheduledTaskDone", "PushPermissionPending"}
 	for _, key := range keys {
 		enLoc := LocalizerForLocale("en")
 		enMsg := T(enLoc, key)

@@ -10,7 +10,6 @@ TARGET_OS=""
 TARGET_ARCH=""
 BUILD_ANDROID=""
 DOWNLOAD_PI=""
-REFRESH_MODELS=""
 for arg in "$@"; do
     case "$arg" in
         --windows)
@@ -40,28 +39,22 @@ for arg in "$@"; do
         --with-pi)
             DOWNLOAD_PI=1
             ;;
-        --refresh-models)
-            REFRESH_MODELS=1
-            ;;
     esac
 done
 
 echo "=== Building $NAME ==="
 
-# 0. Generate provider models from models.dev API (only with --refresh-models)
-if [ -n "$REFRESH_MODELS" ]; then
+# 0. Generate provider models from models.dev API
+if command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
     echo "[0/5] Generating provider models..."
-    if command -v python3 >/dev/null 2>&1; then
-        if python3 scripts/generate-provider-models.py; then
-            echo "  internal/model/provider_models.json updated"
-        else
-            echo "  WARNING: Failed to generate provider models, using cached version"
-        fi
+    mkdir -p .clawbench
+    if scripts/fetch-provider-models.sh --output .clawbench/provider_models.json; then
+        echo "  .clawbench/provider_models.json updated"
     else
-        echo "  python3 not found, using cached provider_models.json"
+        echo "  WARNING: Failed to fetch provider models (using existing file if any)"
     fi
 else
-    echo "[0/5] Provider models skipped (use --refresh-models to fetch from models.dev API)"
+    echo "[0/5] Provider models skipped (requires curl and jq)"
 fi
 
 # Derive version from git (e.g. v1.0.0, v0.30.0-30-g830bb6c, or short SHA)
@@ -109,11 +102,19 @@ else
 fi
 
 # 1.5 Download Pi binary (embedded agent for setup wizard)
-# Default: skip. Use --with-pi to download, or set PI_VERSION to override version.
-# CI sets --with-pi alongside the cross-compile flag (e.g. --linux --with-pi).
-PI_VERSION="${PI_VERSION:-0.78.0}"
+# Default: skip. Use --with-pi to download, or set PI_VERSION to pin a version.
+# Without PI_VERSION, the latest release is fetched from GitHub API automatically.
 PI_DIR=".clawbench/pi"
 if [ -n "$DOWNLOAD_PI" ]; then
+    # Resolve Pi version: env var override > auto-detect latest from GitHub
+    if [ -z "$PI_VERSION" ]; then
+        PI_VERSION=$(curl -sI https://github.com/earendil-works/pi/releases/latest 2>/dev/null | grep -i "^location:" | sed 's|.*/tag/v||' | tr -d '[:space:]')
+        if [ -z "$PI_VERSION" ]; then
+            echo "  ERROR: Could not detect latest Pi version. Set PI_VERSION manually."
+            exit 1
+        fi
+        echo "  Auto-detected latest Pi version: v${PI_VERSION}"
+    fi
     echo "[3/5] Downloading Pi v${PI_VERSION}..."
     # Determine platform for Pi binary
     if [ -n "$TARGET_OS" ] && [ -n "$TARGET_ARCH" ]; then
@@ -211,7 +212,4 @@ echo "  ./build.sh --android          # Android APK (release)"
 echo ""
 echo "Embedded agent:"
 echo "  ./build.sh --linux --with-pi  # Linux + Pi binary (CI release)"
-echo "  PI_VERSION=0.79.0 ./build.sh --with-pi  # Override Pi version"
-echo ""
-echo "Model data:"
-echo "  ./build.sh --refresh-models  # Fetch latest models from models.dev API"
+echo "  PI_VERSION=0.79.0 ./build.sh --with-pi  # Pin a specific Pi version"

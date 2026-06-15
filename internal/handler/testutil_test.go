@@ -184,6 +184,15 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
+		CREATE TABLE IF NOT EXISTS terminal_key_config (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL,
+			key_id TEXT NOT NULL,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(type, key_id)
+		);
 		CREATE TABLE IF NOT EXISTS chat_metadata (
 			message_id INTEGER PRIMARY KEY,
 			mode TEXT DEFAULT '',
@@ -362,4 +371,73 @@ func assertJSONField(t *testing.T, w *httptest.ResponseRecorder, field string, e
 	if fmt.Sprintf("%v", val) != fmt.Sprintf("%v", expected) {
 		t.Errorf("field %q: expected %v, got %v", field, expected, val)
 	}
+}
+
+// testProviderModelsJSON is a minimal fixture for handler tests that need KnownModels.
+const testProviderModelsJSON = `{
+  "_generated_at": "test",
+  "_source": "test",
+  "providers": {
+    "anthropic": {
+      "models": [
+        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "context_length": 200000, "max_output_tokens": 64000, "supports_thinking": true, "cost_tier": "expensive"},
+        {"id": "claude-3-5-haiku-20241022", "name": "Claude Haiku 3.5", "context_length": 200000, "max_output_tokens": 8192, "supports_thinking": false, "cost_tier": "moderate"}
+      ]
+    },
+    "fireworks": {
+      "models": [
+        {"id": "fw-model", "name": "FW Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    },
+    "minimax": {
+      "models": [
+        {"id": "mm-model", "name": "MM Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    },
+    "minimax-cn": {
+      "models": [
+        {"id": "mmc-model", "name": "MMC Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    },
+    "kimi-coding": {
+      "models": [
+        {"id": "kc-model", "name": "KC Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    },
+    "vercel-ai-gateway": {
+      "models": [
+        {"id": "va-model", "name": "VA Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    },
+    "openai": {
+      "models": [
+        {"id": "gpt-4o", "name": "GPT-4o", "context_length": 128000, "max_output_tokens": 16384, "supports_thinking": false, "cost_tier": "expensive"},
+        {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "context_length": 128000, "max_output_tokens": 16384, "supports_thinking": false, "cost_tier": "cheap"}
+      ]
+    }
+  }
+}`
+
+// setupTestProviderModels populates ProviderRegistry KnownModels from test fixture data.
+func setupTestProviderModels(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	dir := filepath.Join(tmpDir, ".clawbench")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "provider_models.json"), []byte(testProviderModelsJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Save original ProviderRegistry entries
+	origRegistry := make(map[string]model.ProviderSpec, len(model.ProviderRegistry))
+	for k, v := range model.ProviderRegistry {
+		origRegistry[k] = v
+	}
+	t.Cleanup(func() {
+		for k, v := range origRegistry {
+			model.ProviderRegistry[k] = v
+		}
+	})
+	model.LoadProviderModelsFromFile(dir)
 }

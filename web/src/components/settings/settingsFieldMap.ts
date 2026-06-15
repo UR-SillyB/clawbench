@@ -47,7 +47,7 @@ export const categoryItems: Record<string, ItemSpec[]> = {
     ]},
   ],
   chat: [
-    { labelKey: 'settings.items.defaultAgent', descriptionKey: 'settings.items.defaultAgentDesc', key: 'default_agent', type: 'select', source: 'server', needsRestart: true },
+    { labelKey: 'settings.items.defaultAgent', descriptionKey: 'settings.items.defaultAgentDesc', key: 'default_agent', type: 'select', source: 'server', needsRestart: false },
     { labelKey: 'settings.items.autoSpeech', descriptionKey: 'settings.items.autoSpeechDesc', key: 'autoSpeech', type: 'switch', source: 'local' },
     { labelKey: 'settings.items.swipeSession', descriptionKey: 'settings.items.swipeSessionDesc', key: 'swipeSession', type: 'switch', source: 'local' },
     { labelKey: 'settings.items.chatInitialMessages', descriptionKey: 'settings.items.chatInitialMessagesDesc', key: 'chat.initial_messages', type: 'number', source: 'server' },
@@ -134,6 +134,7 @@ export const categoryItems: Record<string, ItemSpec[]> = {
   summarization: [
     // Summarization backend (shared by TTS and tasks)
     { labelKey: 'settings.items.summarizeBackend', descriptionKey: 'settings.items.summarizeBackendDesc', key: 'summarize.backend', type: 'select', source: 'server', options: [
+      { labelKey: 'settings.items.summarizeDisabled', value: '' },
       { labelKey: 'settings.items.summarizeSimple', value: 'simple' },
       { labelKey: 'settings.items.summarizeApi', value: 'api' },
       { labelKey: 'settings.items.summarizeClaude', value: 'claude' },
@@ -146,7 +147,8 @@ export const categoryItems: Record<string, ItemSpec[]> = {
       { labelKey: 'settings.items.summarizeDeepseek', value: 'deepseek' },
       { labelKey: 'settings.items.summarizePi', value: 'pi' },
     ]},
-    { labelKey: 'settings.items.summarizeModel', descriptionKey: 'settings.items.summarizeModelDesc', key: 'summarize.model', type: 'text', source: 'server' },
+    { labelKey: 'settings.items.summarizeModel', descriptionKey: 'settings.items.summarizeModelDesc', key: 'summarize.model', type: 'text', source: 'server',
+      dependsOn: { key: 'summarize.backend', values: ['api', 'claude', 'codebuddy', 'gemini', 'opencode', 'codex', 'qoder', 'vecli', 'deepseek', 'pi'] } },
     // API sub-config (shown when backend is "api")
     { labelKey: 'settings.items.apiBaseUrl', descriptionKey: 'settings.items.apiBaseUrlDesc', key: 'summarize.api.base_url', type: 'text', source: 'server',
       dependsOn: { key: 'summarize.backend', value: 'api' }, sectionHeader: 'settings.items.apiHeader' },
@@ -186,7 +188,6 @@ export const categoryItems: Record<string, ItemSpec[]> = {
   about: [
     { labelKey: 'settings.items.aboutServerVersion', descriptionKey: 'settings.items.aboutServerVersionDesc', key: 'serverVersion', type: 'info', source: 'server' },
     { labelKey: 'settings.items.aboutAppVersion', descriptionKey: 'settings.items.aboutAppVersionDesc', key: 'appVersion', type: 'info', source: 'local' },
-    { labelKey: 'settings.items.serverRestart', descriptionKey: 'settings.items.serverRestartDesc', key: 'restart', type: 'action', source: 'server' },
   ],
 }
 

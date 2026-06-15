@@ -753,6 +753,7 @@ func TestServeAgentRefreshModels_ProviderFilterNoMatch(t *testing.T) {
 
 func TestServeAgentRefreshModels_KnownModelsFallback(t *testing.T) {
 	defer setupAgentTestEnv(t)()
+	setupTestProviderModels(t)
 
 	// Set up agent_api_keys entry for a provider with KnownModels (e.g., anthropic)
 	require.NoError(t, service.SaveAgentAPIKey(service.DB, "codebuddy", "anthropic", "", "test-api-key"))

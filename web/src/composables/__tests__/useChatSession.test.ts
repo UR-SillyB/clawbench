@@ -9,7 +9,7 @@ const { mockState, resetMockState } = vi.hoisted(() => {
     runningSessionsVersion: 0,
     currentSessionId: '',
     chatRunning: false,
-    chatUnread: false,
+    chatUnreadCount: 0,
     chatInitialMessages: 20,
     chatPageSize: 20,
   }
@@ -18,7 +18,7 @@ const { mockState, resetMockState } = vi.hoisted(() => {
     mockState.runningSessionsVersion = 0
     mockState.currentSessionId = ''
     mockState.chatRunning = false
-    mockState.chatUnread = false
+    mockState.chatUnreadCount = 0
     mockState.chatInitialMessages = 20
     mockState.chatPageSize = 20
   }
@@ -308,7 +308,7 @@ describe('onSessionEvent', () => {
     session.onSessionEvent({ session_id: 's1', status: 'running' })
     // A different session completes — no longer sets chatUnread synchronously
     session.onSessionEvent({ session_id: 's2', status: 'completed' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('does not mark chatUnread when the current session completes', () => {
@@ -317,7 +317,7 @@ describe('onSessionEvent', () => {
 
     session.onSessionEvent({ session_id: 'current-s1', status: 'running' })
     session.onSessionEvent({ session_id: 'current-s1', status: 'completed' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('handles status=cancelled by removing from runningSessions', () => {
@@ -455,11 +455,11 @@ describe('onSessionEvent', () => {
   it('preserves chatUnread=false when completing a non-current session — delegates to loadSessionsOnce', () => {
     const session = createSession()
     mockState.currentSessionId = 'current-s1'
-    mockState.chatUnread = false
+    mockState.chatUnreadCount = 0
 
     session.onSessionEvent({ session_id: 's2', status: 'completed' })
     // No longer sets chatUnread=true synchronously
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('does not directly set chatUnread on cancelled status for non-current session', () => {
@@ -469,7 +469,7 @@ describe('onSessionEvent', () => {
     session.onSessionEvent({ session_id: 's1', status: 'running' })
     // Cancel a different session — no longer sets chatUnread synchronously
     session.onSessionEvent({ session_id: 's2', status: 'cancelled' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 })
 
@@ -584,12 +584,12 @@ describe('loadSessionsOnce', () => {
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
   })
 
   it('sets chatUnread=false when no other session has unreadCount > 0', async () => {
     mockState.currentSessionId = 'current-s1'
-    mockState.chatUnread = true  // pre-set to true
+    mockState.chatUnreadCount = 1  // pre-set to true
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
@@ -604,12 +604,12 @@ describe('loadSessionsOnce', () => {
     await loadSessionsOnce()
 
     // current session's unreadCount is ignored; s2 has 0 → chatUnread = false
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('sets chatUnread=false when all sessions are read', async () => {
     mockState.currentSessionId = 'current-s1'
-    mockState.chatUnread = true
+    mockState.chatUnreadCount = 1
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
@@ -623,7 +623,7 @@ describe('loadSessionsOnce', () => {
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('ignores current session unreadCount even if it is > 0', async () => {
@@ -642,11 +642,11 @@ describe('loadSessionsOnce', () => {
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('handles empty sessions array', async () => {
-    mockState.chatUnread = true
+    mockState.chatUnreadCount = 1
     mockState.chatRunning = true
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -656,31 +656,31 @@ describe('loadSessionsOnce', () => {
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
     expect(mockState.chatRunning).toBe(false)
   })
 
   it('does not change chatUnread/chatRunning when fetch is not ok', async () => {
-    mockState.chatUnread = true
+    mockState.chatUnreadCount = 1
     mockState.chatRunning = true
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
 
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
     expect(mockState.chatRunning).toBe(true)
   })
 
   it('does not change chatUnread/chatRunning when fetch throws', async () => {
-    mockState.chatUnread = true
+    mockState.chatUnreadCount = 1
     mockState.chatRunning = true
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
 
     const { loadSessionsOnce } = await import('@/composables/useChatSession')
     await loadSessionsOnce()
 
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
     expect(mockState.chatRunning).toBe(true)
   })
 
@@ -824,13 +824,13 @@ describe('switchSession', () => {
     await session.switchSession('s2')
 
     // After switching to s2 and recalculating, no unread sessions remain
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
     // fetch called twice: once for chat history, once for sessions list
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
   })
 
   it('clears chatUnread after switching when all sessions are read', async () => {
-    mockState.chatUnread = true  // was flashing before
+    mockState.chatUnreadCount = 1  // was flashing before
 
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce({
@@ -858,11 +858,11 @@ describe('switchSession', () => {
     const session = createSession()
     await session.switchSession('s2')
 
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('keeps chatUnread=true after switching when other sessions still have unread messages', async () => {
-    mockState.chatUnread = true
+    mockState.chatUnreadCount = 1
 
     // Switch to s2, but s3 still has unread messages
     globalThis.fetch = vi.fn()
@@ -893,7 +893,7 @@ describe('switchSession', () => {
     await session.switchSession('s2')
 
     // s3 is still unread — flashing should continue
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
   })
 
   it('sets inputDisabled=false even when switchSession fetch fails', async () => {
@@ -963,7 +963,7 @@ describe('chatUnread integration', () => {
 
     // Session s2 completes in the background → no longer sets chatUnread synchronously
     session.onSessionEvent({ session_id: 's2', status: 'completed' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('onSessionEvent does not set chatUnread for cancelled sessions', () => {
@@ -971,7 +971,7 @@ describe('chatUnread integration', () => {
     mockState.currentSessionId = 's1'
 
     session.onSessionEvent({ session_id: 's2', status: 'cancelled' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('chatUnread is not set when current session completes', () => {
@@ -979,7 +979,7 @@ describe('chatUnread integration', () => {
     mockState.currentSessionId = 'current-s1'
 
     session.onSessionEvent({ session_id: 'current-s1', status: 'completed' })
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('switchSession recalculates chatUnread correctly', async () => {
@@ -1012,7 +1012,7 @@ describe('chatUnread integration', () => {
 
     await session.switchSession('s2')
 
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('switchSession keeps chatUnread true when another session still has unread', async () => {
@@ -1047,7 +1047,7 @@ describe('chatUnread integration', () => {
     await session.switchSession('s2')
 
     // s3 still has unread → chatUnread should stay true
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
   })
 
   it('simulates the bug scenario: user on chat tab, other session completes, no phantom flash', () => {
@@ -1061,7 +1061,7 @@ describe('chatUnread integration', () => {
     // Step 2: s2 completes in the background — no longer sets chatUnread=true immediately
     session.onSessionEvent({ session_id: 's2', status: 'completed' })
     // No phantom flash! chatUnread stays false until loadSessionsOnce confirms
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('simulates: user switches to chat tab but does not open unread session', async () => {
@@ -1071,7 +1071,7 @@ describe('chatUnread integration', () => {
     // 3. User clicks Dock chat button → switchTab('chat') calls loadSessionsOnce()
     // 4. loadSessionsOnce should recalculate: s2 still has unreadCount > 0 → chatUnread stays true
     mockState.currentSessionId = 's1'
-    mockState.chatUnread = true  // was set by loadSessionsOnce
+    mockState.chatUnreadCount = 1  // was set by loadSessionsOnce
 
     // switchTab('chat') now calls loadSessionsOnce() instead of blindly clearing
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -1088,7 +1088,7 @@ describe('chatUnread integration', () => {
     await loadSessionsOnce()
 
     // chatUnread should remain true — user hasn't opened s2 yet
-    expect(mockState.chatUnread).toBe(true)
+    expect(mockState.chatUnreadCount).toBeGreaterThan(0)
   })
 
   it('loadSessionsOnce after stream done clears chatUnread for current session', async () => {
@@ -1096,7 +1096,7 @@ describe('chatUnread integration', () => {
     // After AI finishes, loadHistory calls UpdateLastRead, so the API returns unreadCount=0 for s1.
     // loadSessionsOnce should then set chatUnread=false.
     mockState.currentSessionId = 's1'
-    mockState.chatUnread = true  // was set incorrectly during initial load
+    mockState.chatUnreadCount = 1  // was set incorrectly during initial load
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -1112,14 +1112,14 @@ describe('chatUnread integration', () => {
     await loadSessionsOnce()
 
     // chatUnread should be cleared — no other sessions have unread messages
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 
   it('chatUnread stays false after loadSessionsOnce when only current session has unread', async () => {
     // Edge case: current session has unreadCount > 0 but it's the current one
     // This can happen if UpdateLastRead hasn't been called yet
     mockState.currentSessionId = 's1'
-    mockState.chatUnread = false
+    mockState.chatUnreadCount = 0
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -1135,7 +1135,7 @@ describe('chatUnread integration', () => {
     await loadSessionsOnce()
 
     // Current session's unreadCount is excluded, s2 has 0 → chatUnread = false
-    expect(mockState.chatUnread).toBe(false)
+    expect(mockState.chatUnreadCount).toBe(0)
   })
 })
 

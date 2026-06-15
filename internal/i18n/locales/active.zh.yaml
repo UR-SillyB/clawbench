@@ -39,6 +39,7 @@ MessageIdRequired: 消息ID为必填项
 InvalidRequest: 无效的请求
 SessionBackendNotFound: 会话后端未找到
 FileNotFoundShort: 文件未找到
+BrokenSymlink: "符号链接损坏：目标未找到 ({{.Target}})"
 DirectoryNotFound: 目录未找到
 InvalidFilePath: 无效的文件路径
 FileTooLargeOrInvalid: 文件过大或格式无效
@@ -84,6 +85,7 @@ CustomURLUnrecognizedFormat: URL 路径须以 /chat/completions（OpenAI）或 /
 PushTaskCompleted: AI任务完成
 PushSessionEnded: AI会话已结束
 PushScheduledTaskDone: 计划任务已完成
+PushPermissionPending: 需要审批
 NotFound: 未找到
 PermissionNotFound: 未找到待审批的权限请求
 ACPSessionNotFound: 该会话在智能体端已不存在

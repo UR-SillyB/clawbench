@@ -163,6 +163,9 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	absBinPath, _ := filepath.Abs(os.Args[0])
 	model.BinDir = filepath.Dir(absBinPath)
 
+	// Load provider models from runtime file (BinDir/.clawbench/provider_models.json)
+	model.LoadProviderModelsFromFile(filepath.Join(model.BinDir, ".clawbench"))
+
 	// Load configuration — config/config.yaml is optional
 	var cfg model.Config
 	var presence map[string]bool
@@ -472,12 +475,12 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	ai.GetACPConnManager().SetSessionRunningChecker(service.IsSessionRunning)
 
 	// Inject permission state change callback (emits WS event on approval state change)
-	ai.SetPermissionStateChangeCallback(func(clawbenchSID string, pending bool) {
+	ai.SetPermissionStateChangeCallback(func(clawbenchSID string, pending bool, toolName string) {
 		status := "permission_resolved"
 		if pending {
 			status = "permission_pending"
 		}
-		service.EmitSessionEvent(clawbenchSID, status, false)
+		service.EmitSessionEvent(clawbenchSID, status, false, toolName)
 	})
 
 	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
@@ -486,7 +489,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 
 	var ttsSummarizer summarize.Summarizer
 	switch summarizeBackend {
-	case "simple":
+	case "", "simple":
 		ttsSummarizer = summarize.NewSimple()
 		slog.Info("tts summarizer configured", slog.String("backend", "simple"))
 	case "api":
@@ -631,7 +634,22 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	scheduler := service.NewScheduler()
 
 	// Initialize task summarizer if summarization backend is configured (MUST be before scheduler.Start())
-	if cfg.Summarize.Backend != "" && cfg.Summarize.Backend != "simple" {
+	if cfg.Summarize.Backend == "simple" {
+		// Simple mode: extract final answer for chat, SimpleSummarizer for tasks
+		pipeline := summarize.NewPipelineWithOpts(
+			func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+				return summarize.NewSimple().Summarize(ctx, text, "")
+			},
+			"",
+			summarize.SummarizeOption{PreserveMarkdown: true},
+		)
+		taskSummarizer := summarize.NewTaskSummarizerFromPipeline(pipeline)
+		scheduler.SetTaskSummarizer(taskSummarizer)
+		service.SetTaskSummarizerInstance(taskSummarizer)
+		service.SetChatSummaryMode("simple")
+		service.SetChatSummaryEnabled(cfg.Summarize.IsChatSummaryEnabled())
+		slog.Info("task summarizer configured", slog.String("backend", "simple"))
+	} else if cfg.Summarize.Backend != "" {
 		taskSummarizer, err := initTaskSummarizer(cfg)
 		if err != nil {
 			slog.Warn(
@@ -643,7 +661,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 			scheduler.SetTaskSummarizer(taskSummarizer)
 			// Also set the global instance for AsyncSummarize (chat messages + task executions)
 			service.SetTaskSummarizerInstance(taskSummarizer)
-			// Configure chat message auto-summarization based on config
+			service.SetChatSummaryMode("ai")
 			service.SetChatSummaryEnabled(cfg.Summarize.IsChatSummaryEnabled())
 			slog.Info(
 				"task summarizer configured",
@@ -651,6 +669,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 			)
 		}
 	}
+	// else: cfg.Summarize.Backend == "" — fully disabled, no taskSummarizerInstance
 
 	// Load all tasks from all projects
 	if err := scheduler.LoadTasksFromDB(""); err != nil {
@@ -734,7 +753,12 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		defer func() { terminalMgr.Close() }()
 		slog.Info(
 			"terminal manager initialized",
-			slog.String("idle_timeout", cfg.Terminal.IdleTimeout),
+			slog.String("idle_timeout", func() string {
+				if cfg.Terminal.IdleTimeout == "" || cfg.Terminal.IdleTimeout == "0" {
+					return "never"
+				}
+				return cfg.Terminal.IdleTimeout
+			}()),
 			slog.Int("buffer_lines", cfg.Terminal.BufferLines),
 		)
 	}

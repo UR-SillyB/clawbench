@@ -105,10 +105,15 @@ func TestTriggerChatSummarization_NilSummarizer(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	taskSummarizerInstance = nil
-	// Should return immediately when summarizer is nil
+	SetChatSummaryMode("ai")
+	// Should return immediately when summarizer is nil (AI mode needs it)
 	triggerChatSummarization("nonexistent-session")
 }
 
@@ -117,7 +122,11 @@ func TestTriggerChatSummarization_NoMessages(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	// Set up a mock summarizer
 	ch := make(chan ai.StreamEvent, 1)
@@ -125,6 +134,7 @@ func TestTriggerChatSummarization_NoMessages(t *testing.T) {
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Session doesn't exist in DB — should return with no error
 	triggerChatSummarization("nonexistent-session")
@@ -135,13 +145,18 @@ func TestTriggerChatSummarization_NoAssistantMessages(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	ch := make(chan ai.StreamEvent, 1)
 	ch <- ai.StreamEvent{Type: "done"}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Create session and user message only
 	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-1', '/test', 'claude', 'Test')")
@@ -158,13 +173,18 @@ func TestTriggerChatSummarization_AlreadySummarized(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	ch := make(chan ai.StreamEvent, 1)
 	ch <- ai.StreamEvent{Type: "done"}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Create session with assistant message
 	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-2', '/test', 'claude', 'Test')")
@@ -193,13 +213,18 @@ func TestTriggerChatSummarization_EmptyBlocks(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	ch := make(chan ai.StreamEvent, 1)
 	ch <- ai.StreamEvent{Type: "done"}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Create session with assistant message that has no blocks
 	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-3', '/test', 'claude', 'Test')")
@@ -218,13 +243,18 @@ func TestTriggerChatSummarization_InvalidJSON(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	ch := make(chan ai.StreamEvent, 1)
 	ch <- ai.StreamEvent{Type: "done"}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Create session with assistant message that has invalid JSON content
 	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-4', '/test', 'claude', 'Test')")
@@ -241,7 +271,11 @@ func TestTriggerChatSummarization_Success(t *testing.T) {
 	defer teardown()
 
 	origInstance := taskSummarizerInstance
-	defer func() { taskSummarizerInstance = origInstance }()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		taskSummarizerInstance = origInstance
+		SetChatSummaryMode(origMode)
+	}()
 
 	// Set up mock summarizer
 	ch := make(chan ai.StreamEvent, 3)
@@ -250,6 +284,7 @@ func TestTriggerChatSummarization_Success(t *testing.T) {
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
+	SetChatSummaryMode("ai")
 
 	// Create session with assistant message containing long text
 	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-5', '/test', 'claude', 'Test')")

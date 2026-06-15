@@ -299,6 +299,22 @@ func (m *Manager) IsEnabled() bool {
 	return m.cfg.Enabled
 }
 
+// SessionCount returns the number of active terminal sessions.
+func (m *Manager) SessionCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for id, s := range m.sessions {
+		if !s.IsRunning() {
+			delete(m.sessions, id)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // sendWSError sends an error message over a WebSocket connection.
 func sendWSError(conn *websocket.Conn, code, message string) {
 	msg := ServerMessage{

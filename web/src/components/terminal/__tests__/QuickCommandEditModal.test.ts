@@ -54,6 +54,8 @@ beforeEach(() => {
   mockCommandsRef.value = []
 })
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
 function mountModal(props = {}) {
   return mount(QuickCommandEditModal, {
     props: {
@@ -62,7 +64,7 @@ function mountModal(props = {}) {
       ...props,
     },
     global: {
-      stubs: { teleport: true },
+      stubs: { Teleport: TeleportStub },
       plugins: [i18n],
     },
   })
@@ -106,7 +108,7 @@ describe('QuickCommandEditModal', () => {
       // Mount closed, then open — watch triggers on open change
       const wrapper = mount(QuickCommandEditModal, {
         props: { open: false, editingCommand: null },
-        global: { stubs: { teleport: true }, plugins: [i18n] },
+        global: { stubs: { Teleport: TeleportStub }, plugins: [i18n] },
       })
       await wrapper.setProps({
         open: true,
@@ -156,7 +158,7 @@ describe('QuickCommandEditModal', () => {
       // Mount closed, then open with editingCommand
       const wrapper = mount(QuickCommandEditModal, {
         props: { open: false, editingCommand: null },
-        global: { stubs: { teleport: true }, plugins: [i18n] },
+        global: { stubs: { Teleport: TeleportStub }, plugins: [i18n] },
       })
       await wrapper.setProps({
         open: true,

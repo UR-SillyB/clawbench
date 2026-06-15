@@ -114,11 +114,6 @@ const apiKeyModel = computed({
   set: (v) => emit('update:apiKey', v),
 })
 
-const apiFormatModel = computed({
-  get: () => props.apiFormat,
-  set: (v) => emit('update:apiFormat', v),
-})
-
 const showKey = ref(false)
 const error = ref('')
 const apiKeyInputRef = ref<HTMLInputElement | null>(null)

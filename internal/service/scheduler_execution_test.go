@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -328,4 +329,86 @@ func TestScheduler_TaskRunning_ConcurrentNoDuplicate(t *testing.T) {
 
 	assert.Equal(t, 1, claimCount, "only one goroutine should successfully claim the task")
 	s.taskRunning.Delete(taskID)
+}
+
+// ── ACP scheduled task auto-approve ──
+
+// setupTestDBForAutoApprove creates an in-memory SQLite DB with chat_sessions table
+// for testing auto-approve persistence.
+func setupTestDBForAutoApprove(t *testing.T) (*sql.DB, func()) {
+	t.Helper()
+	origDB := DB
+	origDBRead := DBRead
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA busy_timeout=5000")
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS chat_sessions (
+			id TEXT PRIMARY KEY,
+			project_path TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			title TEXT NOT NULL,
+			agent_id TEXT DEFAULT '',
+			agent_source TEXT DEFAULT 'default',
+			model TEXT DEFAULT '',
+			session_type TEXT NOT NULL DEFAULT 'chat',
+			external_session_id TEXT DEFAULT '',
+			source_session_id TEXT DEFAULT NULL,
+			transport TEXT DEFAULT '',
+			auto_approve INTEGER NOT NULL DEFAULT 0,
+			deleted INTEGER NOT NULL DEFAULT 0,
+			last_read_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(project_path, backend, id)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create tables: %v", err)
+	}
+
+	DB = db
+	DBRead = db
+	teardown := func() {
+		DB = origDB
+		DBRead = origDBRead
+		db.Close()
+	}
+	return db, teardown
+}
+
+func TestUpdateSessionAutoApprove_SetsFlag(t *testing.T) {
+	db, teardown := setupTestDBForAutoApprove(t)
+	defer teardown()
+
+	// Insert a test session
+	_, err := db.Exec(`INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('test-session', '/proj', 'claude', 'Test')`)
+	assert.NoError(t, err)
+
+	// Default is 0
+	assert.False(t, GetSessionAutoApprove("test-session"), "auto-approve should default to false")
+
+	// Enable
+	err = UpdateSessionAutoApprove("test-session", true)
+	assert.NoError(t, err)
+	assert.True(t, GetSessionAutoApprove("test-session"), "auto-approve should be true after enabling")
+
+	// Disable
+	err = UpdateSessionAutoApprove("test-session", false)
+	assert.NoError(t, err)
+	assert.False(t, GetSessionAutoApprove("test-session"), "auto-approve should be false after disabling")
+}
+
+func TestGetSessionAutoApprove_MissingSession(t *testing.T) {
+	_, teardown := setupTestDBForAutoApprove(t)
+	defer teardown()
+
+	// Non-existent session should return false
+	assert.False(t, GetSessionAutoApprove("nonexistent-session"), "missing session should default to false")
 }

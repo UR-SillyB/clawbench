@@ -68,7 +68,6 @@
         <div class="agent-option-detail">
           <span class="agent-option-name">
             {{ agent.name }}
-            <span v-if="isDefaultAgent(agent.id)" class="agent-default-badge">⭐</span>
           </span>
           <span class="agent-option-specialty">{{ agent.specialty }}</span>
           <div class="agent-option-tags">
@@ -76,6 +75,10 @@
             <span v-if="agentDefaultModelName(agent.id)" class="agent-tag model-tag">{{ agentDefaultModelName(agent.id) }}</span>
           </div>
         </div>
+        <span v-if="isDefaultAgent(agent.id)" class="agent-default-badge-pill">{{ t('chat.sessionSetting.defaultBadge') }}</span>
+        <button v-else class="agent-set-default-btn" @click.stop="handleSetDefaultAgent(agent.id)" :title="t('session.setAsDefaultAgent')">
+          <Star :size="14" />
+        </button>
       </button>
     </div>
   </ModalDialog>
@@ -83,7 +86,7 @@
 
 <script setup>
 import { useI18n } from 'vue-i18n'
-import { Bot, Plus } from 'lucide-vue-next'
+import { Bot, Plus, Star } from 'lucide-vue-next'
 import { ref, watch, computed, onUnmounted, nextTick } from 'vue'
 import BottomSheet from '@/components/common/BottomSheet.vue'
 import ModalDialog from '@/components/common/ModalDialog.vue'
@@ -112,7 +115,7 @@ const listRef = ref(null)
 const sentinelRef = ref(null)
 let observer = null
 const pageSize = computed(() => store.state.chatSessionPageSize || 10)
-const { agents, loadAgents, getAgentIcon, getAgentName, isDefaultAgent, getAgentDefaultModelName } = useAgents()
+const { agents, loadAgents, getAgentIcon, getAgentName, isDefaultAgent, getAgentDefaultModelName, setDefaultAgent } = useAgents()
 const dialog = useDialog()
 const { runningSessionsVersion } = useSessionIdentity()
 
@@ -131,6 +134,10 @@ function agentDefaultModelName(agentId) {
   return getAgentDefaultModelName(agentId)
 }
 const showAgentSelector = ref(false)
+
+async function handleSetDefaultAgent(agentId) {
+  await setDefaultAgent(agentId)
+}
 // Guard against accidental clicks right after opening the agent selector
 // (touch event propagation race: dialog appears under finger → click lands on option)
 let agentSelectorOpenTime = 0
@@ -597,10 +604,37 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.agent-default-badge {
+.agent-set-default-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s;
+}
+.agent-default-badge-pill {
+  flex-shrink: 0;
   font-size: 10px;
-  margin-left: 2px;
-  vertical-align: middle;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent-color, #0066cc);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.agent-set-default-btn:hover {
+  opacity: 1;
+  background: var(--hover-bg, rgba(0,0,0,0.06));
+}
+.agent-option:hover .agent-set-default-btn {
+  opacity: 0.7;
 }
 
 .agent-option-specialty {

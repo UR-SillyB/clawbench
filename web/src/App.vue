@@ -10,7 +10,7 @@
     <SetupWizard v-else-if="needsSetup" @complete="handleSetupComplete" />
 
     <!-- Main app -->
-    <div v-else class="app-container" :class="{ 'chrome-hidden': terminalKeyboardActive, 'chat-keyboard-open': chatKeyboardActive, 'project-switching': switchingProject }" :key="projectKey">
+    <div v-else class="app-container" :class="{ 'chrome-hidden': terminalActive, 'chat-keyboard-open': chatKeyboardActive, 'project-switching': switchingProject }" :key="projectKey">
       <AppHeader
         :hidden="terminalActive"
         :project-root="projectRoot"
@@ -124,6 +124,7 @@
             <TerminalPanelContent
               :requested-cwd="terminalRequestedCwd"
               :active="activeTab === 'terminal'"
+              @cwd-handled="terminalRequestedCwd = null"
             />
           </TabPanel>
 
@@ -183,10 +184,10 @@
         <div class="bottom-dock">
           <div class="dock-center">
             <div class="dock-btn-wrap">
-              <button class="dock-btn" :class="{ active: activeTab === 'chat', 'has-unread': store.state.chatUnread && activeTab !== 'chat', 'has-running': store.state.chatRunning && activeTab !== 'chat' }" @click.stop="switchTab('chat')" :title="t('nav.chat')">
+              <button class="dock-btn" :class="{ active: activeTab === 'chat', 'has-unread': store.state.chatUnreadCount > 0 && activeTab !== 'chat', 'has-running': store.state.chatRunning && activeTab !== 'chat' }" @click.stop="switchTab('chat')" :title="t('nav.chat')">
                 <MessageSquare />
               </button>
-              <span v-if="store.state.chatUnread && activeTab !== 'chat'" class="dock-badge"></span>
+              <span v-if="store.state.chatUnreadCount > 0 && activeTab !== 'chat'" class="dock-badge dock-badge-count">{{ store.state.chatUnreadCount }}</span>
             </div>
             <button class="dock-btn" :class="{ active: activeTab === 'viewer' }" @click.stop="switchTab('viewer')" :title="t('nav.fileViewer')">
               <FileText />
@@ -195,10 +196,12 @@
               <FolderOpen />
             </button>
             <div class="dock-btn-wrap">
-              <button class="dock-btn" :class="{ active: activeTab === 'tasks', 'has-unread': store.state.taskUnread && activeTab !== 'tasks', 'just-completed': store.state.taskJustCompleted && activeTab !== 'tasks', 'has-running': store.state.taskRunning && activeTab !== 'tasks' }" @click.stop="switchTab('tasks')" :title="t('nav.tasks')">
-                <CalendarClock />
+              <button class="dock-btn" :class="{ active: activeTab === dockSlot4Tab, 'has-unread': dockSlot4Tab === 'tasks' && store.state.taskUnreadCount > 0 && activeTab !== 'tasks', 'just-completed': dockSlot4Tab === 'tasks' && store.state.taskJustCompleted && activeTab !== 'tasks', 'has-running': dockSlot4Tab === 'tasks' && store.state.taskRunning && activeTab !== 'tasks' }" @click.stop="handleDockSlot4Click" :title="dockSlot4Title">
+                <component :is="dockSlot4Icon" />
               </button>
-              <span v-if="store.state.taskUnread && activeTab !== 'tasks'" class="dock-badge"></span>
+              <span v-if="dockSlot4Tab === 'tasks' && store.state.taskUnreadCount > 0 && activeTab !== 'tasks'" class="dock-badge dock-badge-count">{{ store.state.taskUnreadCount }}</span>
+              <span v-if="dockSlot4Tab === 'terminal' && store.state.terminalSessionCount > 0 && activeTab !== 'terminal'" class="dock-badge dock-badge-count">{{ store.state.terminalSessionCount }}</span>
+              <span v-if="dockSlot4Tab === 'proxy' && store.state.portForwardActiveCount > 0 && activeTab !== 'proxy'" class="dock-badge dock-badge-count">{{ store.state.portForwardActiveCount }}</span>
             </div>
             <div class="dock-overflow-wrapper">
               <button
@@ -222,6 +225,11 @@
     <Teleport to="body">
       <Transition name="dock-popup">
         <div v-if="overflowMenuOpen" class="dock-overflow-popup" :style="overflowPopupStyle" @keydown.escape="overflowMenuOpen = false">
+          <button class="dock-overflow-item" :class="{ active: activeTab === 'tasks' }" @click.stop="handleOverflowSelect('tasks')">
+            <CalendarClock :size="16" />
+            <span>{{ t('nav.tasks') }}</span>
+            <span v-if="store.state.taskUnreadCount > 0" class="dock-overflow-count">{{ store.state.taskUnreadCount }}</span>
+          </button>
           <button class="dock-overflow-item" :class="{ active: activeTab === 'history' }" @click.stop="handleOverflowSelect('history')">
             <GitBranch :size="16" />
             <span>{{ t('git.history.projectHistory') }}</span>
@@ -229,10 +237,12 @@
           <button v-if="!isSSHDisabled" class="dock-overflow-item" :class="{ active: activeTab === 'proxy' }" @click.stop="handleOverflowSelect('proxy')">
             <EthernetPort :size="16" />
             <span>{{ t('nav.portForward') }}</span>
+            <span v-if="store.state.portForwardActiveCount > 0" class="dock-overflow-count">{{ store.state.portForwardActiveCount }}</span>
           </button>
           <button v-if="!isTerminalDisabled" class="dock-overflow-item" :class="{ active: activeTab === 'terminal' }" @click.stop="handleOverflowSelect('terminal')">
             <TerminalIcon :size="16" />
             <span>{{ t('terminal.title') }}</span>
+            <span v-if="store.state.terminalSessionCount > 0" class="dock-overflow-count">{{ store.state.terminalSessionCount }}</span>
           </button>
           <div class="dock-overflow-divider"></div>
           <button class="dock-overflow-item" @click.stop="handleOverflowSettings">
@@ -400,7 +410,7 @@ function switchTab(tab) {
   if (tab === 'tasks') {
     // Only stop dock button flash — don't clear per-task unread badges.
     // Per-task badges are cleared when the user enters that task's execution history.
-    store.state.taskUnread = false
+    store.state.taskUnreadCount = 0
   }
   // Close overflow menu when switching to a main tab
   if (!overflowTabs.value.includes(tab)) {
@@ -553,7 +563,8 @@ window.addEventListener('clawbench-back-press', () => {
 window.addEventListener('clawbench-foreground', handleForeground)
 const terminalRequestedCwd = ref(null)
 
-// Hide AppHeader when terminal tab is active (always); hide Dock + padding only when keyboard is open
+// Hide AppHeader when terminal tab is active (always); remove padding-top too
+// so terminal fills the full screen. Dock is hidden only when keyboard is open.
 const terminalActive = computed(() => activeTab.value === 'terminal')
 const { keyboardHeight: terminalKeyboardHeight } = useTerminalKeyboard()
 const terminalKeyboardActive = computed(() => terminalActive.value && terminalKeyboardHeight.value > 0)
@@ -641,6 +652,7 @@ async function handleSetupComplete() {
     window.addEventListener('open-file-manager', handleOpenFileManager)
     window.addEventListener('navigate-to-commit', handleNavigateToCommit)
     window.addEventListener('quote-sent', playQuoteEmitAnimation)
+    window.addEventListener('scroll-to-line', (e) => { scrollToLine(e.detail.line) })
     window.addEventListener('clawbench-open-session', handleOpenSession)
     window.addEventListener('clawbench-open-task', handleOpenTask)
     document.addEventListener('click', handleOverflowOutsideClick)
@@ -754,13 +766,16 @@ async function handleSelectFile(path) {
 }
 
 async function handleBrowseSelectFile(path) {
-    await store.selectFile(path)
-    activeTab.value = 'viewer'
+    const ok = await store.selectFile(path)
+    if (ok) activeTab.value = 'viewer'
 }
 
-async function handleTaskOpenFile(filePath) {
-    await store.selectFile(filePath)
-    switchTab('viewer')
+async function handleTaskOpenFile(filePath, lineStart) {
+    const ok = await store.selectFile(filePath)
+    if (ok) {
+        switchTab('viewer')
+        if (lineStart) scrollToLine(lineStart)
+    }
 }
 
 function onTaskCardClick(taskId) {
@@ -793,20 +808,48 @@ function handleDockTerminal() {
 const overflowMenuOpen = ref(false)
 const overflowBtnRef = ref(null)
 const overflowTabs = computed(() => {
-  const tabs = ['history']
+  const tabs = ['tasks', 'history']
   if (!isSSHDisabled.value) tabs.push('proxy')
   if (!isTerminalDisabled.value) tabs.push('terminal')
   tabs.push('settings')
   return tabs
 })
 const overflowTabMeta = {
+  tasks:   { icon: CalendarClock, titleKey: 'nav.tasks' },
   history: { icon: GitBranch, titleKey: 'git.history.projectHistory' },
   proxy:   { icon: EthernetPort, titleKey: 'nav.portForward' },
   terminal:{ icon: TerminalIcon, titleKey: 'terminal.title' },
   settings:{ icon: Settings, titleKey: 'nav.settings' },
 }
 
-const isOverflowTabActive = computed(() => overflowTabs.value.includes(activeTab.value))
+// Dock slot 4: dynamic slot showing user's selected overflow item
+const STORAGE_KEY_DOCK_SLOT4 = 'clawbench_dock_slot4'
+const dockSlot4Tab = ref(localStorage.getItem(STORAGE_KEY_DOCK_SLOT4) || 'tasks')
+const dockSlot4Icon = computed(() => overflowTabMeta[dockSlot4Tab.value]?.icon ?? CalendarClock)
+const dockSlot4Title = computed(() => overflowTabMeta[dockSlot4Tab.value] ? t(overflowTabMeta[dockSlot4Tab.value].titleKey) : t('nav.tasks'))
+
+function setDockSlot4(tab) {
+  dockSlot4Tab.value = tab
+  localStorage.setItem(STORAGE_KEY_DOCK_SLOT4, tab)
+}
+
+function handleDockSlot4Click() {
+  const tab = dockSlot4Tab.value
+  if (tab === 'terminal') {
+    handleDockTerminal()
+  } else {
+    switchTab(tab)
+  }
+}
+
+const isOverflowTabActive = computed(() => overflowTabs.value.includes(activeTab.value) && activeTab.value !== dockSlot4Tab.value)
+
+// If the saved dock-slot4 tab becomes unavailable (e.g. terminal disabled), fall back to tasks
+watch(overflowTabs, (tabs) => {
+  if (!tabs.includes(dockSlot4Tab.value)) {
+    setDockSlot4('tasks')
+  }
+})
 
 const overflowPopupStyle = computed(() => {
   const btn = overflowBtnRef.value
@@ -819,13 +862,16 @@ const overflowPopupStyle = computed(() => {
   }
 })
 
-const overflowButtonIcon = computed(() =>
-  overflowTabMeta[activeTab.value]?.icon ?? MoreHorizontal
-)
+const overflowButtonIcon = computed(() => {
+  // Show the active overflow tab's icon, unless it's the dock-slot4 tab (which has its own button)
+  if (activeTab.value === dockSlot4Tab.value) return MoreHorizontal
+  return overflowTabMeta[activeTab.value]?.icon ?? MoreHorizontal
+})
 
-const overflowButtonTitle = computed(() =>
-  overflowTabMeta[activeTab.value] ? t(overflowTabMeta[activeTab.value].titleKey) : t('nav.more')
-)
+const overflowButtonTitle = computed(() => {
+  if (activeTab.value === dockSlot4Tab.value) return t('nav.more')
+  return overflowTabMeta[activeTab.value] ? t(overflowTabMeta[activeTab.value].titleKey) : t('nav.more')
+})
 
 function toggleOverflowMenu() {
   if (isOverflowTabActive.value && !overflowMenuOpen.value) {
@@ -845,6 +891,10 @@ function handleOverflowSelect(tab) {
     return
   }
   overflowMenuOpen.value = false
+  // Remember this tab as the dock slot 4 shortcut (except settings)
+  if (tab !== 'settings') {
+    setDockSlot4(tab)
+  }
   if (tab === 'terminal') {
     handleDockTerminal()
   } else {
@@ -1009,6 +1059,7 @@ onMounted(async () => {
     window.addEventListener('open-file-manager', handleOpenFileManager)
     window.addEventListener('navigate-to-commit', handleNavigateToCommit)
     window.addEventListener('quote-sent', playQuoteEmitAnimation)
+    window.addEventListener('scroll-to-line', (e) => { scrollToLine(e.detail.line) })
     window.addEventListener('clawbench-open-session', handleOpenSession)
     window.addEventListener('clawbench-open-task', handleOpenTask)
     document.addEventListener('click', handleOverflowOutsideClick)
@@ -1177,7 +1228,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* When terminal keyboard is open, remove header padding so content expands to top */
+/* When terminal tab is active, remove header padding so content expands to top */
 .chrome-hidden {
     padding-top: 0 !important;
 }
@@ -1279,6 +1330,21 @@ onUnmounted(() => {
     background: var(--accent-color, #0066cc);
     z-index: 2;
     pointer-events: none;
+}
+
+.dock-badge-count {
+    width: auto;
+    height: auto;
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    color: #fff;
+    top: -4px;
+    right: -6px;
 }
 
 .dock-btn.has-running {
@@ -1395,6 +1461,20 @@ onUnmounted(() => {
 .dock-overflow-item.active {
     background: color-mix(in srgb, var(--accent-color) 15%, transparent);
     color: var(--accent-color);
+}
+
+.dock-overflow-count {
+    margin-left: auto;
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--accent-color);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    flex-shrink: 0;
 }
 
 .dock-overflow-divider {

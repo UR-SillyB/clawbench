@@ -80,7 +80,8 @@ function handleBodyClick(event) {
   const fileBtn = event.target.closest('.chat-file-open-btn')
   if (fileBtn) {
     const filePath = fileBtn.getAttribute('data-file-path')
-    if (filePath) emit('file-open', filePath)
+    const lineStart = fileBtn.getAttribute('data-line-start')
+    if (filePath) emit('file-open', filePath, lineStart ? parseInt(lineStart, 10) : undefined)
     return
   }
   // Handle worktree action buttons

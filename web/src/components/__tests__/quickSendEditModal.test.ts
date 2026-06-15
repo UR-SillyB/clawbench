@@ -55,6 +55,8 @@ beforeEach(() => {
   mockToastShow.mockReset()
 })
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
 function mountModal(props = {}) {
   return mount(QuickSendEditModal, {
     props: {
@@ -63,7 +65,7 @@ function mountModal(props = {}) {
       ...props,
     },
     global: {
-      stubs: { teleport: true },
+      stubs: { Teleport: TeleportStub },
       plugins: [i18n],
     },
   })
@@ -109,7 +111,7 @@ describe('QuickSendEditModal', () => {
       // Mount closed, then open — watch triggers on open change
       const wrapper = mount(QuickSendEditModal, {
         props: { open: false, editingItem: null },
-        global: { stubs: { teleport: true }, plugins: [i18n] },
+        global: { stubs: { Teleport: TeleportStub }, plugins: [i18n] },
       })
       await wrapper.setProps({ open: true, editingItem: { id: 1, label: '继续', command: '请继续', sort_order: 0 } })
       await nextTick()
@@ -152,7 +154,7 @@ describe('QuickSendEditModal', () => {
       // Mount closed, then open with editingItem
       const wrapper = mount(QuickSendEditModal, {
         props: { open: false, editingItem: null },
-        global: { stubs: { teleport: true }, plugins: [i18n] },
+        global: { stubs: { Teleport: TeleportStub }, plugins: [i18n] },
       })
       await wrapper.setProps({ open: true, editingItem: { id: 5, label: '继续', command: '继续', sort_order: 0 } })
       await nextTick()

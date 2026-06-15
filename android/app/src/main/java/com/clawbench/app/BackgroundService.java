@@ -152,8 +152,23 @@ public class BackgroundService extends Service {
     // Must be static so startNativeEventWs() can set it before the Service is created.
     private static volatile boolean nativeWsNeeded = false;
 
+    // Terminal session count — updated by the WebView via WebAppInterface.
+    // Used to show the active terminal count in the foreground service notification.
+    private static volatile int terminalSessionCount = 0;
+
     public static boolean isRunning() {
         return isRunning;
+    }
+
+    /**
+     * Update the terminal session count (called from WebAppInterface JS bridge).
+     * Updates the foreground notification to show the current terminal count.
+     */
+    public static void setTerminalSessionCount(int count) {
+        terminalSessionCount = count;
+        if (isRunning && instance != null) {
+            instance.updateNotification(instance.forwardedPorts.size(), null);
+        }
     }
 
     /**
@@ -1103,20 +1118,27 @@ public class BackgroundService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        String title;
+        String title = "ClawBench";
         String text;
         if (statusText != null) {
-            title = "ClawBench";
             text = statusText;
-        } else if (portCount > 0) {
-            title = "ClawBench";
-            text = portCount + " 个端口转发活跃";
-        } else if (nativeWsNeeded || nativeWsActive) {
-            title = "ClawBench";
-            text = "后台事件监听中";
         } else {
-            title = "ClawBench";
-            text = "后台服务即将停止";
+            // Build combined status text showing port forwards and terminal sessions
+            StringBuilder sb = new StringBuilder();
+            if (portCount > 0) {
+                sb.append(portCount).append(" 个端口转发");
+            }
+            int terms = terminalSessionCount;
+            if (terms > 0) {
+                if (sb.length() > 0) sb.append("，");
+                sb.append(terms).append(" 个终端");
+            }
+            if (nativeWsNeeded || nativeWsActive) {
+                if (sb.length() == 0) {
+                    sb.append("消息监听中");
+                }
+            }
+            text = sb.length() > 0 ? sb.toString() : "后台服务即将停止";
         }
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -1461,12 +1483,12 @@ public class BackgroundService extends Service {
                     webSocket.send(ack.toString());
                 }
 
-                // Only notify for terminal states
+                // Only notify for terminal states and permission pending
                 String status = data.optString("status", "");
                 boolean shouldNotify = false;
 
                 if ("session_update".equals(event)
-                        && ("completed".equals(status) || "cancelled".equals(status))) {
+                        && ("completed".equals(status) || "cancelled".equals(status) || "permission_pending".equals(status))) {
                     shouldNotify = true;
                 } else if ("task_update".equals(event)
                         && ("completed".equals(status) || "failed".equals(status) || "cancelled".equals(status))) {
@@ -1531,7 +1553,11 @@ public class BackgroundService extends Service {
             if ("session_update".equals(eventType)) {
                 sessionId = data.optString("session_id", "");
                 String responsePreview = data.optString("response_preview", "");
-                if ("completed".equals(status)) {
+                if ("permission_pending".equals(status)) {
+                    title = "需要审批";
+                    String toolName = data.optString("tool_name", "");
+                    text = toolName.isEmpty() ? "AI请求操作许可" : toolName;
+                } else if ("completed".equals(status)) {
                     title = "AI 任务完成";
                     text = responsePreview.isEmpty() ? "AI会话已结束" : responsePreview;
                 } else {
@@ -1613,7 +1639,7 @@ public class BackgroundService extends Service {
             intent.setAction(android.content.Intent.ACTION_MAIN);
             intent.addCategory(android.content.Intent.CATEGORY_LAUNCHER);
             intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            intent.putExtra("event_type", "session_update");
+            intent.putExtra("event_type", "permission_pending".equals(status) ? "permission_pending" : "session_update");
             if (sessionId != null && !sessionId.isEmpty()) {
                 intent.putExtra("session_id", sessionId);
             }

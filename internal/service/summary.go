@@ -82,7 +82,7 @@ func AsyncSummarize(targetType string, targetID int64, blocks []model.ContentBlo
 		mgr := ws.GetManager()
 		if mgr != nil {
 			mgr.BroadcastEvent(ws.ServerMessage{
-				Type:  "event",
+				Type:  ws.MessageTypeEvent,
 				ID:    ws.GenerateEventID(),
 				Event: "summary_update",
 				Data: ws.SummaryUpdateData{

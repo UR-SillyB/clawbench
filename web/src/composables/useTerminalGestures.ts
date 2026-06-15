@@ -7,7 +7,6 @@ export interface GestureCallbacks {
   sendArrowRight: () => void
   sendPageUp: () => void
   sendPageDown: () => void
-  sendEscape: () => void
   sendTab: () => void
   onPinchZoom?: (delta: number) => void
   onGestureHint?: (symbol: string) => void
@@ -26,9 +25,10 @@ export function shouldPreventTerminalContextMenu(gesturesEnabled: boolean): bool
  * - Swipe left/right → arrow left/right
  * - Swipe up/down → arrow up/down
  * - Hold direction → auto-repeat arrow keys
- * - Long-press → Esc
  * - Double-tap → Tab
  * - Pinch (two-finger) → zoom font size
+ *
+ * Long-press is left to native behavior (text selection, context menu).
  *
  * When gestures are disabled, command gestures are detached and one-finger
  * vertical drags scroll xterm output without sending arrow-key input.
@@ -45,7 +45,6 @@ export function useTerminalGestures(
   const PINCH_THRESHOLD = 10 // minimum px change before triggering zoom
   const REPEAT_INITIAL_DELAY = 500 // ms before auto-repeat starts
   const REPEAT_INTERVAL = 150 // ms between repeated arrow keys
-  const LONG_PRESS_MS = 500 // ms before long-press sends Esc
   const DOUBLE_TAP_MS = 300 // max ms between two taps for double-tap
   const TAP_THRESHOLD = 10 // max px movement to still count as a tap
 
@@ -68,10 +67,6 @@ export function useTerminalGestures(
   let currentDirection: Direction | null = null
   let repeatTimer: ReturnType<typeof setTimeout> | null = null
   let repeatInterval: ReturnType<typeof setInterval> | null = null
-
-  // Stationary long-press sends Esc
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null
-  let longPressTriggered = false
 
   // Pinch zoom and two-finger swipe state
   let initialPinchDistance = 0
@@ -140,27 +135,8 @@ export function useTerminalGestures(
     }
   }
 
-  function startLongPress(_e: TouchEvent) {
-    clearLongPress()
-    longPressTriggered = false
-    longPressTimer = setTimeout(() => {
-      longPressTriggered = true
-      callbacks.sendEscape()
-      callbacks.onGestureHint?.('Esc')
-    }, LONG_PRESS_MS)
-  }
-
-  function clearLongPress() {
-    if (longPressTimer) {
-      clearTimeout(longPressTimer)
-      longPressTimer = null
-    }
-  }
-
   function resetGestureState() {
     stopRepeat()
-    clearLongPress()
-    longPressTriggered = false
     isActive = false
     currentDirection = null
     initialPinchDistance = 0
@@ -196,7 +172,6 @@ export function useTerminalGestures(
 
   function onTouchStart(e: TouchEvent) {
     if (e.touches.length === 2) {
-      clearLongPress()
       // Pinch gesture start. Prevent browser pinch/selection only once a
       // terminal gesture is clear; stationary single-finger long press is left
       // untouched so xterm/browser text selection can still start normally.
@@ -225,7 +200,6 @@ export function useTerminalGestures(
     touchStartY = touch.clientY
     isActive = true
     currentDirection = null
-    startLongPress(e)
   }
 
   function onTouchMove(e: TouchEvent) {
@@ -277,20 +251,11 @@ export function useTerminalGestures(
 
     if (!isActive || e.touches.length !== 1) return
 
-    if (longPressTriggered) {
-      preventNativeTouch(e)
-      return
-    }
-
     // Direction detection for hold-to-repeat
     const touch = e.touches[0]
     const dx = touch.clientX - touchStartX
     const dy = touch.clientY - touchStartY
     const dir = detectDirection(dx, dy)
-
-    if (Math.abs(dx) > TAP_THRESHOLD || Math.abs(dy) > TAP_THRESHOLD) {
-      clearLongPress()
-    }
 
     if (dir || currentDirection) {
       // Once the movement is clearly a terminal gesture, suppress native
@@ -373,17 +338,8 @@ export function useTerminalGestures(
 
     // Stop any hold-to-repeat
     stopRepeat()
-    clearLongPress()
 
     if (!isActive) return
-
-    if (longPressTriggered) {
-      longPressTriggered = false
-      isActive = false
-      currentDirection = null
-      preventNativeTouch(e)
-      return
-    }
 
     const wasDirection = currentDirection
     currentDirection = null
@@ -443,7 +399,6 @@ export function useTerminalGestures(
     if (!el) return
 
     stopRepeat()
-    clearLongPress()
     el.removeEventListener('touchstart', onTouchStart)
     el.removeEventListener('touchmove', onTouchMove)
     el.removeEventListener('touchend', onTouchEnd)
@@ -503,8 +458,12 @@ export function useTerminalGestures(
     applyState()
   }
 
-  // Called by TerminalPanel on mount
+  // Called by TerminalPanel on mount or when the container element changes
+  // (e.g. switching/creating tabs). Always force-detach first because the
+  // old listeners may be bound to a different DOM element.
   function attach() {
+    detachListeners()
+    detachDisabledScrollListeners()
     applyState()
   }
 

@@ -359,8 +359,8 @@ func TestApplyDefaults_TerminalDefaults(t *testing.T) {
 	cfg := Config{}
 	ApplyDefaults(&cfg, nil)
 
-	if cfg.Terminal.IdleTimeout != "10m" {
-		t.Errorf("Terminal.IdleTimeout = %q, want %q", cfg.Terminal.IdleTimeout, "10m")
+	if cfg.Terminal.IdleTimeout != "0" {
+		t.Errorf("Terminal.IdleTimeout = %q, want %q", cfg.Terminal.IdleTimeout, "0")
 	}
 	if cfg.Terminal.BufferLines != 2000 {
 		t.Errorf("Terminal.BufferLines = %d, want 2000", cfg.Terminal.BufferLines)

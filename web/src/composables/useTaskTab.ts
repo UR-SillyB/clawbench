@@ -24,7 +24,7 @@ let loadTasksAbortController: AbortController | null = null
 let onTaskEventDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // Guard: when markAllTasksRead is in progress, suppress loadTasks
-// from overwriting taskUnread back to true (race condition fix)
+// from overwriting taskUnreadCount back to non-zero (race condition fix)
 let markingReadInProgress = false
 
 // Track per-task running counts to detect completion transitions
@@ -101,12 +101,12 @@ async function loadTasks() {
         const resp = await fetch('/api/tasks', { signal: controller.signal })
         if (!resp.ok) return
         const data = await resp.json()
-        // Race condition guard: if markAllTasksRead is in progress,
-        // don't let a stale hasUnread flip taskUnread back to true
-        if (!markingReadInProgress) {
-            store.state.taskUnread = !!data.hasUnread
-        }
         const newTasks = data.tasks || []
+        // Race condition guard: if markAllTasksRead is in progress,
+        // don't let a stale response flip taskUnreadCount back to non-zero
+        if (!markingReadInProgress) {
+            store.state.taskUnreadCount = newTasks.reduce((sum: number, t: any) => sum + (t.unreadCount || 0), 0)
+        }
         // Derive running state from runningCount
         const hasRunning = newTasks.some((t: any) => t.runningCount > 0)
         store.state.taskRunning = hasRunning
@@ -185,7 +185,7 @@ async function markAllTasksRead() {
                 (t as any).unreadCount = 0
             }
         }
-        store.state.taskUnread = false
+        store.state.taskUnreadCount = 0
     } catch {
         // Mark-read failed — don't clear badge, next poll will correct
     } finally {
@@ -206,11 +206,8 @@ async function markTaskRead(taskId: number) {
         if (!resp.ok) return
         // Optimistically clear unread count for this task
         ;(task as any).unreadCount = 0
-        // Re-derive taskUnread from remaining unread tasks
-        const stillHasUnread = store.state.tasks.some((t: any) => t.unreadCount > 0)
-        if (!stillHasUnread) {
-            store.state.taskUnread = false
-        }
+        // Re-derive taskUnreadCount from remaining unread tasks
+        store.state.taskUnreadCount = store.state.tasks.reduce((sum: number, t: any) => sum + (t.unreadCount || 0), 0)
     } catch {
         // Silently ignore — next poll will correct
     }

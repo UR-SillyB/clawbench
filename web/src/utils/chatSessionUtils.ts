@@ -77,16 +77,11 @@ export function parseMessages(
  * @param summary - The summary text from the WebSocket event
  * @param atBottom - Whether the user is currently at the bottom of the chat
  */
-export function applySummaryUpdate(msg: any, summary: string | null | undefined, atBottom: boolean): void {
+export function applySummaryUpdate(msg: any, summary: string | null | undefined, _atBottom: boolean): void {
   msg.summary = summary
-  if (msg.showingSummary !== true && msg.showingSummary !== false) {
-    // showingSummary was never set (undefined) — auto-set based on summary content and scroll position
-    msg.showingSummary = atBottom && summary != null && summary !== ''
-  } else if (summary != null && summary !== '') {
-    // If currently showing original and a new summary arrives, auto-switch to summary
-    // only when the user is at the bottom
-    if (!msg.showingSummary && atBottom) {
-      msg.showingSummary = true
-    }
+  // Only set default when showingSummary hasn't been set yet.
+  // If the user has already toggled (or parseMessages initialized it), don't override.
+  if (msg.showingSummary === undefined) {
+    msg.showingSummary = summary != null && summary !== ''
   }
 }

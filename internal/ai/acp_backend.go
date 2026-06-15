@@ -67,6 +67,19 @@ func (b *ACPBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		// so RequestPermission callbacks use the correct state.
 		conn.SetAutoApprove(getSessionAutoApprove(req.SessionID))
 
+		// Pre-apply user's mode/thinkingEffort selection to the cached state BEFORE
+		// emitting SSE events, so the frontend sees the user's choice (e.g. "plan")
+		// instead of the agent's default (e.g. "bypassPermissions") during streaming.
+		// The actual RPC to set the config is still done inside Prompt().
+		if req.Mode != "" {
+			conn.UpdateCachedCurrentMode(req.Mode)
+			conn.PreApplyConfigCurrentID("mode", req.Mode)
+		}
+		if req.ThinkingEffort != "" {
+			conn.UpdateCachedCurrentThinkingEffort(req.ThinkingEffort)
+			conn.PreApplyConfigCurrentID("thinkingEffort", req.ThinkingEffort)
+		}
+
 		// Step 2: Handle new vs recovered session
 		slog.Info("acp perf: ExecuteStream.step2_emitSession_start", "session_id", req.SessionID, "is_new", isNew, "after_GetOrCreateConn", time.Since(streamStart))
 		b.emitSessionAndCacheState(conn, isNew, ch)

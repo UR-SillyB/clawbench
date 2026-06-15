@@ -4,6 +4,8 @@ import { nextTick } from 'vue'
 import ModalDialog from '@/components/common/ModalDialog.vue'
 
 describe('ModalDialog', () => {
+  const TeleportStub = { template: '<div><slot /></div>' }
+
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -13,7 +15,7 @@ describe('ModalDialog', () => {
       props: { open: true, ...props },
       slots,
       global: {
-        stubs: { teleport: true },
+        stubs: { Teleport: TeleportStub },
       },
     })
   }
@@ -163,7 +165,7 @@ describe('ModalDialog', () => {
   it('does not render when never opened', () => {
     const wrapper = mount(ModalDialog, {
       props: { open: false },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
 
     expect(wrapper.find('.modal-overlay').exists()).toBe(false)

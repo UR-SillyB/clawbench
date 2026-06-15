@@ -154,6 +154,9 @@ func TestTerminalStatus_AllSessions(t *testing.T) {
 	// No active sessions — AllSessionStatus returns nil slice which marshals to null
 	_, ok := result["sessions"]
 	assert.True(t, ok, "sessions field should be present")
+	// session_count should be present in the response
+	_, ok = result["session_count"]
+	assert.True(t, ok, "session_count field should be present")
 }
 
 // ---------- TerminalClose ----------

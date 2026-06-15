@@ -1,109 +1,122 @@
 <template>
   <div class="terminal-panel" :style="panelStyle">
-    <!-- Header -->
-    <div class="terminal-header" @click.self="focusTerminal">
-      <div class="terminal-header-left">
-        <TerminalIcon :size="14" />
-        <span class="terminal-title">{{ t('terminal.title') }}</span>
-        <span v-if="currentCwd" class="terminal-cwd" :title="currentCwd">{{ shortCwd }}</span>
-      </div>
-      <div class="terminal-header-right">
-        <span class="terminal-font-size" @click="applyFontSize(DEFAULT_FONT_SIZE)" :title="t('terminal.resetFontSize')">{{ fontSize }}</span>
-        <span class="terminal-status-dot" :class="connectionState"></span>
-      </div>
+    <!-- Empty state when all tabs are closed -->
+    <div v-if="tabs.length === 0" class="terminal-empty-state">
+      <TerminalIcon :size="40" class="terminal-empty-icon" />
+      <p class="terminal-empty-text">{{ t('terminal.noSessions') }}</p>
+      <button class="terminal-empty-create-btn" @click="handleCreateTab">
+        <PlusIcon :size="16" />
+        <span>{{ t('terminal.createSession') }}</span>
+      </button>
     </div>
 
-    <!-- Terminal viewport -->
-    <div ref="terminalContainer" class="terminal-container" @click.self="focusTerminal">
-      <!-- Rebuild overlay -->
-      <div v-if="rebuilding" class="terminal-rebuild-overlay">
-        <span class="terminal-rebuild-spinner"></span>
-        <span>{{ t('terminal.rebuilding') }}</span>
-      </div>
-
-      <!-- Directory mismatch overlay -->
-      <div v-if="showReopenPrompt" class="terminal-error-overlay">
-        <p>{{ t('terminal.directoryMismatch') }}</p>
-        <div class="terminal-prompt-actions">
-          <button class="terminal-reconnect-btn" @click="dismissReopenPrompt">{{ t('terminal.continueHere') }}</button>
-          <button class="terminal-reconnect-btn" @click="handleRebuild">{{ t('terminal.reopenHere') }}</button>
+    <template v-else>
+    <!-- Tab bar (replaces old header) -->
+    <div class="terminal-tab-bar">
+      <div class="terminal-tab-list">
+        <div
+          v-for="tab in tabs"
+          :key="tab.id"
+          class="terminal-tab"
+          :class="{ active: tab.id === activeTabId }"
+          @click="handleTabClick(tab.id)"
+        >
+          <span class="terminal-tab-title" :title="tab.cwd">{{ tab.title }}</span>
+          <button class="terminal-tab-menu-btn" @click.stop="openTabMenu($event, tab)" :title="t('terminal.title')">
+            <MoreVerticalIcon :size="12" />
+          </button>
         </div>
       </div>
+      <button
+        class="terminal-tab-add"
+        :class="{ disabled: !canCreateMore }"
+        :disabled="!canCreateMore"
+        @click="handleCreateTab"
+        :title="canCreateMore ? t('terminal.newTab') : t('terminal.tabLimitReached')"
+      >
+        <PlusIcon :size="14" />
+      </button>
+    </div>
 
-      <!-- Error overlay -->
-      <div v-if="showErrorOverlay" class="terminal-error-overlay">
-        <p>{{ errorDisplayMessage }}</p>
-        <button v-if="canReconnect" class="terminal-reconnect-btn" @click="handleReconnect">{{ t('terminal.reconnect') }}</button>
+    <!-- Terminal viewport — one container per tab -->
+    <div class="terminal-viewport">
+      <div
+        v-for="tab in tabs"
+        :key="tab.id"
+        v-show="tab.id === activeTabId"
+        :ref="(el) => setTabContainer(tab.id, el as HTMLElement | null)"
+        class="terminal-container"
+        @click.self="focusTerminal"
+      >
+        <!-- Rebuild overlay (per-tab) -->
+        <div v-if="rebuildingTabId === tab.id" class="terminal-rebuild-overlay">
+          <span class="terminal-rebuild-spinner"></span>
+          <span>{{ t('terminal.rebuilding') }}</span>
+        </div>
+
+        <!-- Error overlay (per-tab) -->
+        <div v-if="tab.id === activeTabId && isTabError(tab)" class="terminal-error-overlay">
+          <p>{{ getTabErrorMessage(tab) }}</p>
+          <button v-if="isTabCanReconnect(tab)" class="terminal-reconnect-btn" @click="handleReconnect(tab)">{{ t('terminal.reconnect') }}</button>
+        </div>
+
+        <!-- Gesture hint overlay -->
+        <Transition name="gesture-hint">
+          <div v-if="gestureHint" class="gesture-hint">{{ gestureHint }}</div>
+        </Transition>
       </div>
-
-      <!-- Gesture hint overlay -->
-      <Transition name="gesture-hint">
-        <div v-if="gestureHint" class="gesture-hint">{{ gestureHint }}</div>
-      </Transition>
-
-      <!-- xterm.js will mount here -->
     </div>
 
     <!-- Virtual key toolbar -->
     <div class="terminal-toolbar">
       <!-- Symbol bar (toggleable, above main toolbar) -->
-      <div v-if="showSymbolBar" class="symbol-bar">
-        <div class="symbol-bar-scroll">
-          <button v-for="sym in symbolKeys" :key="sym" class="toolbar-btn btn-symbol" @click="handleSymbolClick(sym)">{{ sym }}</button>
+      <Transition name="symbol-bar">
+        <div v-if="showSymbolBar" class="symbol-bar">
+          <div class="scroll-wrapper" :class="{ 'scroll-fade-left': symbolBarScrollFade.left, 'scroll-fade-right': symbolBarScrollFade.right }">
+            <div ref="symbolBarScrollRef" class="symbol-bar-scroll" @scroll="updateSymbolBarScrollFade">
+              <button v-for="sym in selectedSymbols" :key="sym.id" class="toolbar-btn btn-symbol" @click="handleSymbolClick(sym.char!)">{{ sym.label }}</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </Transition>
 
       <!-- Main toolbar row -->
       <div class="main-toolbar-row">
-        <button class="toolbar-btn modifier gesture-toggle" :class="{ active: gestures.enabled.value }" @click="gestures.toggle(); focusTerminal()" @contextmenu.prevent :title="t('terminal.gestures')">
+        <button class="toolbar-btn modifier gesture-toggle" :class="{ active: gestures.enabled.value }" @click="handleGestureToggle" @contextmenu.prevent :title="t('terminal.gestures')">
           <HandIcon :size="14" />
         </button>
         <button class="toolbar-btn modifier gesture-toggle" :class="{ active: showSymbolBar }" @click="toggleSymbolBar()" @contextmenu.prevent :title="t('terminal.symbols')">
           <HashIcon :size="14" />
         </button>
-        <div class="toolbar-scroll">
-          <!-- Group: Modifiers -->
-          <div class="key-group">
-            <button v-if="!gestures.enabled.value" class="toolbar-btn btn-modifier" @click="terminalKeys.sendEscape(); focusTerminal()" title="Esc">Esc</button>
-            <button v-if="!gestures.enabled.value" class="toolbar-btn btn-modifier" @click="terminalKeys.sendTab(); focusTerminal()" title="Tab">Tab</button>
-            <button class="toolbar-btn btn-modifier modifier" :class="{ active: terminalKeys.activeModifiers.value.ctrl !== 'inactive', locked: terminalKeys.activeModifiers.value.ctrl === 'locked' }" @click="handleModifier('ctrl')" @contextmenu.prevent title="Ctrl">Ctl</button>
-            <button class="toolbar-btn btn-modifier modifier" :class="{ active: terminalKeys.activeModifiers.value.alt !== 'inactive', locked: terminalKeys.activeModifiers.value.alt === 'locked' }" @click="handleModifier('alt')" @contextmenu.prevent title="Alt">Alt</button>
-            <button class="toolbar-btn btn-modifier modifier" :class="{ active: terminalKeys.activeModifiers.value.shift !== 'inactive', locked: terminalKeys.activeModifiers.value.shift === 'locked' }" @click="handleModifier('shift')" @contextmenu.prevent title="Shift"><ShiftIcon :size="14" /></button>
-          </div>
-          <!-- Group: Shortcuts (Ctrl+C / Ctrl+Z) -->
-          <div class="key-group">
-            <button class="toolbar-btn btn-modifier shortcut" @click="terminalKeys.sendCtrlC(); focusTerminal()" title="Ctrl+C">⌃C</button>
-            <button class="toolbar-btn btn-modifier shortcut" @click="terminalKeys.sendCtrlZ(); focusTerminal()" title="Ctrl+Z">⌃Z</button>
-          </div>
-          <!-- Group: Navigation -->
-          <div class="key-group">
-            <button class="toolbar-btn btn-nav" @click="terminalKeys.sendHome(); focusTerminal()" title="Home">Home</button>
-            <button class="toolbar-btn btn-nav" @click="terminalKeys.sendEnd(); focusTerminal()" title="End">End</button>
-            <button v-if="!gestures.enabled.value" class="toolbar-btn btn-nav" @click="terminalKeys.sendPageUp(); focusTerminal()" title="Page Up">PgUp</button>
-            <button v-if="!gestures.enabled.value" class="toolbar-btn btn-nav" @click="terminalKeys.sendPageDown(); focusTerminal()" title="Page Down">PgDn</button>
-          </div>
-          <!-- Group: Arrow keys -->
-          <div v-show="!gestures.enabled.value" class="key-group">
-            <button class="toolbar-btn btn-arrow" @click="terminalKeys.sendArrowUp(); focusTerminal()" title="↑">↑</button>
-            <button class="toolbar-btn btn-arrow" @click="terminalKeys.sendArrowDown(); focusTerminal()" title="↓">↓</button>
-            <button class="toolbar-btn btn-arrow" @click="terminalKeys.sendArrowLeft(); focusTerminal()" title="←">←</button>
-            <button class="toolbar-btn btn-arrow" @click="terminalKeys.sendArrowRight(); focusTerminal()" title="→">→</button>
-          </div>
-          <!-- Group: Actions -->
+        <div class="scroll-wrapper" :class="{ 'scroll-fade-left': toolbarScrollFade.left, 'scroll-fade-right': toolbarScrollFade.right }">
+          <div ref="toolbarScrollRef" class="toolbar-scroll" @scroll="updateToolbarScrollFade">
+          <button
+            v-for="def in visibleKeys"
+            :key="def.id"
+            class="toolbar-btn"
+            :class="toolbarBtnClass(def)"
+            @click="handleToolbarKeyClick(def)"
+            @contextmenu.prevent
+            :title="def.label"
+          >
+            <template v-if="def.id === 'shift_tab'"><span class="shift-tab-label">Shift</span><span class="shift-tab-label">Tab</span></template>
+            <template v-else>{{ def.label }}</template>
+          </button>
+          <!-- Quick commands button (always present) -->
           <div class="key-group">
             <button ref="cmdBtnRef" class="toolbar-btn btn-action" @click="showCommands = !showCommands" :title="t('terminal.quickCommands')">
               <ZapIcon :size="14" />
             </button>
-            <button class="toolbar-btn btn-action" @click="handleCopyOutput" :title="t('terminal.copyOutput')">
-              <CopyIcon :size="14" />
-            </button>
-            <button class="toolbar-btn btn-action" @click="handleRebuild" :title="t('terminal.rebuildSession')">
-              <RefreshCwIcon :size="14" />
+            <!-- Settings button (always present) -->
+            <button class="toolbar-btn btn-action" @click="showKeyConfig = true" :title="t('terminal.keyConfigTitle')">
+              <Settings :size="14" />
             </button>
           </div>
         </div>
+        </div>
       </div>
     </div>
+    </template>
 
     <!-- Quick commands popup -->
     <PopupMenu v-model:show="showCommands" :target-element="cmdBtnRef" :max-width="220" :max-height="280" :menu-items-count="visibleCommands.length + 1">
@@ -117,49 +130,57 @@
       </button>
     </PopupMenu>
 
+    <!-- Tab three-dot menu -->
+    <TerminalTabMenu
+      v-model:show="showTabMenu"
+      :target-element="tabMenuTarget"
+      :cwd="tabMenuCwd"
+      @close="handleTabMenuClose"
+      @copy-path="handleTabMenuCopyPath"
+      @close-all="handleTabMenuCloseAll"
+    />
+
     <!-- Quick command edit dialog — only open when terminal tab is active -->
     <QuickCommandDialog :open="props.active && showEditDialog" @close="showEditDialog = false" />
+
+    <!-- Key config drawer — only open when terminal tab is active -->
+    <KeyConfigDrawer
+      :open="props.active && showKeyConfig"
+      @close="showKeyConfig = false"
+      @saved="onKeyConfigSaved"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
 import PopupMenu from '@/components/common/PopupMenu.vue'
 import QuickCommandDialog from '@/components/terminal/QuickCommandDialog.vue'
-import { useTerminalSession } from '@/composables/useTerminalSession'
+import KeyConfigDrawer from '@/components/terminal/KeyConfigDrawer.vue'
+import TerminalTabMenu from '@/components/terminal/TerminalTabMenu.vue'
+import { useTerminalTabs, type TerminalTab } from '@/composables/useTerminalTabs'
 import { useTerminalViewport } from '@/composables/useTerminalViewport'
-import { useTerminalKeys } from '@/composables/useTerminalKeys'
+import { useTerminalKeys, type ModifierKey } from '@/composables/useTerminalKeys'
 import { shouldPreventTerminalContextMenu, useTerminalGestures } from '@/composables/useTerminalGestures'
 import { useToast } from '@/composables/useToast'
 import { useQuickCommands } from '@/composables/useQuickCommands'
 import { useAppMode } from '@/composables/useAppMode'
+import { useKeyConfig } from '@/composables/useKeyConfig'
+import { useDialog } from '@/composables/useDialog'
 import { store } from '@/stores/app'
-import { resolveTerminalCwd, shouldPromptForTerminalReopen } from './terminalCwd'
 import {
   DEFAULT_FONT_SIZE,
-  shortCwd as shortCwdUtil,
   canReconnect as canReconnectUtil,
   errorDisplayMessage as errorDisplayMessageUtil,
   showErrorOverlay as showErrorOverlayUtil,
 } from '@/utils/terminalFontUtils'
-import { localConfig, setLocalConfig } from '@/composables/useSettingsConfig'
-import {
-  ALL_SYMBOLS,
-  loadSymbolFreqs,
-  saveSymbolFreqs,
-  sortSymbolsByFreq as sortSymbolsByFreqUtil,
-  incrementSymbolFreq,
-} from '@/utils/terminalSymbolFreq'
-import type { SymbolFreqs } from '@/utils/terminalSymbolFreq'
+import { localConfig, setLocalConfig, useSettingsConfig } from '@/composables/useSettingsConfig'
+import type { KeyDef } from '@/utils/terminalKeyDefs'
 
-import { Terminal as TerminalIcon, Copy as CopyIcon, Zap as ZapIcon, Hand as HandIcon, RefreshCw as RefreshCwIcon, ArrowUpFromLine as ShiftIcon, Hash as HashIcon } from 'lucide-vue-next'
-
+import { Zap as ZapIcon, Hand as HandIcon, Hash as HashIcon, Plus as PlusIcon, MoreVertical as MoreVerticalIcon, Terminal as TerminalIcon, Settings } from 'lucide-vue-next'
 const props = defineProps<{
   requestedCwd?: string | null
   active?: boolean
@@ -167,183 +188,128 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   open: []
+  'cwd-handled': []
 }>()
 
 const { t } = useI18n()
 const toast = useToast()
+const dialog = useDialog()
+const { getServerValueWithDefault } = useSettingsConfig()
 
-// Font size with persistence via settings config
+// Font size with persistence
 const fontSize = ref<number>(localConfig.terminalFontSize || DEFAULT_FONT_SIZE)
+
+// Max sessions from server config
+const maxSessions = computed(() => {
+  const val = getServerValueWithDefault('terminal.max_sessions')
+  return typeof val === 'number' ? val : 10
+})
 
 function applyFontSize(size: number) {
   const MIN = 8, MAX = 28
   const clamped = Math.max(MIN, Math.min(MAX, size))
   fontSize.value = clamped
   setLocalConfig('terminalFontSize', clamped)
-  if (xterm.value) {
-    xterm.value.options.fontSize = clamped
-    viewport.fitTerminal()
+  tabManager.updateFontSize(clamped)
+  // Fit active terminal after font change
+  const active = tabManager.activeTab.value
+  if (active?.fitAddon) {
+    requestAnimationFrame(() => {
+      try { active.fitAddon?.fit() } catch { /* ignore */ }
+    })
   }
 }
 
 // Refs
-const terminalContainer = ref<HTMLElement | null>(null)
 const gestureHint = ref('')
 let gestureHintTimer: ReturnType<typeof setTimeout> | null = null
-const xterm = ref<Terminal | null>(null)
-const fitAddon = ref<FitAddon | null>(null)
 const showCommands = ref(false)
 const cmdBtnRef = ref<HTMLElement | null>(null)
-const rebuilding = ref(false)
-const showReopenPrompt = ref(false)
 const showSymbolBar = ref(false)
+const rebuildingTabId = ref<string | null>(null)
 
-// Symbol bar with recency-weighted frequency sorting (exponential decay)
-const symbolKeys = ref<string[]>([...ALL_SYMBOLS])
+// Scroll fade state for toolbar and symbol bar
+const toolbarScrollFade = reactive({ left: false, right: false })
+const symbolBarScrollFade = reactive({ left: false, right: false })
 
-// Sort symbols by decayed score (descending)
-function sortSymbolsByFreq() {
-  const freqs = loadSymbolFreqs()
-  const now = Date.now()
-  symbolKeys.value = sortSymbolsByFreqUtil(freqs, now)
+function computeScrollFade(el: HTMLElement): { left: boolean; right: boolean } {
+  const { scrollLeft, scrollWidth, clientWidth } = el
+  return {
+    left: scrollLeft > 2,
+    right: scrollLeft + clientWidth < scrollWidth - 2,
+  }
 }
 
-// Increment symbol: apply decay to old score, add 1, update timestamp
+function updateToolbarScrollFade(e: Event) {
+  const el = e.currentTarget as HTMLElement
+  const fade = computeScrollFade(el)
+  toolbarScrollFade.left = fade.left
+  toolbarScrollFade.right = fade.right
+}
+
+function updateSymbolBarScrollFade(e: Event) {
+  const el = e.currentTarget as HTMLElement
+  const fade = computeScrollFade(el)
+  symbolBarScrollFade.left = fade.left
+  symbolBarScrollFade.right = fade.right
+}
+
+// Refs for scroll containers
+const toolbarScrollRef = ref<HTMLElement | null>(null)
+// @ts-expect-error template ref
+const symbolBarScrollRef = ref<HTMLElement | null>(null)
+
+function refreshToolbarFade() {
+  const el = toolbarScrollRef.value
+  if (!el) return
+  const fade = computeScrollFade(el)
+  toolbarScrollFade.left = fade.left
+  toolbarScrollFade.right = fade.right
+}
+
+// Tab menu state
+const showTabMenu = ref(false)
+const tabMenuTarget = ref<HTMLElement | null>(null)
+const tabMenuTabId = ref<string | null>(null)
+const tabMenuCwd = ref('')
+
+// Symbol bar — config-driven
+const { selectedKeys, selectedSymbols, fetchConfig: fetchKeyConfig } = useKeyConfig()
+const showKeyConfig = ref(false)
+
+/** Keys visible in the toolbar, filtered by gesture mode (Tab/PgUp/PgDn/arrows hidden when gestures on) */
+const GESTURE_HIDDEN_KEYS = new Set(['tab', 'pgup', 'pgdn', 'arrow_up', 'arrow_down', 'arrow_left', 'arrow_right'])
+const visibleKeys = computed(() => {
+  if (!gestures.enabled.value) return selectedKeys.value
+  return selectedKeys.value.filter(def => !GESTURE_HIDDEN_KEYS.has(def.id))
+})
+
 function handleSymbolClick(sym: string) {
-  const freqs = loadSymbolFreqs()
-  const now = Date.now()
-  const updated = incrementSymbolFreq(freqs, sym, now)
-  saveSymbolFreqs(updated)
-  session.sendInput(sym)
+  activeTab.value?.session.sendInput(sym)
   focusTerminal()
 }
 
-// Toggle symbol bar — re-sort on open
 function toggleSymbolBar() {
   showSymbolBar.value = !showSymbolBar.value
-  if (showSymbolBar.value) {
-    sortSymbolsByFreq()
-  }
   focusTerminal()
 }
 
-function computeCwd(): string {
-  return resolveTerminalCwd({
-    currentFilePath: store.state.currentFile?.path,
-    currentDir: store.state.currentDir,
-    requestedCwd: props.requestedCwd,
-  })
+function onKeyConfigSaved() {
+  showKeyConfig.value = false
 }
 
-function targetAbsoluteCwd(): string {
-  const root = store.state.projectRoot.replace(/\/+$/, '')
-  const cwd = computeCwd()
-  return cwd ? `${root}/${cwd}` : root
+function handleGestureToggle() {
+  gestures.toggle()
+  toast.show(gestures.enabled.value ? t('terminal.gesturesOn') : t('terminal.gesturesOff'), { icon: '✋', type: 'info', duration: 1200 })
+  focusTerminal()
 }
 
-// Terminal session
-const getWsUrl = () => {
+// Build WS URL for a given CWD
+function getWsUrl(cwd?: string) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const cwd = computeCwd()
   const cwdParam = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
   return `${proto}//${location.host}/api/terminal/ws${cwdParam}`
 }
-
-const session = useTerminalSession(getWsUrl)
-const { connectionState, errorMessage, errorCode, currentCwd } = session
-
-// Quick commands composable (module-level singleton)
-const {
-  visibleCommands,
-  autoExecCommand,
-  fetchCommands,
-  showEditDialog,
-} = useQuickCommands()
-
-// Terminal viewport (also syncs keyboardHeight to useTerminalKeyboard singleton)
-const viewport = useTerminalViewport(xterm, terminalContainer)
-
-// Terminal keys
-const terminalKeys = useTerminalKeys(session.sendInput)
-
-let touchScrollRemainder = 0
-
-function handleTerminalTouchScroll(deltaY: number) {
-  const term = xterm.value
-  if (!term) return
-
-  const lineHeightOption = typeof term.options.lineHeight === 'number' ? term.options.lineHeight : 1
-  const rowHeight = Math.max(1, fontSize.value * lineHeightOption)
-  touchScrollRemainder += deltaY / rowHeight
-  const lines = Math.trunc(touchScrollRemainder)
-  if (lines === 0) return
-
-  term.scrollLines(-lines)
-  touchScrollRemainder -= lines
-}
-
-// Terminal gestures (Termius-style: swipe arrows, long-press Esc, double-tap Tab, pinch zoom)
-const gestures = useTerminalGestures(terminalContainer, {
-  sendArrowUp: terminalKeys.sendArrowUp,
-  sendArrowDown: terminalKeys.sendArrowDown,
-  sendArrowLeft: terminalKeys.sendArrowLeft,
-  sendArrowRight: terminalKeys.sendArrowRight,
-  sendPageUp: terminalKeys.sendPageUp,
-  sendPageDown: terminalKeys.sendPageDown,
-  sendEscape: terminalKeys.sendEscape,
-  sendTab: terminalKeys.sendTab,
-  onPinchZoom: (delta: number) => applyFontSize(fontSize.value + delta),
-  onTouchScroll: handleTerminalTouchScroll,
-  onGestureHint: (symbol: string) => {
-    gestureHint.value = symbol
-    if (gestureHintTimer) clearTimeout(gestureHintTimer)
-    gestureHintTimer = setTimeout(() => { gestureHint.value = '' }, 600)
-  },
-})
-
-// Volume key → arrow key mapping (Android app mode only)
-// When the terminal panel is open, volume up/down are remapped to arrow up/down
-// via the Android native bridge. On close, the default volume behavior is restored.
-const { isAppMode } = useAppMode()
-
-function enableVolumeKeys() {
-  if (!isAppMode.value) return
-  const native = (window as any).AndroidNative
-  if (native?.setVolumeKeyMode) {
-    native.setVolumeKeyMode(true)
-  }
-}
-
-function disableVolumeKeys() {
-  if (!isAppMode.value) return
-  const native = (window as any).AndroidNative
-  if (native?.setVolumeKeyMode) {
-    native.setVolumeKeyMode(false)
-  }
-}
-
-// Register the global callback that Android calls via evaluateJavascript
-// when a volume key is pressed while volumeKeyMode is active.
-;(window as any).__onVolumeKey = (direction: 'up' | 'down') => {
-  if (direction === 'up') {
-    terminalKeys.sendArrowUp()
-  } else {
-    terminalKeys.sendArrowDown()
-  }
-}
-
-// Computed
-const shortCwd = computed(() => shortCwdUtil(currentCwd.value))
-
-const showErrorOverlay = computed(() => showErrorOverlayUtil(connectionState.value))
-
-const canReconnect = computed(() => canReconnectUtil(errorCode.value))
-
-const errorDisplayMessage = computed(() => errorDisplayMessageUtil(errorCode.value, errorMessage.value, t('terminal.websocketFailed')))
-
-const panelStyle = computed(() => ({
-  '--keyboard-height': `${viewport.keyboardHeight.value}px`,
-}))
 
 // Theme
 function getXtermTheme() {
@@ -377,78 +343,166 @@ const lightTheme = {
   brightCyan: '#179299', brightWhite: '#6c6f85',
 }
 
-// Initialize xterm
-function initTerminal() {
-  if (xterm.value) return
+// Tab manager
+// Terminal keys — create early so processInput can be passed to tabManager.
+// sendInput uses a wrapper that reads activeTab at call time (no cycle).
+const terminalKeys = useTerminalKeys((data: string) => {
+  activeTab.value?.session.sendInput(data)
+})
 
-  const term = new Terminal({
-    theme: getXtermTheme(),
-    fontSize: fontSize.value,
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-    cursorBlink: true,
-    convertEol: true,
-    scrollback: 5000,
-    rightClickSelectsWord: true,
-  })
+const tabManager = useTerminalTabs(getWsUrl, {
+  fontSize,
+  getXtermTheme,
+  errorMessages: {
+    shellStartFailed: t('terminal.shellStartFailed'),
+    websocketFailed: t('terminal.websocketFailed'),
+  },
+  onCloseSessionViaHttp: (sessionId: string) => {
+    fetch(`/api/terminal/close?session=${encodeURIComponent(sessionId)}`, { method: 'POST' }).catch(() => {})
+  },
+  onExit: (_tabId) => {
+    toast.show(t('terminal.ptyExited'), { type: 'info' })
+  },
+  onError: () => {
+    // Error displayed via overlay
+  },
+  processInput: terminalKeys.processInput,
+})
 
-  const fit = new FitAddon()
-  term.loadAddon(fit)
-  term.loadAddon(new WebLinksAddon())
+const { tabs, activeTabId, activeTab } = tabManager
 
-  // Store addons for later access
-  ;(term as any).fitAddon = fit
-  fitAddon.value = fit
+// Quick commands
+const {
+  visibleCommands,
+  fetchCommands,
+  showEditDialog,
+} = useQuickCommands()
 
-  // Handle terminal input
-  term.onData((data) => {
-    const processed = terminalKeys.processInput(data)
-    session.sendInput(processed)
-  })
+// Terminal viewport — uses the active tab's xterm and container
+const viewport = useTerminalViewport(
+  computed(() => activeTab.value?.xterm || null),
+  computed(() => activeTab.value?.container || null),
+)
 
-  // Send resize to backend when terminal dimensions change
-  term.onResize(({ cols, rows }) => {
-    session.sendResize(cols, rows)
-  })
+let touchScrollRemainder = 0
 
-  // Set up session callbacks
-  session.setCallbacks({
-    onOutput: (data) => {
-      term.write(data)
-    },
-    onReplay: (data) => {
-      // Clear terminal before replaying to avoid conflicts between
-      // stale buffer content and ANSI sequences in the replay data
-      term.clear()
-      term.write(data)
-    },
-    onStatus: (status) => {
-      // Auto-execute quick command on every connect/reconnect
-      if (autoExecCommand.value) {
-        session.sendInput(autoExecCommand.value.command + '\r')
-      }
-    },
-    onExit: (code) => {
-      toast.show(t('terminal.ptyExited'), { type: 'info' })
-    },
-    onError: (message, code) => {
-      // Error displayed via overlay
-    },
-  })
+function handleTerminalTouchScroll(deltaY: number) {
+  const term = activeTab.value?.xterm
+  if (!term) return
 
-  xterm.value = term
+  const lineHeightOption = typeof term.options.lineHeight === 'number' ? term.options.lineHeight : 1
+  const rowHeight = Math.max(1, fontSize.value * lineHeightOption)
+  touchScrollRemainder += deltaY / rowHeight
+  const lines = Math.trunc(touchScrollRemainder)
+  if (lines === 0) return
+
+  term.scrollLines(-lines)
+  touchScrollRemainder -= lines
 }
 
-// Mount terminal to DOM
-async function mountTerminal() {
-  if (!xterm.value || !terminalContainer.value) return
+// Gestures
+const gestures = useTerminalGestures(
+  computed(() => activeTab.value?.container || null),
+  {
+    sendArrowUp: terminalKeys.sendArrowUp,
+    sendArrowDown: terminalKeys.sendArrowDown,
+    sendArrowLeft: terminalKeys.sendArrowLeft,
+    sendArrowRight: terminalKeys.sendArrowRight,
+    sendPageUp: terminalKeys.sendPageUp,
+    sendPageDown: terminalKeys.sendPageDown,
+    sendTab: terminalKeys.sendTab,
+    onPinchZoom: (delta: number) => applyFontSize(fontSize.value + delta),
+    onTouchScroll: handleTerminalTouchScroll,
+    onGestureHint: (symbol: string) => {
+      gestureHint.value = symbol
+      if (gestureHintTimer) clearTimeout(gestureHintTimer)
+      gestureHintTimer = setTimeout(() => { gestureHint.value = '' }, 600)
+    },
+  },
+)
 
-  // Only open if not already
-  if (xterm.value.element) return
+// Re-evaluate fade when gesture toggle changes visible buttons
+watch(() => gestures.enabled.value, () => nextTick(refreshToolbarFade))
 
-  xterm.value.open(terminalContainer.value)
+// Re-bind gesture listeners when switching/creating tabs (container element changes).
+// Use double nextTick to ensure mountTabToContainer has already run.
+watch(activeTabId, () => nextTick(() => nextTick(() => gestures.attach())))
 
-  // Ctrl+Wheel to zoom font size (desktop)
-  const container = terminalContainer.value
+// Volume keys (Android)
+const { isAppMode } = useAppMode()
+
+function enableVolumeKeys() {
+  if (!isAppMode.value) return
+  const native = (window as any).AndroidNative
+  if (native?.setVolumeKeyMode) native.setVolumeKeyMode(true)
+}
+
+function disableVolumeKeys() {
+  if (!isAppMode.value) return
+  const native = (window as any).AndroidNative
+  if (native?.setVolumeKeyMode) native.setVolumeKeyMode(false)
+}
+
+;(window as any).__onVolumeKey = (direction: 'up' | 'down') => {
+  if (direction === 'up') terminalKeys.sendArrowUp()
+  else terminalKeys.sendArrowDown()
+}
+
+// Computed
+const canCreateMore = computed(() => tabs.value.length < maxSessions.value)
+
+// Sync terminal session count to Android notification and store
+watch(() => tabs.value.length, (count) => {
+  store.state.terminalSessionCount = count
+  if (isAppMode.value) {
+    try {
+      const native = (window as any).AndroidNative
+      if (native?.setTerminalSessionCount) native.setTerminalSessionCount(count)
+    } catch { /* ignore */ }
+  }
+}, { immediate: true })
+
+const panelStyle = computed(() => ({
+  '--keyboard-height': `${viewport.keyboardHeight.value}px`,
+}))
+
+// Per-tab error state helpers
+// NOTE: tab is a reactive() proxy which auto-unwraps Refs, so we MUST
+// access tab.session.connectionState directly (no .value). TypeScript
+// doesn't model reactive() auto-unwrapping, but using .value would
+// read the .value property of the already-unwrapped string (undefined).
+function isTabError(tab: TerminalTab): boolean {
+  return showErrorOverlayUtil(tab.session.connectionState)
+}
+
+function isTabCanReconnect(tab: TerminalTab): boolean {
+  return canReconnectUtil(tab.session.errorCode)
+}
+
+function getTabErrorMessage(tab: TerminalTab): string {
+  return errorDisplayMessageUtil(
+    tab.session.errorCode,
+    tab.session.errorMessage,
+    t('terminal.websocketFailed'),
+  )
+}
+
+// Tab container ref management
+// We need to store container refs for each tab so xterm can mount
+const tabContainerRefs = new Map<string, HTMLElement>()
+
+function setTabContainer(tabId: string, el: HTMLElement | null) {
+  if (el) {
+    tabContainerRefs.set(tabId, el)
+  } else {
+    tabContainerRefs.delete(tabId)
+  }
+}
+
+function mountTabToContainer(tab: TerminalTab, container: HTMLElement) {
+  tabManager.mountTabXterm(tab, container)
+
+  // Add Ctrl+Wheel zoom handler
   const wheelHandler = (e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault()
@@ -457,12 +511,9 @@ async function mountTerminal() {
     }
   }
   container.addEventListener('wheel', wheelHandler, { passive: false })
-  // Store for cleanup
   ;(container as any).__terminalWheelHandler = wheelHandler
 
-  // Suppress native context menu only while terminal gestures are active.
-  // When gestures are disabled, long-press must be able to open the platform
-  // selection/copy UI instead of being reduced to a vibration.
+  // Context menu handler
   const contextMenuHandler = (e: Event) => {
     if (shouldPreventTerminalContextMenu(gestures.enabled.value)) {
       e.preventDefault()
@@ -471,191 +522,124 @@ async function mountTerminal() {
   container.addEventListener('contextmenu', contextMenuHandler)
   ;(container as any).__terminalContextMenuHandler = contextMenuHandler
 
-  await nextTick()
-  viewport.startWatching()
-  gestures.attach()
-  focusTerminal()
-
-  // Connect WebSocket
-  try {
-    await session.connect()
-  } catch (err) {
-    console.error('terminal: connection failed', err)
+  // Auto-copy selected text on selection change (long-press select → auto copy)
+  if (tab.xterm) {
+    const selectionDisposable = tab.xterm.onSelectionChange(() => {
+      const selection = tab.xterm?.getSelection()
+      if (selection) {
+        navigator.clipboard.writeText(selection).catch(() => {})
+        toast.show(t('common.copied'), { type: 'success', duration: 1500 })
+      }
+    })
+    ;(tab as any).__selectionDisposable = selectionDisposable
   }
+
+  // Fit the terminal after mounting
+  requestAnimationFrame(() => {
+    try { tab.fitAddon?.fit() } catch { /* ignore */ }
+  })
 }
 
 function focusTerminal() {
-  xterm.value?.focus()
+  activeTab.value?.xterm?.focus()
 }
 
-// Lifecycle: expose init/mount for parent to call
-async function activate() {
-  emit('open')
-  initTerminal()
-  enableVolumeKeys()
-  await nextTick()
-  await mountTerminal()
-}
+// Tab bar actions
+function handleTabClick(tabId: string) {
+  if (tabId === activeTabId.value) return
+  tabManager.switchTab(tabId)
 
-function deactivate() {
-  disableVolumeKeys()
-  session.disconnect()
-  terminalKeys.reset()
-  showCommands.value = false
-  showReopenPrompt.value = false
-  cleanupTerminal()
-}
-
-// Auto-activate/deactivate when the terminal tab becomes active/inactive.
-// This replaces the old BottomSheet watch(() => props.open, ...) lifecycle.
-watch(() => props.active, async (isActive) => {
-  if (isActive) {
-    emit('open')
-    initTerminal()
-    enableVolumeKeys()
-    await nextTick()
-    await mountTerminal()
-  } else {
-    disableVolumeKeys()
-    session.disconnect()
-    terminalKeys.reset()
-    showCommands.value = false
-    showReopenPrompt.value = false
-    cleanupTerminal()
+  // Connect the newly active tab if it's disconnected (e.g. after panel reactivation)
+  const tab = tabManager.getTab(tabId)
+  if (tab && tab.session.connectionState === 'disconnected') {
+    tab.session.connect().then(() => {
+      tabManager.syncTabSessionId(tabId)
+      requestAnimationFrame(() => {
+        try { tab.fitAddon?.fit() } catch { /* ignore */ }
+      })
+    }).catch(() => { /* error shown via overlay */ })
   }
-}, { immediate: true })
+}
 
-// Watch target cwd changes. Do not automatically rebuild: a terminal may be
-// running a long-lived command, so changing files/directories must only show a
-// prompt and wait for explicit user confirmation before closing the PTY.
-watch([
-  () => props.requestedCwd,
-  () => store.state.currentDir,
-  () => store.state.currentFile?.path,
-  currentCwd,
-], () => {
-  if (connectionState.value !== 'connected') return
-  showReopenPrompt.value = shouldPromptForTerminalReopen(currentCwd.value, targetAbsoluteCwd())
-})
-
-// Watch theme changes
-let themeObserver: MutationObserver | null = null
-
-onMounted(async () => {
-  // Load quick commands from API
-  await fetchCommands()
-
-  // Watch for theme changes
-  themeObserver = new MutationObserver(() => {
-    if (xterm.value) {
-      xterm.value.options.theme = getXtermTheme()
+function handleCreateTab() {
+  if (!canCreateMore.value) return
+  // Default new tab uses project root (empty cwd), not current directory
+  const tab = tabManager.createTab()
+  // Mount the new tab's xterm after next tick (DOM needs to render the container)
+  nextTick(() => {
+    const container = tabContainerRefs.get(tab.id)
+    if (container && !tab.container) {
+      mountTabToContainer(tab, container)
+    }
+    // Connect the new tab
+    if (props.active && tab.session.connectionState === 'disconnected') {
+      tab.session.connect().then(() => {
+        tabManager.syncTabSessionId(tab.id)
+        requestAnimationFrame(() => {
+          try { tab.fitAddon?.fit() } catch { /* ignore */ }
+        })
+      }).catch(() => { /* error shown via overlay */ })
     }
   })
-  themeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['data-theme'],
+}
+
+// Tab three-dot menu
+function openTabMenu(event: Event, tab: TerminalTab) {
+  event.stopPropagation()
+  tabMenuTabId.value = tab.id
+  tabMenuCwd.value = tab.cwd
+  tabMenuTarget.value = (event.currentTarget as HTMLElement)
+  showTabMenu.value = true
+}
+
+function handleTabMenuClose() {
+  const tabId = tabMenuTabId.value
+  if (!tabId) return
+  const result = tabManager.closeTab(tabId)
+  if (result.switchToId) {
+    nextTick(() => {
+      const container = tabContainerRefs.get(result.switchToId!)
+      const tab = tabManager.getTab(result.switchToId!)
+      if (container && tab && !tab.container) {
+        mountTabToContainer(tab, container)
+      }
+      if (props.active && tab && tab.session.connectionState === 'disconnected') {
+        tab.session.connect().then(() => {
+          tabManager.syncTabSessionId(tab.id)
+          requestAnimationFrame(() => {
+            try { tab.fitAddon?.fit() } catch { /* ignore */ }
+          })
+        }).catch(() => {})
+      }
+    })
+  }
+}
+
+function handleTabMenuCopyPath() {
+  // Already handled by TerminalTabMenu
+}
+
+async function handleTabMenuCloseAll() {
+  const confirmed = await dialog.confirm(t('terminal.confirmCloseAll'), {
+    title: t('terminal.closeAllTabs'),
+    dangerous: true,
   })
-})
-
-onBeforeUnmount(() => {
-  themeObserver?.disconnect()
-  viewport.stopWatching()
-  gestures.detach()
-  disableVolumeKeys()
-  delete (window as any).__onVolumeKey
-  session.disconnect()
-  cleanupTerminal()
-})
-
-// Actions
-function handleModifier(key: 'ctrl' | 'alt' | 'shift') {
-  terminalKeys.toggleModifier(key, false)
-  focusTerminal()
+  if (confirmed) tabManager.disposeAll()
 }
 
-function handleReconnect() {
-  session.disconnect()
-  session.connect().then(() => {
+// Reconnect for a specific tab
+function handleReconnect(tab: TerminalTab) {
+  tab.session.disconnect()
+  tab.session.connect().then(() => {
+    tabManager.syncTabSessionId(tab.id)
     focusTerminal()
-  }).catch(() => {
-    // Error will be shown via overlay
-  })
+  }).catch(() => { /* error shown via overlay */ })
 }
 
-function cleanupTerminal() {
-  touchScrollRemainder = 0
-  // Remove event handlers from container
-  if (terminalContainer.value) {
-    const wheelH = (terminalContainer.value as any).__terminalWheelHandler
-    if (wheelH) terminalContainer.value.removeEventListener('wheel', wheelH)
-    const ctxH = (terminalContainer.value as any).__terminalContextMenuHandler
-    if (ctxH) terminalContainer.value.removeEventListener('contextmenu', ctxH)
-  }
-  // Dispose xterm — next open will create a fresh instance
-  xterm.value?.dispose()
-  xterm.value = null
-  fitAddon.value = null
-}
-
-function dismissReopenPrompt() {
-  showReopenPrompt.value = false
-  focusTerminal()
-}
-
-async function handleRebuild() {
-  terminalKeys.reset()
-  showCommands.value = false
-  showReopenPrompt.value = false
-  rebuilding.value = true
-
-  await rebuildSession()
-}
-
-async function rebuildSession() {
-  // Close specific session via HTTP API (ensures PTY is dead)
-  try {
-    const sid = session.sessionId.value
-    const url = sid ? `/api/terminal/close?session=${encodeURIComponent(sid)}` : '/api/terminal/close'
-    await fetch(url, { method: 'POST' })
-  } catch {
-    // Reconnect below will surface any remaining terminal errors.
-  }
-
-  // Reset session state (closes WS, clears errors, resets reconnect counter, clears sessionId)
-  session.reset()
-
-  // Clear terminal display
-  if (xterm.value) {
-    xterm.value.clear()
-  }
-
-  // Reconnect with current cwd — backend will create a new session
-  try {
-    await session.connect()
-    focusTerminal()
-  } catch {
-    // Error will be shown via overlay
-  } finally {
-    rebuilding.value = false
-  }
-}
-
-function handleCopyOutput() {
-  if (!xterm.value) return
-  const buffer = xterm.value.buffer.active
-  const lines: string[] = []
-  for (let i = 0; i < buffer.length; i++) {
-    const line = buffer.getLine(i)?.translateToString(true)
-    if (line) lines.push(line)
-  }
-  const text = lines.filter(l => l.trim()).join('\n')
-  navigator.clipboard.writeText(text).catch(() => {})
-  toast.show(t('common.copied'), { type: 'success', duration: 1500 })
-  focusTerminal()
-}
-
+// Rebuild (re-create) the active tab's session
+// Copy output from active tab
 function executeCommand(cmd: { id: number; label: string; command: string }) {
-  session.sendInput(cmd.command + '\r')
+  activeTab.value?.session.sendInput(cmd.command + '\r')
   showCommands.value = false
   focusTerminal()
 }
@@ -665,8 +649,162 @@ function openEditDialog() {
   showEditDialog.value = true
 }
 
-// Expose for parent component — keyboardHeight lets App.vue hide chrome when terminal has soft keyboard
-defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
+/** Map KeyDef properties to toolbar CSS classes */
+function toolbarBtnClass(def: KeyDef): Record<string, boolean> {
+  if (def.isModifier) {
+    const key = def.id as ModifierKey
+    const state = terminalKeys.activeModifiers.value[key]
+    return {
+      'btn-modifier': true,
+      'modifier': true,
+      'active': state !== 'inactive',
+      'locked': state === 'locked',
+    }
+  }
+  if (def.id === 'shift_tab') return { 'btn-modifier': true, 'btn-shift-tab': true }
+  if (def.group === 'shortcut') return { 'btn-modifier': true, 'shortcut': true }
+  if (def.group === 'navigation') return { 'btn-nav': true }
+  if (def.group === 'arrow') return { 'btn-arrow': true }
+  if (def.group === 'editing') return { 'btn-nav': true }
+  if (def.group === 'function') return { 'btn-modifier': true, 'shortcut': true }
+  return {}
+}
+
+/** Handle click on a config-driven toolbar key */
+function handleToolbarKeyClick(def: KeyDef) {
+  if (def.isModifier) {
+    terminalKeys.toggleModifier(def.id as ModifierKey, false)
+  } else {
+    terminalKeys.send(def.id)
+  }
+  focusTerminal()
+}
+
+// Whether the component has been mounted (DOM is available)
+const isMounted = ref(false)
+
+// Lifecycle
+watch(() => props.active, async (isActive) => {
+  if (!isMounted.value) return // Defer to onMounted for initial activation
+  if (isActive) {
+    emit('open')
+    enableVolumeKeys()
+    await nextTick()
+    const tab = activeTab.value
+    if (tab) {
+      const container = tabContainerRefs.get(tab.id)
+      if (container && !tab.container) {
+        mountTabToContainer(tab, container)
+      }
+      if (tab.session.connectionState === 'disconnected') {
+        try {
+          await tab.session.connect()
+          tabManager.syncTabSessionId(tab.id)
+        } catch { /* error shown via overlay */ }
+      }
+      viewport.startWatching()
+      gestures.attach()
+      focusTerminal()
+      requestAnimationFrame(() => {
+        try { tab.fitAddon?.fit() } catch { /* ignore */ }
+      })
+    }
+  } else {
+    disableVolumeKeys()
+    tabManager.disconnectAll()
+    terminalKeys.reset()
+    showCommands.value = false
+    showTabMenu.value = false
+    showKeyConfig.value = false
+    viewport.stopWatching()
+    gestures.detach()
+  }
+})
+
+// Watch requestedCwd — when the file manager emits "open terminal here",
+// create a new tab in the specified directory.
+watch(() => props.requestedCwd, async (cwd) => {
+  if (!cwd || !props.active || !isMounted.value) return
+  if (!canCreateMore.value) return
+  const tab = tabManager.createTab(cwd)
+  await nextTick()
+  const container = tabContainerRefs.get(tab.id)
+  if (container && !tab.container) {
+    mountTabToContainer(tab, container)
+  }
+  if (tab.session.connectionState === 'disconnected') {
+    tab.session.connect().then(() => {
+      tabManager.syncTabSessionId(tab.id)
+      requestAnimationFrame(() => {
+        try { tab.fitAddon?.fit() } catch { /* ignore */ }
+      })
+    }).catch(() => { /* error shown via overlay */ })
+  }
+  // Signal parent to clear requestedCwd so re-triggering the same directory works
+  emit('cwd-handled')
+})
+
+// Theme observer
+let themeObserver: MutationObserver | null = null
+
+onMounted(async () => {
+  isMounted.value = true
+
+  // Fetch quick commands in the background — don't block terminal setup
+  fetchCommands().catch(() => { /* ignore */ })
+
+  // Fetch key config in the background
+  fetchKeyConfig().catch(() => { /* ignore */ })
+
+  // Initialize scroll fade state
+  nextTick(refreshToolbarFade)
+
+  themeObserver = new MutationObserver(() => {
+    tabManager.updateTheme(getXtermTheme())
+  })
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  })
+
+  // Mount and connect the active tab (only if terminal panel is active)
+  if (props.active) {
+    emit('open')
+    enableVolumeKeys()
+    // Wait for v-for :ref callbacks to populate tabContainerRefs
+    await nextTick()
+    const tab = activeTab.value
+    if (tab) {
+      const container = tabContainerRefs.get(tab.id)
+      if (container && !tab.container) {
+        mountTabToContainer(tab, container)
+      }
+      if (tab.session.connectionState === 'disconnected') {
+        try {
+          await tab.session.connect()
+          tabManager.syncTabSessionId(tab.id)
+        } catch { /* error shown via overlay */ }
+      }
+      viewport.startWatching()
+      gestures.attach()
+      focusTerminal()
+      requestAnimationFrame(() => {
+        try { tab.fitAddon?.fit() } catch { /* ignore */ }
+      })
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  themeObserver?.disconnect()
+  viewport.stopWatching()
+  gestures.detach()
+  disableVolumeKeys()
+  delete (window as any).__onVolumeKey
+  tabManager.disposeAll()
+})
+
+defineExpose({ activate: () => {}, deactivate: () => {}, keyboardHeight: viewport.keyboardHeight })
 </script>
 
 <style scoped>
@@ -678,101 +816,201 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   position: relative;
 }
 
-.terminal-header {
+/* Empty state */
+.terminal-empty-state {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 8px;
-  height: 28px;
-  border-bottom: none;
-  flex-shrink: 0;
-  background: var(--bg-secondary);
-  gap: 8px;
-  position: relative;
-  z-index: 2;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  padding: 32px;
 }
 
-.terminal-header-left {
+.terminal-empty-icon {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.terminal-empty-text {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.terminal-empty-create-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-}
-
-.terminal-title {
-  font-weight: 600;
-  font-size: 13px;
-  white-space: nowrap;
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
   color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 
-.terminal-cwd {
-  font-size: 11px;
+.terminal-empty-create-btn:active {
+  background: var(--bg-tertiary);
+}
+
+/* Tab bar */
+.terminal-tab-bar {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  position: relative;
+  z-index: 2;
+  gap: 0;
+}
+
+.terminal-tab-list {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 2px 0;
+}
+
+.terminal-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 10px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  max-width: 120px;
+}
+
+.terminal-tab:hover {
+  background: var(--bg-tertiary);
+}
+
+.terminal-tab.active {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.terminal-tab-title {
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.terminal-header-right {
+.terminal-tab.active .terminal-tab-title {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.terminal-tab-menu-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.terminal-font-size {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  padding: 1px 4px;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
   border-radius: 4px;
-  min-width: 20px;
-  text-align: center;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.terminal-font-size:hover {
+.terminal-tab:hover .terminal-tab-menu-btn,
+.terminal-tab.active .terminal-tab-menu-btn {
+  opacity: 1;
+}
+
+.terminal-tab-menu-btn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.terminal-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
+.terminal-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0 2px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-.terminal-status-dot.connected {
-  background: var(--color-green);
+.terminal-tab-add:hover:not(.disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
-.terminal-status-dot.connecting,
-.terminal-status-dot.reconnecting {
-  background: var(--color-yellow);
-  animation: status-blink 1s ease-in-out infinite;
+.terminal-tab-add.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
-.terminal-status-dot.disconnected,
-.terminal-status-dot.error {
-  background: var(--text-muted);
+/* Symbol bar transition */
+.symbol-bar-enter-active {
+  transition: all 0.15s ease-out;
+}
+.symbol-bar-leave-active {
+  transition: all 0.12s ease-in;
+}
+.symbol-bar-enter-from,
+.symbol-bar-leave-to {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  margin-top: 0;
+  overflow: hidden;
+}
+.symbol-bar-enter-to,
+.symbol-bar-leave-from {
+  max-height: 44px;
 }
 
-@keyframes status-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-.terminal-container {
+/* Terminal viewport container */
+.terminal-viewport {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+.terminal-container {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
   background: #1e1e2e;
 }
 
-/* Keep the terminal scrollbar as a thin position indicator instead of a wide rail. */
 .terminal-container :deep(.xterm-scrollable-element > .scrollbar.vertical),
 .terminal-container :deep(.xterm-scrollbar) {
   width: 2px !important;
@@ -883,6 +1121,7 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Toolbar styles (unchanged) */
 .terminal-toolbar {
   display: flex;
   flex-direction: column;
@@ -896,9 +1135,6 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   --toolbar-key-selected-bg: color-mix(in srgb, var(--text-primary) 14%, transparent);
   --toolbar-key-selected-text: var(--text-primary);
   --toolbar-divider: color-mix(in srgb, var(--border-color) 48%, transparent);
-  --toolbar-scrollbar-track: color-mix(in srgb, var(--border-color) 20%, transparent);
-  --toolbar-scrollbar-thumb: color-mix(in srgb, var(--text-muted) 46%, transparent);
-  --toolbar-scrollbar-thumb-hover: color-mix(in srgb, var(--text-primary) 58%, transparent);
 }
 
 [data-theme="dark"] .terminal-toolbar {
@@ -910,12 +1146,8 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   --toolbar-key-selected-bg: color-mix(in srgb, var(--text-primary) 18%, transparent);
   --toolbar-key-selected-text: var(--text-primary);
   --toolbar-divider: color-mix(in srgb, var(--border-color) 52%, transparent);
-  --toolbar-scrollbar-track: color-mix(in srgb, var(--border-color) 30%, transparent);
-  --toolbar-scrollbar-thumb: color-mix(in srgb, var(--text-muted) 54%, transparent);
-  --toolbar-scrollbar-thumb-hover: color-mix(in srgb, var(--text-primary) 68%, transparent);
 }
 
-/* Symbol bar: full-width scrollable row above the main toolbar */
 .symbol-bar {
   padding: 3px 6px 0;
   background: color-mix(in srgb, var(--text-primary) 3%, transparent);
@@ -928,24 +1160,46 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   gap: 3px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-  scrollbar-color: var(--toolbar-scrollbar-thumb) transparent;
+  scrollbar-width: none;
 }
-.symbol-bar-scroll::-webkit-scrollbar {
-  height: 2px;
+.symbol-bar-scroll::-webkit-scrollbar { display: none; }
+
+.scroll-wrapper {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
-.symbol-bar-scroll::-webkit-scrollbar-track {
-  background: transparent;
+.scroll-wrapper::before,
+.scroll-wrapper::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  z-index: 1;
+  transition: width 200ms ease;
 }
-.symbol-bar-scroll::-webkit-scrollbar-thumb {
-  background: var(--toolbar-scrollbar-thumb);
-  border-radius: 999px;
+.scroll-wrapper::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg-secondary) 25%, transparent);
 }
-.symbol-bar-scroll:hover::-webkit-scrollbar-thumb {
-  background: var(--toolbar-scrollbar-thumb-hover);
+.scroll-wrapper::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg-secondary) 25%, transparent);
+}
+.scroll-wrapper.scroll-fade-left::before { width: 36px; }
+.scroll-wrapper.scroll-fade-right::after { width: 36px; }
+
+/* Symbol bar scroll-wrapper uses a slightly different background for its gradient */
+.symbol-bar .scroll-wrapper::before {
+  background: linear-gradient(to right, color-mix(in srgb, var(--text-primary) 3%, var(--bg-secondary)) 25%, transparent);
+}
+.symbol-bar .scroll-wrapper::after {
+  background: linear-gradient(to left, color-mix(in srgb, var(--text-primary) 3%, var(--bg-secondary)) 25%, transparent);
 }
 
-/* Main toolbar row: gesture toggles + scrollable key groups */
 .main-toolbar-row {
   display: flex;
   align-items: center;
@@ -953,10 +1207,7 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   gap: 2px;
 }
 
-.gesture-toggle {
-  flex-shrink: 0;
-  margin-right: 2px;
-}
+.gesture-toggle { flex-shrink: 0; margin-right: 2px; }
 
 .toolbar-scroll {
   display: flex;
@@ -964,42 +1215,13 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   gap: 0;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  flex: 1;
-  min-width: 0;
-  padding-bottom: 1px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--toolbar-scrollbar-thumb) transparent;
+  width: 100%;
+  scrollbar-width: none;
 }
-.toolbar-scroll::-webkit-scrollbar {
-  height: 2px;
-}
-.toolbar-scroll::-webkit-scrollbar-track {
-  background: linear-gradient(90deg,
-    transparent 0,
-    var(--toolbar-scrollbar-track) 14px,
-    var(--toolbar-scrollbar-track) calc(100% - 14px),
-    transparent 100%);
-}
-.toolbar-scroll::-webkit-scrollbar-thumb {
-  background: var(--toolbar-scrollbar-thumb);
-  border-radius: 999px;
-  transition: background 140ms ease;
-}
-.toolbar-scroll:hover::-webkit-scrollbar-thumb {
-  background: var(--toolbar-scrollbar-thumb-hover);
-}
+.toolbar-scroll::-webkit-scrollbar { display: none; }
 
-.key-group {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.key-group + .key-group {
-  position: relative;
-  margin-left: 6px;
-}
-
+.key-group { display: flex; align-items: center; gap: 3px; }
+.key-group + .key-group { position: relative; margin-left: 6px; }
 .key-group + .key-group::before {
   content: '';
   position: absolute;
@@ -1029,103 +1251,41 @@ defineExpose({ activate, deactivate, keyboardHeight: viewport.keyboardHeight })
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
-  transition:
-    background 140ms ease,
-    color 140ms ease,
-    transform 90ms ease;
+  transition: background 140ms ease, color 140ms ease, transform 90ms ease;
 }
+.toolbar-btn:hover { background: var(--toolbar-key-hover); }
+.toolbar-btn:active { background: var(--toolbar-key-active); transform: translateY(1px) scale(0.98); }
+.toolbar-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--text-primary) 36%, transparent); outline-offset: 2px; }
+.toolbar-btn.modifier.active { background: var(--toolbar-key-selected-bg); color: var(--toolbar-key-selected-text); }
+.toolbar-btn.modifier.locked { background: var(--toolbar-key-selected-bg); color: var(--toolbar-key-selected-text); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--toolbar-key-selected-text) 36%, transparent); }
+.toolbar-btn.shortcut { background: transparent; color: var(--toolbar-key-text); font-weight: 800; font-size: 11px; }
+.toolbar-btn.shortcut:active { background: var(--toolbar-key-active); }
+.toolbar-btn.danger { color: var(--toolbar-key-text); opacity: 0.78; }
+.toolbar-btn.danger:hover { opacity: 1; background: var(--toolbar-key-hover); }
+.toolbar-btn.gesture-toggle { min-width: 32px; border-radius: 9px; }
 
-.toolbar-btn:hover {
-  background: var(--toolbar-key-hover);
+.btn-shift-tab {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0;
+  line-height: 1;
+  padding: 3px 5px;
 }
+.shift-tab-label { font-size: 9px; font-weight: 700; line-height: 1.3; }
 
-.toolbar-btn:active {
-  background: var(--toolbar-key-active);
-  transform: translateY(1px) scale(0.98);
-}
-
-.toolbar-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--text-primary) 36%, transparent);
-  outline-offset: 2px;
-}
-
-.toolbar-btn.modifier.active {
-  background: var(--toolbar-key-selected-bg);
-  color: var(--toolbar-key-selected-text);
-}
-
-.toolbar-btn.modifier.locked {
-  background: var(--toolbar-key-selected-bg);
-  color: var(--toolbar-key-selected-text);
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--toolbar-key-selected-text) 36%, transparent);
-}
-
-.toolbar-btn.shortcut {
-  background: transparent;
-  color: var(--toolbar-key-text);
-  font-weight: 800;
-  font-size: 11px;
-}
-
-.toolbar-btn.shortcut:active {
-  background: var(--toolbar-key-active);
-}
-
-.toolbar-btn.danger {
-  color: var(--toolbar-key-text);
-  opacity: 0.78;
-}
-
-.toolbar-btn.danger:hover {
-  opacity: 1;
-  background: var(--toolbar-key-hover);
-}
-
-/* Gesture toggle keeps a compact anchor shape outside the scroll row. */
-.toolbar-btn.gesture-toggle {
-  min-width: 32px;
-  border-radius: 9px;
-}
-
-/* Mobile: adjust toolbar for soft keyboard */
 @media (max-width: 768px) {
-  .main-toolbar-row {
-    padding-bottom: max(4px, env(safe-area-inset-bottom));
-  }
+  .main-toolbar-row { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
 }
 
-/* Touch device: prevent sticky hover */
 @media (hover: none) {
-  .toolbar-btn:hover {
-    background: transparent;
-  }
-  .toolbar-btn.shortcut:hover {
-    background: transparent;
-  }
-  .toolbar-btn.modifier.active:hover,
-  .toolbar-btn.modifier.locked:hover {
-    background: var(--toolbar-key-selected-bg);
-  }
-  .toolbar-btn:active {
-    background: var(--toolbar-key-active);
-  }
+  .toolbar-btn:hover { background: transparent; }
+  .toolbar-btn.shortcut:hover { background: transparent; }
+  .toolbar-btn.modifier.active:hover, .toolbar-btn.modifier.locked:hover { background: var(--toolbar-key-selected-bg); }
+  .toolbar-btn:active { background: var(--toolbar-key-active); }
 }
 
-/* Button groups share one borderless system; class hooks remain semantic. */
-.toolbar-btn.btn-modifier,
-.toolbar-btn.btn-nav,
-.toolbar-btn.btn-arrow,
-.toolbar-btn.btn-symbol,
-.toolbar-btn.btn-action {
-  background: transparent;
-}
-
-.toolbar-btn.btn-symbol {
-  color: var(--toolbar-key-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 15px;
-  font-weight: 700;
-}
+.toolbar-btn.btn-modifier, .toolbar-btn.btn-nav, .toolbar-btn.btn-arrow, .toolbar-btn.btn-symbol, .toolbar-btn.btn-action { background: transparent; }
+.toolbar-btn.btn-symbol { color: var(--toolbar-key-text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px; font-weight: 700; }
 </style>
 
 <style>

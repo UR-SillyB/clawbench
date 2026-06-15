@@ -792,6 +792,30 @@ func (c *ACPConn) UpdateCachedCurrentThinkingEffort(effortID string) {
 	c.currentThinkingEffortID = effortID
 }
 
+// PreApplyConfigCurrentID optimistically updates the registry's ConfigOptionState.CurrentID
+// before SSE events are emitted, so the frontend sees the user's requested value
+// (e.g. "plan") instead of the agent's default (e.g. "bypassPermissions").
+// The actual RPC is still done inside Prompt(); this only affects SSE display.
+func (c *ACPConn) PreApplyConfigCurrentID(configID, value string) {
+	agentID := c.AgentID()
+	reg := GetAgentCapabilityRegistry()
+	configState := reg.GetConfigState(agentID)
+	if configState == nil {
+		return
+	}
+	// Find the matching option and update CurrentID only if the value is valid
+	for _, opt := range configState.Options {
+		if opt.Category == configID || opt.ID == configID {
+			for _, v := range opt.Values {
+				if v.ID == value {
+					configState.CurrentID = value
+					return
+				}
+			}
+		}
+	}
+}
+
 // SetCachedModeState updates the session's current mode ID and registers
 // available modes in the agent capability registry.
 func (c *ACPConn) SetCachedModeState(state *ModeState) {

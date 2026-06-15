@@ -324,6 +324,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 	register("/api/terminal/config", middleware.Auth(TerminalConfigHandler))
 	register("/api/terminal/quick-commands", middleware.Auth(ServeQuickCommands))
 	register("/api/terminal/quick-commands/", middleware.Auth(ServeQuickCommandByID))
+	register("/api/terminal/key-config", middleware.Auth(ServeKeyConfig))
 
 	// Global event WebSocket (replaces polling for session/task status)
 	register("/api/ai/events/ws", middleware.Auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

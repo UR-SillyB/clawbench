@@ -64,6 +64,8 @@ vi.mock('@/stores/app.ts', () => ({
   },
 }))
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
 describe('preview layout contract', () => {
   it('renders file viewer with expected root element', () => {
     const wrapper = mount(FileViewer, {
@@ -133,7 +135,7 @@ describe('preview layout contract', () => {
         plugins: [i18n],
         stubs: {
           BottomSheet: true,
-          teleport: true,
+          Teleport: TeleportStub,
         },
       },
     })

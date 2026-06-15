@@ -39,6 +39,7 @@ MessageIdRequired: messageId required
 InvalidRequest: Invalid request
 SessionBackendNotFound: Session backend not found
 FileNotFoundShort: File not found
+BrokenSymlink: "Broken symlink: target not found ({{.Target}})"
 DirectoryNotFound: Directory not found
 InvalidFilePath: Invalid file path
 FileTooLargeOrInvalid: File too large or invalid form
@@ -84,6 +85,7 @@ CustomURLUnrecognizedFormat: URL path must end with /chat/completions (OpenAI) o
 PushTaskCompleted: AI Task Completed
 PushSessionEnded: AI session ended
 PushScheduledTaskDone: Scheduled task completed
+PushPermissionPending: Approval Required
 NotFound: Not found
 PermissionNotFound: No pending permission request found
 ACPSessionNotFound: ACP session no longer exists on the agent side

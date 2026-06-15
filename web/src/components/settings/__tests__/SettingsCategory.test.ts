@@ -131,7 +131,7 @@ const i18n = createI18n({
           ttsEngineMossNano: 'MOSS-Nano',
           ttsVoice: '语音',
           ttsSpeed: '语速',
-          summarizeBackend: '摘要后端',
+          summarizeBackend: '摘要方式',
           summarizeSimple: '简单',
           summarizeApi: 'API',
           summarizeModel: '摘要模型',
@@ -371,7 +371,7 @@ describe('SettingsCategory', () => {
     it('PATCHes summarize.backend when selected', async () => {
       const wrapper = mountCategory('summarization')
       const allItems = wrapper.findAllComponents({ name: 'SettingsItem' })
-      const summarizeItem = allItems.find(i => i.props().label === '摘要后端')
+      const summarizeItem = allItems.find(i => i.props().label === '摘要方式')
       expect(summarizeItem).toBeTruthy()
 
       await summarizeItem!.vm.$emit('update:modelValue', 'api')

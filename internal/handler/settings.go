@@ -43,6 +43,7 @@ var hotReloadFields = map[string]bool{
 	"upload.max_size_mb":          true,
 	"upload.max_files":            true,
 	"tts.max_cache_files":         true,
+	"default_agent":               true,
 }
 
 // restartGracePeriod is the delay before shutting down the server after a restart
@@ -902,6 +903,7 @@ func applyHotReloadGlobals() {
 	model.UploadMaxSizeMB = cfg.Upload.MaxSizeMB
 	model.UploadMaxFiles = cfg.Upload.MaxFiles
 	model.TTSMaxCacheFiles = cfg.TTS.MaxCacheFiles
+	model.DefaultAgentID = cfg.DefaultAgent
 }
 
 // writeConfigYAML writes the patched fields back to config/config.yaml atomically.

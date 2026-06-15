@@ -178,6 +178,16 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_quick_commands_auto_execute
 			ON terminal_quick_commands(auto_execute) WHERE auto_execute = 1;
 
+		CREATE TABLE IF NOT EXISTS terminal_key_config (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL,
+			key_id TEXT NOT NULL,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(type, key_id)
+		);
+
 		CREATE TABLE IF NOT EXISTS chat_quick_send (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			label TEXT NOT NULL,
@@ -902,4 +912,50 @@ func DeleteChatQuickSend(id int64) error {
 // ReorderChatQuickSend updates sort_order for all items based on the given ID order.
 func ReorderChatQuickSend(ids []int64) error {
 	return ChatQuickSendHelpers.reorder(ids)
+}
+
+// KeyConfigItem represents a terminal key/symbol configuration entry.
+type KeyConfigItem struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	KeyID     string `json:"key_id"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// GetKeyConfig returns all key config items of the given type, ordered by sort_order.
+func GetKeyConfig(typeFilter string) ([]KeyConfigItem, error) {
+	rows, err := DBRead.Query("SELECT id, type, key_id, sort_order FROM terminal_key_config WHERE type = ? ORDER BY sort_order", typeFilter)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []KeyConfigItem
+	for rows.Next() {
+		var item KeyConfigItem
+		if err := rows.Scan(&item.ID, &item.Type, &item.KeyID, &item.SortOrder); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// ReplaceKeyConfig replaces all items of the given type with the provided key IDs.
+// The sort_order is set by the position in the slice.
+func ReplaceKeyConfig(typeVal string, keyIDs []string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM terminal_key_config WHERE type = ?", typeVal); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	for i, keyID := range keyIDs {
+		if _, err := tx.Exec("INSERT INTO terminal_key_config (type, key_id, sort_order) VALUES (?, ?, ?)", typeVal, keyID, i); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }

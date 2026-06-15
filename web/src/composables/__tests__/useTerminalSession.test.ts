@@ -1,13 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 
-// Mock vue-i18n before importing the composable
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    t: (key: string) => key, // return the key itself for easy assertion
-  }),
-}))
-
 // Mock WebSocket
 class MockWebSocket {
   static OPEN = 1
@@ -61,9 +54,8 @@ vi.stubGlobal('WebSocket', MockWebSocket)
 
 import { useTerminalSession } from '@/composables/useTerminalSession'
 
-function createSession() {
-  const session = useTerminalSession(() => 'ws://localhost:8080/api/terminal/ws')
-  return session
+function createSession(errorMessages?: { shellStartFailed: string; websocketFailed: string }) {
+  return useTerminalSession(() => 'ws://localhost:8080/api/terminal/ws', errorMessages)
 }
 
 beforeEach(() => {
@@ -172,7 +164,7 @@ describe('useTerminalSession', () => {
   })
 
   describe('disconnect', () => {
-    it('closes the WebSocket and resets state', async () => {
+    it('closes the WebSocket and resets reconnect state', async () => {
       const session = createSession()
 
       const connectPromise = session.connect()
@@ -186,10 +178,9 @@ describe('useTerminalSession', () => {
 
       expect(closeSpy).toHaveBeenCalled()
       expect(session.connectionState.value).toBe('disconnected')
-      expect(session.sessionId.value).toBe('')
     })
 
-    it('clears the session ID so next connect creates a fresh session', async () => {
+    it('preserves session ID for reattach on next connect', async () => {
       const session = createSession()
 
       const connectPromise = session.connect()
@@ -206,7 +197,8 @@ describe('useTerminalSession', () => {
       expect(session.sessionId.value).toBe('old-session')
 
       session.disconnect()
-      expect(session.sessionId.value).toBe('')
+      // sessionId is preserved — allows reattach to existing PTY on next connect
+      expect(session.sessionId.value).toBe('old-session')
     })
 
     it('is safe to call when already disconnected', () => {
@@ -630,14 +622,22 @@ describe('useTerminalSession', () => {
   })
 
   describe('disconnect vs reset', () => {
-    it('disconnect clears sessionId but reset also clears error messages', async () => {
+    it('disconnect preserves sessionId but reset clears it and error messages', async () => {
       const session = createSession()
 
-      // Connect and receive a fatal error
+      // Connect and receive a session ID
       const connectPromise = session.connect()
       mockWebSocketInstance!.simulateOpen()
       await connectPromise
 
+      mockWebSocketInstance!.simulateMessage({
+        type: 'status',
+        sessionId: 'session-123',
+        cwd: '/home',
+        running: true,
+      })
+
+      // Also receive a fatal error
       mockWebSocketInstance!.simulateMessage({
         type: 'error',
         message: 'Shell failed',
@@ -646,15 +646,18 @@ describe('useTerminalSession', () => {
 
       expect(session.errorMessage.value).toBe('Shell failed')
       expect(session.errorCode.value).toBe('shell_start_failed')
+      expect(session.sessionId.value).toBe('session-123')
 
-      // Disconnect does NOT clear error message
+      // Disconnect does NOT clear error message and preserves sessionId
       session.disconnect()
       expect(session.errorMessage.value).toBe('Shell failed') // still there
+      expect(session.sessionId.value).toBe('session-123') // preserved for reattach
 
-      // Reset DOES clear error message
+      // Reset DOES clear error message and sessionId
       session.reset()
       expect(session.errorMessage.value).toBe('')
       expect(session.errorCode.value).toBe('')
+      expect(session.sessionId.value).toBe('')
     })
   })
 
@@ -737,6 +740,130 @@ describe('useTerminalSession', () => {
       mockWebSocketInstance!.simulateOpen()
       await p2
       expect(session.connectionState.value).toBe('connected')
+    })
+  })
+
+  describe('wsOpen', () => {
+    it('returns false when not connected', () => {
+      const session = createSession()
+      expect(session.wsOpen.value).toBe(false)
+    })
+
+    it('returns true when WebSocket is open', async () => {
+      const session = createSession()
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateOpen()
+      await connectPromise
+      expect(session.wsOpen.value).toBe(true)
+    })
+
+    it('returns false after disconnect', async () => {
+      const session = createSession()
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateOpen()
+      await connectPromise
+      expect(session.wsOpen.value).toBe(true)
+
+      session.disconnect()
+      expect(session.wsOpen.value).toBe(false)
+    })
+
+    it('returns false after sendClose', async () => {
+      const session = createSession()
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateOpen()
+      await connectPromise
+      expect(session.wsOpen.value).toBe(true)
+
+      session.sendClose()
+      expect(session.wsOpen.value).toBe(false)
+    })
+  })
+
+  describe('errorMessages parameter', () => {
+    it('uses custom errorMessages on WebSocket error', async () => {
+      const session = createSession({
+        shellStartFailed: 'Shell启动失败',
+        websocketFailed: 'WebSocket连接失败',
+      })
+
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateError()
+      try { await connectPromise } catch {}
+
+      expect(session.errorMessage.value).toBe('WebSocket连接失败')
+    })
+
+    it('uses custom errorMessages on abnormal closure', async () => {
+      const session = createSession({
+        shellStartFailed: 'Shell启动失败',
+        websocketFailed: 'WebSocket连接失败',
+      })
+
+      session.connect()
+      // Abnormal closure (code 1006) during connecting
+      mockWebSocketInstance!.simulateClose(1006)
+
+      expect(session.errorCode.value).toBe('shell_start_failed')
+      expect(session.errorMessage.value).toBe('Shell启动失败')
+    })
+
+    it('falls back to English defaults when errorMessages is not provided', async () => {
+      const session = createSession()
+
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateError()
+      try { await connectPromise } catch {}
+
+      expect(session.errorMessage.value).toBe('WebSocket connection failed')
+    })
+
+    it('works without useI18n — no vue-i18n dependency', () => {
+      // This test verifies the fix: useTerminalSession no longer calls useI18n()
+      // and can be instantiated outside of a Vue component setup context
+      expect(() => createSession()).not.toThrow()
+    })
+  })
+
+  describe('sendClose when WS is not open', () => {
+    it('does not send close message when WebSocket is disconnected', () => {
+      const session = createSession()
+      // WS was never opened
+      session.sendClose()
+      // No WebSocket was created, so no message was sent
+      expect(mockWebSocketInstance).toBeNull()
+      expect(session.connectionState.value).toBe('disconnected')
+      expect(session.sessionId.value).toBe('')
+    })
+
+    it('does not send close message after disconnect', async () => {
+      const session = createSession()
+      const connectPromise = session.connect()
+      mockWebSocketInstance!.simulateOpen()
+      await connectPromise
+
+      // Receive session ID
+      mockWebSocketInstance!.simulateMessage({
+        type: 'status',
+        sessionId: 'session-to-leak',
+        cwd: '/home',
+        running: true,
+      })
+
+      // Disconnect (e.g. user switched away from terminal panel)
+      session.disconnect()
+      expect(session.wsOpen.value).toBe(false)
+      expect(session.sessionId.value).toBe('session-to-leak') // preserved
+
+      // Now sendClose — WS is not open, so close message cannot be sent
+      // sessionId is preserved before sendClose clears it
+      const savedSessionId = session.sessionId.value
+      session.sendClose()
+      expect(mockWebSocketInstance!.sent).not.toContain(
+        JSON.stringify({ type: 'close' })
+      )
+      // The caller should use savedSessionId with HTTP API to kill the PTY
+      expect(savedSessionId).toBe('session-to-leak')
     })
   })
 })

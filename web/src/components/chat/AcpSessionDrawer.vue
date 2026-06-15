@@ -35,7 +35,7 @@
             @click.stop="handleSelect(session)"
           >
             <Loader2Icon v-if="resumingId === session.sessionId" :size="14" class="spin" />
-            <RotateCcwIcon v-else :size="14" />
+            <RotateCwIcon v-else :size="14" />
           </button>
         </div>
         <button
@@ -63,7 +63,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { History as HistoryIcon, RotateCcw as RotateCcwIcon, Loader2 as Loader2Icon } from 'lucide-vue-next'
+import { History as HistoryIcon, RotateCw as RotateCwIcon, Loader2 as Loader2Icon } from 'lucide-vue-next'
 import BottomSheet from '@/components/common/BottomSheet.vue'
 import { useAcpSession, type AcpSessionInfo } from '@/composables/useAcpSession'
 import { currentAgentId } from '@/composables/useSessionIdentity'

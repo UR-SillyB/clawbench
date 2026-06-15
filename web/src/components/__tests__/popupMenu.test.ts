@@ -29,11 +29,13 @@ describe('PopupMenu', () => {
     document.body.removeChild(targetElement)
   })
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
   function mountMenu(props: Record<string, any> = {}, slots: Record<string, string> = {}) {
     return mount(PopupMenu, {
       props: { targetElement, ...props },
       slots: { default: '<div class="menu-item">Item 1</div>', ...slots },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
   }
 
@@ -200,7 +202,7 @@ describe('PopupMenu', () => {
     const wrapper = mount(PopupMenu, {
       props: { show: false, targetElement: null },
       slots: { default: '<div class="menu-item">Item</div>' },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
     await wrapper.setProps({ show: true })
     await nextTick()
@@ -213,7 +215,7 @@ describe('PopupMenu', () => {
     const wrapper = mount(PopupMenu, {
       props: { show: false, targetElement: null },
       slots: { default: '<div class="menu-item">Item</div>' },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
     await wrapper.setProps({ show: true })
     await nextTick()
@@ -263,7 +265,7 @@ describe('PopupMenu', () => {
     const wrapper = mount(PopupMenu, {
       props: { show: false, targetElement },
       slots: { default: '<div class="menu-item">Item 1</div>' },
-      global: { stubs: { teleport: true } },
+      global: { stubs: { Teleport: TeleportStub } },
     })
     expect(wrapper.find('.popup-menu').exists()).toBe(false)
 

@@ -50,7 +50,6 @@ function setupGestures() {
     sendArrowRight: () => sent.push('right'),
     sendPageUp: () => sent.push('pageup'),
     sendPageDown: () => sent.push('pagedown'),
-    sendEscape: () => sent.push('escape'),
     sendTab: () => sent.push('tab'),
     onPinchZoom: (delta) => zoomDeltas.push(delta),
     onGestureHint: (symbol) => hints.push(symbol),
@@ -86,40 +85,12 @@ describe('useTerminalGestures', () => {
     expect(touchEnd.preventDefault).not.toHaveBeenCalled()
   })
 
-  it('maps a stationary long press to Escape in gesture mode', () => {
-    vi.useFakeTimers()
-    const { el, sent, hints } = setupGestures()
-
-    const touchStart = dispatchTouch(el, 'touchstart', [makeTouch(60, 60)])
-    vi.advanceTimersByTime(550)
-    const touchEnd = dispatchTouch(el, 'touchend', [], [makeTouch(60, 60)])
-
-    expect(sent).toEqual(['escape'])
-    expect(hints).toEqual(['Esc'])
-    expect(touchStart.preventDefault).not.toHaveBeenCalled()
-    expect(touchEnd.preventDefault).toHaveBeenCalled()
-  })
-
-  it('does not send arrows if the finger moves after long press already sent Escape', () => {
-    vi.useFakeTimers()
-    const { el, sent } = setupGestures()
-
-    dispatchTouch(el, 'touchstart', [makeTouch(60, 60)])
-    vi.advanceTimersByTime(550)
-    const touchMove = dispatchTouch(el, 'touchmove', [makeTouch(110, 60)])
-    dispatchTouch(el, 'touchend', [], [makeTouch(110, 60)])
-
-    expect(sent).toEqual(['escape'])
-    expect(touchMove.preventDefault).toHaveBeenCalled()
-  })
-
-  it('cancels pending long press when the browser cancels the touch sequence', () => {
+  it('cancels pending gesture state when the browser cancels the touch sequence', () => {
     vi.useFakeTimers()
     const { el, sent } = setupGestures()
 
     dispatchTouch(el, 'touchstart', [makeTouch(60, 60)])
     dispatchTouch(el, 'touchcancel', [], [makeTouch(60, 60)])
-    vi.advanceTimersByTime(550)
 
     expect(sent).toEqual([])
   })

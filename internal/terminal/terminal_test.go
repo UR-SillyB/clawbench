@@ -471,12 +471,44 @@ func TestNewSession_InvalidIdleTimeout(t *testing.T) {
 	}
 	defer session.Close()
 
-	// Should fall back to 10 minute default, session should still work
+	// Should fall back to 0 (never timeout) for invalid duration
 	session.mu.Lock()
 	timeout := session.idleTimeout
+	timerNil := session.idleTimer == nil
 	session.mu.Unlock()
-	if timeout != 10*time.Minute {
-		t.Errorf("expected 10m fallback for invalid duration, got %v", timeout)
+	if timeout != 0 {
+		t.Errorf("expected 0 (never timeout) fallback for invalid duration, got %v", timeout)
+	}
+	if !timerNil {
+		t.Error("expected nil idleTimer for invalid duration (never timeout)")
+	}
+}
+
+// --- NewSession with zero idle timeout (never timeout) ---
+
+func TestNewSession_ZeroIdleTimeout(t *testing.T) {
+	cfg := TerminalConfig{
+		IdleTimeout:  "0",
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
+	}
+
+	session, err := NewSession("/tmp", "/tmp", cfg)
+	if err != nil {
+		t.Skipf("PTY not available in this environment: %v", err)
+	}
+	defer session.Close()
+
+	session.mu.Lock()
+	timeout := session.idleTimeout
+	timerNil := session.idleTimer == nil
+	session.mu.Unlock()
+	if timeout != 0 {
+		t.Errorf("expected 0 (never timeout), got %v", timeout)
+	}
+	if !timerNil {
+		t.Error("expected nil idleTimer for zero timeout (never timeout)")
 	}
 }
 
@@ -1078,5 +1110,130 @@ func TestManager_HandleWebSocket_SessionExpiredReconnect(t *testing.T) {
 	// New session should have a different ID since the old one expired
 	if msg.SessionID == sessionID {
 		t.Log("reconnected to same session ID (acceptable if session was still alive)")
+	}
+}
+
+// --- SuppressOutput after Connect (prevents duplicate prompts on reconnect) ---
+
+func TestSession_SuppressOutputAfterConnect(t *testing.T) {
+	cfg := TerminalConfig{
+		IdleTimeout:  "5m",
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
+	}
+
+	session, err := NewSession("/tmp", "/tmp", cfg)
+	if err != nil {
+		t.Skipf("PTY not available in this environment: %v", err)
+	}
+	defer session.Close()
+
+	// Before Connect, suppressOutput should be false
+	session.mu.Lock()
+	suppressed := session.suppressOutput
+	session.mu.Unlock()
+	if suppressed {
+		t.Error("expected suppressOutput=false before Connect")
+	}
+
+	// Connect with empty buffer — suppressOutput should NOT be set
+	// (no replay data means nothing to duplicate)
+	_ = session.Connect(nil)
+	session.mu.Lock()
+	suppressed = session.suppressOutput
+	session.mu.Unlock()
+	if suppressed {
+		t.Error("expected suppressOutput=false after Connect with empty buffer (first connect)")
+	}
+
+	// Write some data to the buffer (simulates PTY output during first connection)
+	session.buffer.Write([]byte("shell prompt$ "))
+
+	// Disconnect and reconnect — now the buffer has replay data
+	session.mu.Lock()
+	session.wsConn = nil // simulate disconnect
+	session.mu.Unlock()
+
+	_ = session.Connect(nil)
+	session.mu.Lock()
+	suppressed = session.suppressOutput
+	session.mu.Unlock()
+	if !suppressed {
+		t.Error("expected suppressOutput=true after Connect with replay data (reconnect)")
+	}
+}
+
+func TestSession_HandleResize_ClearsSuppressOutput(t *testing.T) {
+	cfg := TerminalConfig{
+		IdleTimeout:  "5m",
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
+	}
+
+	session, err := NewSession("/tmp", "/tmp", cfg)
+	if err != nil {
+		t.Skipf("PTY not available in this environment: %v", err)
+	}
+	defer session.Close()
+
+	// Manually set suppressOutput=true (simulates Connect())
+	session.mu.Lock()
+	session.suppressOutput = true
+	session.mu.Unlock()
+
+	// HandleResize should schedule clearing suppressOutput after 50ms
+	err = session.HandleResize(80, 24)
+	if err != nil {
+		t.Fatalf("HandleResize failed: %v", err)
+	}
+
+	// Immediately after HandleResize, suppressOutput is still true
+	// (the timer hasn't fired yet)
+	session.mu.Lock()
+	suppressed := session.suppressOutput
+	session.mu.Unlock()
+	if !suppressed {
+		t.Error("expected suppressOutput=true immediately after HandleResize (timer hasn't fired)")
+	}
+
+	// After 100ms, the 50ms timer should have fired
+	time.Sleep(100 * time.Millisecond)
+
+	session.mu.Lock()
+	suppressed = session.suppressOutput
+	session.mu.Unlock()
+	if suppressed {
+		t.Error("expected suppressOutput=false after HandleResize timer fires")
+	}
+}
+
+func TestSession_HandleResize_NoSuppressFlag(t *testing.T) {
+	cfg := TerminalConfig{
+		IdleTimeout:  "5m",
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
+	}
+
+	session, err := NewSession("/tmp", "/tmp", cfg)
+	if err != nil {
+		t.Skipf("PTY not available in this environment: %v", err)
+	}
+	defer session.Close()
+
+	// suppressOutput is false (default) — HandleResize should NOT schedule a timer
+	err = session.HandleResize(80, 24)
+	if err != nil {
+		t.Fatalf("HandleResize failed: %v", err)
+	}
+
+	// suppressOutput should still be false
+	session.mu.Lock()
+	suppressed := session.suppressOutput
+	session.mu.Unlock()
+	if suppressed {
+		t.Error("expected suppressOutput=false when not in suppress mode")
 	}
 }

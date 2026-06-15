@@ -115,7 +115,7 @@ func (s *AnthropicSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 	// Extract text from content blocks
 	var resultBuilder strings.Builder
 	for _, block := range chatResp.Content {
-		if block.Type == "text" {
+		if block.Type == blockTypeText {
 			resultBuilder.WriteString(block.Text)
 		}
 	}

@@ -1,9 +1,10 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/utils/api'
 import { useAppMode } from './useAppMode.ts'
 import { gt } from '@/composables/useLocale'
 import { useToast } from '@/composables/useToast.ts'
 import { tunnelStatusFromPorts as tunnelStatusFromPortsUtil, buildPortUrl } from '@/utils/portForwardUtils.ts'
+import { store } from '@/stores/app'
 
 interface ForwardedPort {
   port: number        // Target port on remote host
@@ -88,6 +89,11 @@ function ensurePortForwardListener() {
 function hasActivePorts(): boolean {
   return ports.value.some(p => p.active)
 }
+
+// Sync active port count to global store for dock badge
+watch(ports, () => {
+  store.state.portForwardActiveCount = ports.value.filter(p => p.active).length
+}, { deep: true })
 
 /**
  * Determines tunnel status from port state (delegates to pure utility).

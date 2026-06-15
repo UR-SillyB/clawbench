@@ -11,6 +11,9 @@ import (
 	"clawbench/internal/model"
 )
 
+// blockTypeText is the ContentBlock type identifier for text blocks.
+const blockTypeText = "text"
+
 // taskSummarizePrompt is the system prompt for task execution summarization.
 // It preserves Markdown formatting and condenses the output to ~30% length.
 const taskSummarizePrompt = `你是一个精简总结助手。请对以下 AI 助手的输出进行精简总结，要求：
@@ -132,7 +135,7 @@ func (t *TaskSummarizer) Summarize(ctx context.Context, text string, language st
 func ExtractTextFromBlocks(blocks []model.ContentBlock) string {
 	var buf strings.Builder
 	for _, b := range blocks {
-		if b.Type == "text" && b.Text != "" {
+		if b.Type == blockTypeText && b.Text != "" {
 			if buf.Len() > 0 {
 				buf.WriteString("\n\n")
 			}
@@ -140,4 +143,37 @@ func ExtractTextFromBlocks(blocks []model.ContentBlock) string {
 		}
 	}
 	return buf.String()
+}
+
+// ExtractLastAnswerFromBlocks extracts text from blocks after the last tool_use block.
+// This captures the AI's final answer rather than intermediate reasoning or tool-call commentary.
+// If no tool_use blocks exist, falls back to the first non-empty text block.
+// Returns empty string if no suitable text is found.
+func ExtractLastAnswerFromBlocks(blocks []model.ContentBlock) string {
+	lastToolIdx := -1
+	for i, b := range blocks {
+		if b.Type == "tool_use" {
+			lastToolIdx = i
+		}
+	}
+	// Find first text block after the last tool_use (only if tool_use exists)
+	if lastToolIdx >= 0 {
+		for i := lastToolIdx + 1; i < len(blocks); i++ {
+			if blocks[i].Type == "text" && blocks[i].Text != "" {
+				return blocks[i].Text
+			}
+		}
+	}
+	// No text after last tool_use — fall back to the longest text block.
+	// This handles the case where the AI gives a substantive answer followed
+	// by a terminal tool_use (e.g. AskUserQuestion) with no trailing text.
+	// Falling back to the first text block would typically return the intro
+	// sentence ("Let me check...") rather than the actual answer.
+	var bestText string
+	for _, b := range blocks {
+		if b.Type == blockTypeText && b.Text != "" && utf8.RuneCountInString(b.Text) > utf8.RuneCountInString(bestText) {
+			bestText = b.Text
+		}
+	}
+	return bestText
 }

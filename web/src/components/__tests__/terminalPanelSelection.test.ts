@@ -21,15 +21,15 @@ describe('TerminalPanel xterm selection defaults', () => {
     expect(source).not.toContain("selectionStyle: 'line'")
   })
 
-  it('hides toolbar buttons whose actions are covered by gestures', () => {
+  it('renders config-driven toolbar with gesture-aware visibility', () => {
     const source = readTerminalComponent('../terminal/TerminalPanelContent.vue')
-    const gestureMappedKeys = ['Esc', 'Tab', 'Page Up', 'Page Down', '↑', '↓', '←', '→']
 
-    for (const title of gestureMappedKeys) {
-      expect(source).toContain(`title="${title}"`)
-    }
-    expect(source.match(/v-if="!gestures\.enabled\.value"/g)?.length).toBeGreaterThanOrEqual(4)
-    expect(source).toContain('v-show="!gestures.enabled.value" class="key-group"')
+    // Toolbar is now config-driven: keys rendered via v-for over visibleKeys
+    expect(source).toContain('v-for="def in visibleKeys"')
+    // Modifier keys still use toggle behavior with active/locked classes
+    expect(source).toContain('toolbarBtnClass(def)')
+    // Click handler dispatches via terminalKeys.send() or toggleModifier()
+    expect(source).toContain('handleToolbarKeyClick(def)')
   })
 
   it('keeps terminal virtual keys in a borderless, transparent overlay system', () => {
@@ -44,14 +44,10 @@ describe('TerminalPanel xterm selection defaults', () => {
       // Hover/active use semi-transparent overlays
       expect(toolbarStyle).toContain('--toolbar-key-hover')
       expect(toolbarStyle).toContain('--toolbar-key-active')
-      // Scrollbar still present
-      expect(toolbarStyle).toContain('--toolbar-scrollbar-track')
-      expect(toolbarStyle).toContain('--toolbar-scrollbar-thumb')
-      expect(toolbarStyle).toContain('--toolbar-scrollbar-thumb-hover')
+      // Scroll fade instead of scrollbar
+      expect(toolbarStyle).toContain('scrollbar-width: none')
+      expect(toolbarStyle).toContain('scroll-fade')
       // No decorative masks or accent colors
-      expect(toolbarStyle).not.toContain('mask-image')
-      expect(toolbarStyle).toContain('height: 2px')
-      expect(toolbarStyle).toContain('transition: background 140ms ease')
       expect(toolbarStyle).not.toContain('var(--color-green)')
       expect(toolbarStyle).not.toContain('var(--color-yellow)')
       expect(toolbarStyle).not.toContain('var(--color-purple)')

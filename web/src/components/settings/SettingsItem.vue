@@ -1,11 +1,10 @@
 <template>
   <div v-if="type === 'header'" class="settings-item__header">{{ label }}</div>
-  <div v-else class="settings-item" :class="{ 'settings-item--disabled': disabled, 'settings-item--has-desc': description }" @click="handleClick">
+  <div v-else class="settings-item" :class="{ 'settings-item--disabled': disabled }" @click="handleClick">
     <div class="settings-item__left">
       <div class="settings-item__text">
         <span class="settings-item__label">{{ label }}</span>
         <span v-if="needsRestart" class="settings-item__badge">{{ t('settings.needsRestart') }}</span>
-        <span v-if="description" class="settings-item__desc">{{ description }}</span>
       </div>
     </div>
     <div class="settings-item__right">
@@ -52,6 +51,10 @@
     </div>
     <!-- Info-type: show value as a full-width detail line below the label/desc -->
     <div v-if="type === 'info' && displayValue" class="settings-item__info-detail">{{ displayValue }}</div>
+  </div>
+  <!-- Description panel (expanded on click) -->
+  <div v-if="descriptionExpanded && description" class="settings-item__desc-panel">
+    <div class="settings-item__desc-panel-inner">{{ description }}</div>
   </div>
   <!-- Inline editor -->
   <div v-if="editing" class="settings-item__editor" @click.stop>
@@ -158,12 +161,14 @@ const emit = defineEmits<{
   'update:modelValue': [value: any]
   click: []
   editToggle: [open: boolean]
+  descToggle: [open: boolean]
   discard: []
 }>()
 
 const editing = ref(false)
 const editValue = ref<any>(null)
 const showPassword = ref(false)
+const descriptionExpanded = ref(false)
 
 // Slider debounce: only emit final value after 300ms of inactivity
 let sliderDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -185,6 +190,10 @@ watch(() => props.forceClose, (val) => {
     }
     editing.value = false
     emit('editToggle', false)
+  }
+  if (val && descriptionExpanded.value) {
+    descriptionExpanded.value = false
+    emit('descToggle', false)
   }
 })
 
@@ -222,12 +231,24 @@ function onSliderInput(e: Event) {
 
 function handleClick() {
   if (props.type === 'header') return
-  if (props.type === 'switch' || props.type === 'slider' || props.type === 'info') return
   if (props.type === 'action') {
     emit('click')
     return
   }
-  // select / number / text / password: toggle inline editor
+  // Toggle description panel for all types that have a description
+  const hasDescription = !!props.description
+  if (props.type === 'switch' || props.type === 'slider' || props.type === 'info') {
+    if (hasDescription) {
+      descriptionExpanded.value = !descriptionExpanded.value
+      emit('descToggle', descriptionExpanded.value)
+    }
+    return
+  }
+  // select / number / text / password: toggle inline editor + description
+  if (hasDescription) {
+    descriptionExpanded.value = !descriptionExpanded.value
+    emit('descToggle', descriptionExpanded.value)
+  }
   editing.value = !editing.value
   if (editing.value) {
     // Password editor starts empty so users never accidentally send the masked value back
@@ -271,12 +292,6 @@ function confirmEdit() {
   position: relative;
 }
 
-.settings-item--has-desc {
-  min-height: 60px;
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-
 .settings-item--disabled {
   opacity: 0.5;
   pointer-events: none;
@@ -305,17 +320,6 @@ function confirmEdit() {
   text-overflow: ellipsis;
 }
 
-.settings-item__desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
 .settings-item__badge {
   font-size: 11px;
   padding: 1px 6px;
@@ -324,6 +328,21 @@ function confirmEdit() {
   color: var(--text-muted);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* Description panel (expanded on click) */
+.settings-item__desc-panel {
+  background: var(--bg-primary);
+}
+
+.settings-item__desc-panel-inner {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--accent-color);
+  word-break: break-word;
 }
 
 .settings-item__right {

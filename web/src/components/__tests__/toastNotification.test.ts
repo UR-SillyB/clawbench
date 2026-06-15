@@ -14,11 +14,13 @@ function createMockToast(overrides = {}) {
   }
 }
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
 function mountToast(toast) {
   return mount(ToastNotification, {
     props: { toast },
     global: {
-      stubs: { teleport: true },
+      stubs: { Teleport: TeleportStub },
     },
   })
 }

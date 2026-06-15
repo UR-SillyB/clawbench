@@ -214,7 +214,7 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string { //nolint:goco
 		cfg.Terminal.Enabled = true
 	}
 	if cfg.Terminal.IdleTimeout == "" {
-		cfg.Terminal.IdleTimeout = "10m"
+		cfg.Terminal.IdleTimeout = "0" // 0 = never timeout; PTY lives until process exits or user closes
 	}
 	if cfg.Terminal.BufferLines <= 0 {
 		cfg.Terminal.BufferLines = 2000

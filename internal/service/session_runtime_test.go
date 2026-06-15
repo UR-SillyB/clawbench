@@ -577,6 +577,30 @@ func TestGetSessionResponsePreview_Truncation(t *testing.T) {
 	assert.Equal(t, responsePreviewMaxRunes+1, utf8.RuneCountInString(result)) // maxRunes + ellipsis
 }
 
+// TestGetSessionResponsePreview_FallbackTruncation verifies that the longest-text
+// fallback path truncates when the best text block exceeds responsePreviewMaxRunes.
+func TestGetSessionResponsePreview_FallbackTruncation(t *testing.T) {
+	origDB := DB
+	origDBRead := DBRead
+	db := setupChatTestDB(t)
+	DB = db
+	DBRead = db
+	defer func() { DB = origDB; DBRead = origDBRead }()
+
+	// [text("very long..."), tool_use] — no text AFTER tool_use, falls back to longest text block
+	longText := strings.Repeat("测", responsePreviewMaxRunes+1)
+	textBlock := model.ContentBlock{Type: "text", Text: longText}
+	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Bash", ID: "tool-1"}
+	blocks := map[string]any{"blocks": []model.ContentBlock{textBlock, toolBlock}}
+	contentJSON, _ := json.Marshal(blocks)
+	insertTestMessage(t, db, "session-preview-fallback-trunc", "user", "分析代码")
+	insertTestMessage(t, db, "session-preview-fallback-trunc", "assistant", string(contentJSON))
+
+	result := getSessionResponsePreview("session-preview-fallback-trunc")
+	runes := []rune(longText)
+	assert.Equal(t, string(runes[:responsePreviewMaxRunes])+"…", result)
+}
+
 func TestGetSessionResponsePreview_NoAssistantMessage(t *testing.T) {
 	origDB := DB
 	origDBRead := DBRead
@@ -695,7 +719,7 @@ func TestGetSessionResponsePreview_TextBeforeToolOnly(t *testing.T) {
 	DBRead = db // Same instance for :memory: SQLite — data is shared
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
-	// [text("thinking..."), tool_use] — no text AFTER tool_use, should return empty
+	// [text("thinking..."), tool_use] — no text AFTER tool_use, falls back to longest text block
 	textBlock := model.ContentBlock{Type: "text", Text: "让我思考一下"}
 	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
 	blocks := map[string]any{"blocks": []model.ContentBlock{textBlock, toolBlock}}
@@ -704,7 +728,7 @@ func TestGetSessionResponsePreview_TextBeforeToolOnly(t *testing.T) {
 	insertTestMessage(t, db, "session-preview-text-before-tool", "assistant", string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-text-before-tool")
-	assert.Equal(t, "", result)
+	assert.Equal(t, "让我思考一下", result)
 }
 
 // --- Real-data based tests (extracted from ClawBench production database) ---
@@ -1364,4 +1388,154 @@ func TestExecuteTask_BackendCreationFailed(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("%d", taskID), data1.TaskID)
 	assert.NotEmpty(t, data1.SessionID, "failed event should have session_id")
 	assert.Equal(t, "/test-project", data1.ProjectPath, "failed event should have project_path")
+}
+
+// --- EmitSessionEvent with toolName ---
+
+func TestEmitSessionEvent_PermissionPendingWithToolName(t *testing.T) {
+	origDB := DB
+	origDBRead := DBRead
+	db := setupChatTestDB(t)
+	DB = db
+	DBRead = db
+	defer func() { DB = origDB; DBRead = origDBRead }()
+
+	// Insert a session row so GetSessionProjectPath can look it up
+	_, err := db.Exec("CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, project_path TEXT, backend TEXT, title TEXT, external_session_id TEXT DEFAULT '')")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, ?, ?, ?)",
+		"session-pp-1", "/home/user/project", "codebuddy", "Test Session")
+	require.NoError(t, err)
+
+	mgr := ws.NewManagerForTest(nil)
+	ws.SetManagerForTest(mgr)
+	defer ws.SetManagerForTest(nil)
+
+	var writeMu sync.Mutex
+	sub := mgr.Subscribe(nil, &writeMu, "test-client-pp", "")
+	_ = sub
+
+	// Call with permission_pending and toolName
+	EmitSessionEvent("session-pp-1", "permission_pending", true, "WriteTextFile")
+
+	buffered := sub.GetBufferedEvents()
+	if len(buffered) == 0 {
+		t.Fatal("expected at least one buffered event")
+	}
+	data, ok := buffered[0].Data.(*ws.SessionUpdateData)
+	if !ok {
+		t.Fatal("expected SessionUpdateData")
+	}
+	assert.Equal(t, "permission_pending", data.Status)
+	assert.Equal(t, "session-pp-1", data.SessionID)
+	assert.Equal(t, "WriteTextFile", data.ToolName)
+	assert.Equal(t, "/home/user/project", data.ProjectPath)
+}
+
+// --- triggerChatSummarization simple mode with WS broadcast ---
+
+func TestTriggerChatSummarization_SimpleMode_BroadcastsWSUpdate(t *testing.T) {
+	db, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
+
+	SetChatSummaryMode("simple")
+	chatSummaryEnabled.Store(true)
+
+	// Set up WS manager to capture broadcast
+	mgr := ws.NewManagerForTest(nil)
+	ws.SetManagerForTest(mgr)
+	defer ws.SetManagerForTest(nil)
+
+	var writeMu sync.Mutex
+	sub := mgr.Subscribe(nil, &writeMu, "test-client-summary", "")
+
+	// Insert session + messages
+	sessionID := "test-simple-broadcast"
+	_, _ = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/test', 'claude', 'test')", sessionID)
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (200, '/test', 'user', 'hello', ?, 0)", sessionID)
+	assistantContent := `{"blocks":[{"type":"text","text":"Here's the answer."}]}`
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (201, '/test', 'assistant', ?, ?, 0)", assistantContent, sessionID)
+
+	triggerChatSummarization(sessionID)
+
+	// Should have saved the summary
+	summary, found := GetSummary("chat_message", 201)
+	assert.True(t, found)
+	assert.Equal(t, "Here's the answer.", summary)
+
+	// Should have broadcast summary_update via WS
+	buffered := sub.GetBufferedEvents()
+	if len(buffered) == 0 {
+		t.Fatal("expected at least one buffered summary_update event")
+	}
+	assert.Equal(t, "summary_update", buffered[0].Event)
+}
+
+// --- triggerChatSummarization AI mode with nil summarizer ---
+
+func TestTriggerChatSummarization_AIMode_NilSummarizer_ReturnsEarly(t *testing.T) {
+	db, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	origSummarizer := taskSummarizerInstance
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+		taskSummarizerInstance = origSummarizer
+	}()
+
+	SetChatSummaryMode("ai")
+	chatSummaryEnabled.Store(true)
+	taskSummarizerInstance = nil // No summarizer available
+
+	sessionID := "test-ai-nil"
+	_, _ = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/test', 'claude', 'test')", sessionID)
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (300, '/test', 'user', 'hello', ?, 0)", sessionID)
+	assistantContent := `{"blocks":[{"type":"text","text":"Answer"}]}`
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (301, '/test', 'assistant', ?, ?, 0)", assistantContent, sessionID)
+
+	// Should not panic with nil summarizer
+	triggerChatSummarization(sessionID)
+
+	// No summary should be saved (AI mode, no summarizer)
+	_, found := GetSummary("chat_message", 301)
+	assert.False(t, found)
+}
+
+// --- triggerChatSummarization simple mode with SaveSummary error ---
+
+func TestTriggerChatSummarization_SimpleMode_SaveSummaryError(t *testing.T) {
+	db, teardown := setupTestDBForChatSummary(t)
+	defer teardown()
+
+	origEnabled := chatSummaryEnabled.Load()
+	origMode := GetChatSummaryMode()
+	defer func() {
+		chatSummaryEnabled.Store(origEnabled)
+		SetChatSummaryMode(origMode)
+	}()
+
+	SetChatSummaryMode("simple")
+	chatSummaryEnabled.Store(true)
+
+	// Drop summaries table to force SaveSummary error
+	_, _ = db.Exec("DROP TABLE summaries")
+
+	sessionID := "test-simple-save-error"
+	_, _ = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/test', 'claude', 'test')", sessionID)
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (500, '/test', 'user', 'hello', ?, 0)", sessionID)
+	assistantContent := `{"blocks":[{"type":"text","text":"The answer is 42."}]}`
+	_, _ = db.Exec("INSERT INTO chat_history (id, project_path, role, content, session_id, streaming) VALUES (501, '/test', 'assistant', ?, ?, 0)", assistantContent, sessionID)
+
+	// Should not panic, just log warning and return
+	triggerChatSummarization(sessionID)
 }

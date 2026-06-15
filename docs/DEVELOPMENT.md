@@ -250,7 +250,7 @@ PI_VERSION=0.79.0 ./build.sh --with-pi  # 指定 Pi 版本
 
 API Key 安全：HKDF-SHA256 从 auto-password 派生 32 字节 AES 密钥，修改登录密码时自动调用 `RotateAPIKeyEncryption` 重加密所有密钥。
 
-提供商模型数据：`internal/model/provider_models.json` 嵌入文件包含 23 家提供商的 567 个工具调用模型，由 `scripts/generate-provider-models.py` 从 models.dev API 自动生成（`build.sh` 自动调用）。`ProviderRegistry` 初始化时通过 `go:embed` 加载，填充 `KnownModels` 字段。
+提供商模型数据：`<BinDir>/.clawbench/provider_models.json` 运行时文件包含 23 家提供商的工具调用模型，由 `scripts/fetch-provider-models.sh` 从 models.dev API 自动生成（curl+jq，无 Python 依赖）。`build.sh` 和 CI 自动生成。启动时通过 `LoadProviderModelsFromFile()` 加载，填充 `ProviderRegistry` 的 `KnownModels` 字段。
 
 ### TTS 语音合成配置
 
@@ -424,7 +424,6 @@ clawbench/
 │   │   └── logger.go            # 文件日志（按天轮转）
 │   ├── model/                   # 数据模型
 │   │   ├── config.go / defaults.go / chat.go / file.go / agent.go / scheduler.go / path.go / ssh.go / discovery.go / provider_registry.go
-│   │   ├── provider_models.json # 嵌入的提供商模型数据（23 提供商 567 模型，go:embed）
 │   │   └── errors.go
 │   ├── ssh/                     # SSH 隧道服务器
 │   │   ├── server.go            # SSH 服务器（direct-tcpip 端口转发）
@@ -482,7 +481,7 @@ clawbench/
 ├── docker-compose.yml           # Docker Compose 配置
 ├── scripts/
 │   ├── docker-build.sh          # Docker 一键构建脚本
-│   └── generate-provider-models.py  # 提供商模型数据生成脚本（models.dev API → provider_models.json）
+│   └── fetch-provider-models.sh # 提供商模型数据生成脚本（models.dev API → provider_models.json，curl+jq）
 └── vite.config.ts               # Vite 配置
 ```
 

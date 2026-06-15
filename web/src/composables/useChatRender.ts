@@ -37,17 +37,17 @@ import {
   repeatLabel,
 } from '@/utils/format.ts'
 
-export function useChatRender(options) {
+export function useChatRender(options: { messages: any; theme: any; currentSessionId: any }) {
   const { messages, theme, currentSessionId } = options
   const { annotateFilePaths, verifyFilePaths } = useFilePathAnnotation()
   const { annotateCommitHashes, verifyCommitHashes } = useCommitHashAnnotation()
   const { annotateWorktreePaths } = useWorktreeAnnotation()
   const { annotateLocalhostUrls } = useLocalhostAnnotation()
 
-  const blockTasks = reactive({})
-  const blockAskQuestions = reactive({})
-  const blockRagResults = reactive({})
-  const expandedTools = ref({})
+  const blockTasks: Record<string, any> = reactive({})
+  const blockAskQuestions: Record<string, any> = reactive({})
+  const blockRagResults: Record<string, any> = reactive({})
+  const expandedTools: Record<string, any> = ref({})
   let lastRenderedCount = 0
 
   // ── Task block store for batch fetching (ISS-013) ──
@@ -106,7 +106,7 @@ export function useChatRender(options) {
 
   // Batch-fetch task data using the list API to avoid per-task loading flicker.
   // ISS-013: delegates to taskBlockStore which does NOT mark deleted on network error.
-  async function fetchBatchTaskData(taskKeys) {
+  async function fetchBatchTaskData(taskKeys: Array<{ key: string; taskId: number }>) {
     await taskBlockStore.fetchBatchData(taskKeys)
     // Sync store blocks into our reactive blockTasks
     for (const key of Object.keys(taskBlockStore.blocks)) {
@@ -114,7 +114,7 @@ export function useChatRender(options) {
     }
   }
 
-  async function refreshTaskData(taskId) {
+  async function refreshTaskData(taskId: number) {
     for (const key of Object.keys(blockTasks)) {
       if (blockTasks[key].taskId === taskId && !blockTasks[key].deleted) {
         try {
@@ -137,15 +137,15 @@ export function useChatRender(options) {
    * When skipEnhancements=false (post-streaming), the full pipeline runs:
    * marked → KaTeX → DOMPurify → table-wrap → img → audio → annotateFilePaths → verifyFilePaths.
    */
-  function renderMarkdown(text, { skipEnhancements = false } = {}) {
-    let html = marked.parse((text || '').trim())
+  function renderMarkdown(text: string, { skipEnhancements = false }: { skipEnhancements?: boolean } = {}) {
+    let html = marked.parse((text || '').trim()) as string
 
     if (!skipEnhancements) {
       // KaTeX: deferred to post-streaming — formula may be incomplete during streaming
       html = renderKatexInString(html)
     }
 
-    html = DOMPurify.sanitize(html, { ADD_TAGS: ['math', 'button', 'rag-results', 'rag-item', 'session-id', 'session-title', 'created-at', 'summary'], ADD_ATTR: ['data-file-path', 'data-commit-sha', 'data-worktree-path', 'data-url', 'data-port', 'data-protocol', 'title'] })
+    html = DOMPurify.sanitize(html, { ADD_TAGS: ['math', 'button', 'rag-results', 'rag-item', 'session-id', 'session-title', 'created-at', 'summary'], ADD_ATTR: ['data-file-path', 'data-line-start', 'data-line-end', 'data-commit-sha', 'data-worktree-path', 'data-url', 'data-port', 'data-protocol', 'title'] })
     html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>')
 
     if (!skipEnhancements) {
@@ -197,7 +197,7 @@ export function useChatRender(options) {
    *   Full pipeline: scheduled-task extraction, ask-question detection,
    *   tag stripping, and enhanced markdown rendering.
    */
-  function renderTextBlock(text, msgId, blockIdx, streaming = false) {
+  function renderTextBlock(text: string, msgId: string, blockIdx: number, streaming = false) {
     // ── Streaming: pure markdown only ──
     if (streaming) {
       return renderMarkdown(text, { skipEnhancements: true })
@@ -274,7 +274,7 @@ export function useChatRender(options) {
     if (askResult.found) {
       const askKey = `${msgId}-${blockIdx}`
       if (!blockAskQuestions[askKey]) {
-        const parsed = parseAskQuestionContent(askResult.content)
+        const parsed = parseAskQuestionContent(askResult.content!)
         if (parsed) {
           blockAskQuestions[askKey] = parsed
         }
@@ -295,7 +295,7 @@ export function useChatRender(options) {
     return cleanText ? renderMarkdown(cleanText) : ''
   }
 
-  function extractScheduledTasks(msgs) {
+  function extractScheduledTasks(msgs: any[]) {
     // Collect all task keys across messages for a single batch fetch
     const allTaskKeys = []
     for (const msg of msgs) {
@@ -348,7 +348,7 @@ export function useChatRender(options) {
     }
   }
 
-  function toggleToolDetail(key) {
+  function toggleToolDetail(key: string) {
     expandedTools.value[key] = !expandedTools.value[key]
   }
 

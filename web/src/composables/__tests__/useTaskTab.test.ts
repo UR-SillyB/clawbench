@@ -53,7 +53,7 @@ beforeEach(() => {
   mockFetch.mockReset()
   // Reset store state
   store.state.taskRunning = false
-  store.state.taskUnread = false
+  store.state.taskUnreadCount = 0
   store.state.taskJustCompleted = false
   store.state.tasks = []
 })
@@ -93,7 +93,7 @@ describe('useTaskTab', () => {
       expect(mockFetch).toHaveBeenCalledWith('/api/tasks', expect.any(Object))
       expect(store.state.tasks.length).toBe(2)
       expect(store.state.taskRunning).toBe(false)
-      expect(store.state.taskUnread).toBe(false)
+      expect(store.state.taskUnreadCount).toBe(0)
     })
 
     it('sets taskRunning when any task has runningCount > 0', async () => {
@@ -105,13 +105,16 @@ describe('useTaskTab', () => {
       expect(store.state.taskRunning).toBe(true)
     })
 
-    it('sets taskUnread when hasUnread is true', async () => {
+    it('computes taskUnreadCount from task unreadCounts', async () => {
       const { loadTasks } = useTaskTab()
-      mockTasksResponse([], true)
+      mockTasksResponse([
+        makeTask({ id: 1, unreadCount: 2 }),
+        makeTask({ id: 2, unreadCount: 3 }),
+      ])
 
       await loadTasks()
 
-      expect(store.state.taskUnread).toBe(true)
+      expect(store.state.taskUnreadCount).toBe(5)
     })
 
     it('silently ignores fetch errors', async () => {

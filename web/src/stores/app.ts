@@ -50,20 +50,26 @@ interface AppState {
     // Recent projects config
     recentProjectsMaxCount: number
 
-    // Chat unread badge
-    chatUnread: boolean
+    // Chat unread count (for dock badge — number of unread sessions)
+    chatUnreadCount: number
 
     // Chat running indicator (AI is generating)
     chatRunning: boolean
 
-    // Task unread badge (unread task executions)
-    taskUnread: boolean
+    // Task unread count (for dock badge)
+    taskUnreadCount: number
 
     // Task running indicator (scheduled task is executing)
     taskRunning: boolean
 
     // Task just completed (brief flash for dock button animation)
     taskJustCompleted: boolean
+
+    // Terminal session count (for dock badge)
+    terminalSessionCount: number
+
+    // Active port forward count (for dock badge)
+    portForwardActiveCount: number
 
     // Task list (kept in sync by global polling)
     tasks: any[]
@@ -105,11 +111,13 @@ const state = reactive<AppState>({
     sessionMaxCount: 10,
     sessionCount: 0,
     recentProjectsMaxCount: 10,
-    chatUnread: false,
+    chatUnreadCount: 0,
     chatRunning: false,
-    taskUnread: false,
+    taskUnreadCount: 0,
     taskRunning: false,
     taskJustCompleted: false,
+    terminalSessionCount: 0,
+    portForwardActiveCount: 0,
     tasks: [],
 
     // File browser
@@ -185,11 +193,13 @@ function resetProjectState(): void {
     state.gitHead = ''
     state.gitDirty = false
     // Chat/task badges
-    state.chatUnread = false
+    state.chatUnreadCount = 0
     state.chatRunning = false
-    state.taskUnread = false
+    state.taskUnreadCount = 0
     state.taskRunning = false
     state.taskJustCompleted = false
+    state.terminalSessionCount = 0
+    state.portForwardActiveCount = 0
     state.tasks = []
     // Config defaults
     state.uploadMaxSizeMB = 100
@@ -255,7 +265,7 @@ async function loadFiles(dir = ''): Promise<void> {
     }
 }
 
-async function selectFile(path: string, isImageFile = false, isAudioFile = false, addToHistory = true, forceText = false): Promise<void> {
+async function selectFile(path: string, isImageFile = false, isAudioFile = false, addToHistory = true, forceText = false): Promise<boolean> {
     const key = 'clawbenchLastFile_' + state.projectRoot
     if (key !== 'clawbenchLastFile_') localStorage.setItem(key, path)
 
@@ -319,29 +329,29 @@ async function selectFile(path: string, isImageFile = false, isAudioFile = false
     if (isPdf) {
         const fileName = baseName(path)
         state.currentFile = { name: fileName, path, content: null, isPdf: true }
-        return
+        return true
     }
     if (isImage) {
         const fileName = baseName(path)
         state.currentFile = { name: fileName, path, content: null, isImage: true }
-        return
+        return true
     }
     if (isAudio) {
         const fileName = baseName(path)
         state.currentFile = { name: fileName, path, content: null, isAudio: true }
-        return
+        return true
     }
     if (isVideo) {
         const fileName = baseName(path)
         state.currentFile = { name: fileName, path, content: null, isVideo: true }
-        return
+        return true
     }
     if (!isText && !forceText) {
         // Unknown extension → treat as binary, don't even call the API
         const fileName = baseName(path)
         const sizeInfo = state.dirEntries.find(e => e.name === fileName)
         state.currentFile = { name: fileName, path, content: null, isBinary: true, size: sizeInfo?.size }
-        return
+        return true
     }
 
     try {
@@ -358,7 +368,7 @@ async function selectFile(path: string, isImageFile = false, isAudioFile = false
                 const fileName = baseName(path)
                 const sizeInfo = state.dirEntries.find(e => e.name === fileName)
                 state.currentFile = { name: fileName, path, content: null, tooLarge: true, size: sizeInfo?.size }
-                return
+                return true
             }
             throw new Error(err.error || 'Failed')
         }
@@ -383,8 +393,12 @@ async function selectFile(path: string, isImageFile = false, isAudioFile = false
         } else {
             state.currentFile = data
         }
+        return true
     } catch (err) {
-        state.currentFile = { path, name: baseName(path), error: (err as Error).message }
+        // Don't replace currentFile — keep the previously opened file visible.
+        // Show the error as a toast bubble instead.
+        useToast().show((err as Error).message, { type: 'error', icon: '⚠️' })
+        return false
     }
 }
 

@@ -24,7 +24,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'open-file': [filePath: string]
+  'open-file': [filePath: string, lineStart?: number]
 }>()
 
 const { currentView, selectedTaskId, selectedExecData, execDetailOpen, formViewOpen, formMode, goBack, navigateToTaskSettings, navigateToTaskHistory, navigateToList, closeExecDetail, openCreateForm, openEditForm, closeForm, loadTasks } = useTaskTab()
@@ -52,7 +52,7 @@ function onEdit() {
   openEditForm()
 }
 
-async function onFormSaved(newTaskId: string) {
+async function onFormSaved(newTaskId: number) {
   await loadTasks()
   closeForm()
   if (formMode.value === 'create' && newTaskId) {
@@ -67,11 +67,11 @@ function onTaskDeleted() {
   listPageRef.value?.refresh?.()
 }
 
-function onOpenFile(filePath: string) {
-  emit('open-file', filePath)
+function onOpenFile(filePath: string, lineStart?: number) {
+  emit('open-file', filePath, lineStart)
 }
 
-function onTaskSelect(taskId: string) {
+function onTaskSelect(taskId: number) {
   navigateToTaskSettings(taskId)
 }
 

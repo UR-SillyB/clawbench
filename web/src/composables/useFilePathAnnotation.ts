@@ -97,9 +97,50 @@ export const FILE_OPEN_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="
 
 /**
  * Generate HTML for the small open-file button.
+ * Optionally includes line range attributes for scrolling to specific lines.
  */
-export function fileOpenButtonHtml(resolvedPath: string): string {
-    return `<button class="chat-file-open-btn" data-file-path="${escapeHtml(resolvedPath)}" title="${escapeHtml(gt('chat.attach.openFile'))}">${FILE_OPEN_ICON_SVG}</button>`
+export function fileOpenButtonHtml(resolvedPath: string, lineStart?: number, lineEnd?: number): string {
+    const lineAttrs = lineStart ? ` data-line-start="${lineStart}"${lineEnd ? ` data-line-end="${lineEnd}"` : ''}` : ''
+    return `<button class="chat-file-open-btn" data-file-path="${escapeHtml(resolvedPath)}"${lineAttrs} title="${escapeHtml(gt('chat.attach.openFile'))}">${FILE_OPEN_ICON_SVG}</button>`
+}
+
+/**
+ * Extract the bare file path and optional line range from a matched string.
+ * E.g. "src/main.go:70-81" → { path: "src/main.go", lineStart: 70, lineEnd: 81 }
+ * E.g. "src/main.go:42" → { path: "src/main.go", lineStart: 42, lineEnd: undefined }
+ * E.g. "src/main.go" → { path: "src/main.go", lineStart: undefined, lineEnd: undefined }
+ */
+function extractLineInfo(matchStr: string, match: RegExpExecArray): { path: string; lineStart?: number; lineEnd?: number } {
+    const lineStartStr = match[1]
+    const lineEndStr = match[2]
+    if (!lineStartStr) return { path: matchStr }
+    // The full match includes the line suffix; strip it to get the bare path
+    const colonIdx = matchStr.lastIndexOf(':')
+    const path = colonIdx > 0 ? matchStr.slice(0, colonIdx) : matchStr
+    return {
+        path,
+        lineStart: parseInt(lineStartStr, 10),
+        lineEnd: lineEndStr ? parseInt(lineEndStr, 10) : undefined,
+    }
+}
+
+/**
+ * Extract bare path and optional line info from a plain text string
+ * (not from a regex match). Used by Step 2 for <code> tag content.
+ * E.g. "src/main.go:70-81" → { path: "src/main.go", lineStart: 70, lineEnd: 81 }
+ */
+function extractLineInfoFromText(text: string): { path: string; lineStart?: number; lineEnd?: number } {
+    const m = text.match(/:\d+(-\d+)?$/)
+    if (!m) return { path: text }
+    const colonIdx = text.lastIndexOf(':')
+    const path = text.slice(0, colonIdx)
+    const linePart = text.slice(colonIdx + 1)
+    const [startStr, endStr] = linePart.split('-')
+    return {
+        path,
+        lineStart: parseInt(startStr, 10),
+        lineEnd: endStr ? parseInt(endStr, 10) : undefined,
+    }
 }
 
 export interface AnnotateFilePathsOptions {
@@ -111,11 +152,15 @@ export interface AnnotateFilePathsOptions {
 }
 
 /**
- * Regex that matches file paths in plain text.
+ * Regex that matches file paths in plain text, with optional line suffixes.
  * Three forms combined into one regex:
  *   1. Absolute/tilde paths: /home/user/project/src/main.go, ~/.config/nvim/init.lua
  *   2. Relative paths with ./ or ../:  ./lib/utils.ts, ../config/settings.json
  *   3. Bare relative paths: src/main.go (at least two segments + extension)
+ *
+ * Optional line suffix after the file extension:
+ *   :42        → single line (captured in group 1)
+ *   :70-81     → line range (captured in groups 1 and 2)
  *
  * Requirements: at least one '/' and a file extension (dot + alpha + optional alphanum).
  * Paths must not contain spaces, angle brackets, quotes, or closing parens/brackets.
@@ -123,12 +168,13 @@ export interface AnnotateFilePathsOptions {
  * Because this regex only runs on text node content (never on HTML attributes or tags),
  * there is no risk of matching inside data-file-path or other generated attributes.
  */
-const FILE_PATH_RE = /(?:~?\/[^\s<>"')\]]+(?:\/[^\s<>"')\]]+)+\.[a-zA-Z][a-zA-Z0-9]*|\.\.?\/[^\s<>"')\]]+(?:\/[^\s<>"')\]]+)*\.[a-zA-Z][a-zA-Z0-9]*|[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_.-]+)+\.[a-zA-Z][a-zA-Z0-9]*)/g
+const FILE_PATH_RE = /(?:~?\/[^\s<>"')\]]+(?:\/[^\s<>"')\]]+)+\.[a-zA-Z][a-zA-Z0-9]*|\.\.?\/[^\s<>"')\]]+(?:\/[^\s<>"')\]]+)*\.[a-zA-Z][a-zA-Z0-9]*|[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_.-]+)+\.[a-zA-Z][a-zA-Z0-9]*)(?::(\d+)(?:-(\d+))?)?/g
 
 /**
  * Check if a string looks like a file path that should be annotated.
  * - Contains at least one '/' (e.g. src/foo.ts, ./bar.go)
  * - Or has a short file extension (e.g. ChatPanel.vue, main.go)
+ * - Optional line suffix: :42 or :70-81
  * Bare identifiers like `useAutoSpeech`, `onUnmounted`, `ref` should NOT match.
  * Rejects strings containing glob wildcards, angle brackets, or double-star
  * — these are glob patterns or template variables, not real file paths.
@@ -139,7 +185,9 @@ function looksLikeFilePath(text: string): boolean {
     if (/^https?:\/\//i.test(text)) return false
     // Exclude environment variable paths (e.g. $HOME/.bashrc, ${HOME}/config)
     if (/\$/.test(text)) return false
-    return /\/|\.[a-zA-Z][a-zA-Z0-9]{0,3}$/.test(text)
+    // Strip optional line suffix (:42 or :70-81) before checking
+    const bare = text.replace(/:\d+(-\d+)?$/, '')
+    return /\/|\.[a-zA-Z][a-zA-Z0-9]{0,3}$/.test(bare)
 }
 
 /**
@@ -195,13 +243,17 @@ export function annotateFilePaths(
         if (code.classList.contains('chat-worktree-path')) continue
         const stripped = (code.textContent || '').trim()
         if (!looksLikeFilePath(stripped)) continue
-        const resolved = resolveFilePath(stripped, projectRoot, homeDir)
+        // Extract bare path and optional line info
+        const { path: barePath, lineStart, lineEnd } = extractLineInfoFromText(stripped)
+        const resolved = resolveFilePath(barePath, projectRoot, homeDir)
         if (!resolved || resolved.includes(' ') || resolved.includes('"')) continue
         // Entire <code> content is a valid file path — annotate the whole element
         detectedPaths.push(resolved)
         code.classList.add('chat-file-path')
         code.setAttribute('data-file-path', resolved)
-        code.insertAdjacentHTML('afterend', fileOpenButtonHtml(resolved))
+        if (lineStart) code.setAttribute('data-line-start', String(lineStart))
+        if (lineEnd) code.setAttribute('data-line-end', String(lineEnd))
+        code.insertAdjacentHTML('afterend', fileOpenButtonHtml(resolved, lineStart, lineEnd))
     }
 
     // ── Step 3: Text nodes (outside a/worktree-annotated, but including inside <code>) → regex match paths ──
@@ -231,12 +283,13 @@ export function annotateFilePaths(
 
         // Re-run regex to collect matches (test() consumed lastIndex)
         FILE_PATH_RE.lastIndex = 0
-        const parts: Array<{ text: string; resolved: string | null }> = []
+        const parts: Array<{ text: string; resolved: string | null; lineStart?: number; lineEnd?: number }> = []
         let lastIndex = 0
         let match: RegExpExecArray | null
         while ((match = FILE_PATH_RE.exec(text)) !== null) {
             const pathStr = match[0]
-            let resolved = resolveFilePath(pathStr, projectRoot, homeDir)
+            const { path: barePath, lineStart, lineEnd } = extractLineInfo(pathStr, match)
+            let resolved = resolveFilePath(barePath, projectRoot, homeDir)
             // If the text immediately after this match continues with a path segment
             // (e.g. "/.worktrees" followed by "/gitgraph-fix"), the regex only matched
             // a directory prefix — skip it so worktree annotation can handle the full path.
@@ -257,7 +310,7 @@ export function annotateFilePaths(
             if (match.index > lastIndex) {
                 parts.push({ text: text.slice(lastIndex, match.index), resolved: null })
             }
-            parts.push({ text: pathStr, resolved })
+            parts.push({ text: pathStr, resolved, lineStart: resolved ? lineStart : undefined, lineEnd: resolved ? lineEnd : undefined })
             lastIndex = match.index + pathStr.length
         }
         // Push remaining text after last match
@@ -276,11 +329,13 @@ export function annotateFilePaths(
                 const span = doc.createElement('span')
                 span.className = 'chat-file-path'
                 span.setAttribute('data-file-path', part.resolved)
+                if (part.lineStart) span.setAttribute('data-line-start', String(part.lineStart))
+                if (part.lineEnd) span.setAttribute('data-line-end', String(part.lineEnd))
                 span.textContent = part.text
                 frag.appendChild(span)
                 // Open-file button (as HTML snippet since it contains SVG)
                 const btnContainer = doc.createElement('span')
-                btnContainer.innerHTML = fileOpenButtonHtml(part.resolved)
+                btnContainer.innerHTML = fileOpenButtonHtml(part.resolved, part.lineStart, part.lineEnd)
                 while (btnContainer.firstChild) frag.appendChild(btnContainer.firstChild)
             } else {
                 frag.appendChild(doc.createTextNode(part.text))
@@ -383,6 +438,7 @@ export function useFilePathAnnotation() {
         verifyFilePaths,
         resolveRelativePath,
         openFilePath,
+        dispatchScrollToLine,
         clearVerifiedCache,
     }
 }
@@ -410,15 +466,16 @@ export function resolveRelativePath(href: string, baseDir: string): string {
  * If it's a file, selects it in the store.
  * If the file doesn't exist, shows a toast and does not navigate to a potentially
  * non-existent directory (fixes issue #166).
+ * If lineStart is provided, dispatches a scroll-to-line event after opening.
  */
-export async function openFilePath(resolvedPath: string): Promise<void> {
+export async function openFilePath(resolvedPath: string, lineStart?: number): Promise<boolean> {
     // Check if path is a directory
     try {
         const resp = await fetch(`/api/dir?path=${encodeURIComponent(resolvedPath)}`)
         if (resp.ok) {
             await store.navigateToDir(resolvedPath)
             window.dispatchEvent(new CustomEvent('open-file-manager'))
-            return
+            return true
         }
     } catch {
         // Ignore, fall through to open as file
@@ -441,12 +498,25 @@ export async function openFilePath(resolvedPath: string): Promise<void> {
                 const { useToast } = await import('@/composables/useToast')
                 const { gt } = await import('@/composables/useLocale')
                 useToast().show(gt('file.toast.fileNotFound'), { type: 'error', icon: '⚠️', duration: 2000 })
-                return
+                return false
             }
         }
     } catch {
         // Batch-exists check failed — proceed with selectFile as best-effort
     }
 
-    store.selectFile(resolvedPath)
+    const ok = await store.selectFile(resolvedPath)
+    if (ok && lineStart) dispatchScrollToLine(lineStart)
+    return ok
+}
+
+/**
+ * Dispatch a scroll-to-line event after a file has been opened.
+ * The App.vue listens for this event to scroll the file viewer.
+ */
+export function dispatchScrollToLine(line: number): void {
+    // Use a small delay to allow the file content to render
+    setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('scroll-to-line', { detail: { line } }))
+    }, 100)
 }

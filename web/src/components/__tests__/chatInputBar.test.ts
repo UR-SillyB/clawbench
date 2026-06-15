@@ -92,6 +92,8 @@ beforeEach(() => {
   mockFetchItems.mockReset()
 })
 
+const TeleportStub = { template: '<div><slot /></div>' }
+
 function mountInputBar(props = {}) {
   return mount(ChatInputBar, {
     props: {
@@ -103,7 +105,7 @@ function mountInputBar(props = {}) {
       messages: [],
       autoSpeechEnabled: false,
       currentSessionId: 'test-session-id',
-      chatUnread: false,
+      chatUnreadCount: 0,
       chatRunning: false,
       currentModelId: 'model-1',
       currentModelName: 'Test Model',
@@ -117,7 +119,7 @@ function mountInputBar(props = {}) {
     },
     global: {
       stubs: {
-        teleport: true,
+        Teleport: TeleportStub,
         PopupMenu: true,
         QuickSendDialog: true,
       },

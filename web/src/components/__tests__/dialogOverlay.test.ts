@@ -45,10 +45,12 @@ const i18n = createI18n({
 })
 
 // --- Mount helper ---
+const TeleportStub = { template: '<div><slot /></div>' }
+
 function mountDialog() {
   return mount(DialogOverlay, {
     global: {
-      stubs: { teleport: true },
+      stubs: { Teleport: TeleportStub },
       plugins: [i18n],
     },
   })

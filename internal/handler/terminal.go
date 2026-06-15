@@ -80,8 +80,9 @@ func TerminalStatus(w http.ResponseWriter, r *http.Request) {
 	// No session ID — return all sessions
 	sessions := terminalMgr.AllSessionStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":  terminalMgr.IsEnabled(),
-		"sessions": sessions,
+		"enabled":       terminalMgr.IsEnabled(),
+		"sessions":      sessions,
+		"session_count": terminalMgr.SessionCount(),
 	})
 }
 
@@ -241,6 +242,50 @@ func ServeQuickCommandByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		if err := service.DeleteQuickCommand(id); err != nil {
 			slog.Error("failed to delete quick command", slog.String("error", err.Error()))
+			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+
+	default:
+		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
+	}
+}
+
+// ServeKeyConfig handles GET (list by type) and PUT (full replace) for terminal key/symbol configuration.
+func ServeKeyConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		typeFilter := r.URL.Query().Get("type")
+		if typeFilter != "key" && typeFilter != "symbol" {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidType")
+			return
+		}
+		items, err := service.GetKeyConfig(typeFilter)
+		if err != nil {
+			slog.Error("failed to get key config", "error", err)
+			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+			return
+		}
+		if items == nil {
+			items = []service.KeyConfigItem{}
+		}
+		writeJSON(w, http.StatusOK, items)
+
+	case http.MethodPut:
+		var req struct {
+			Type  string   `json:"type"`
+			Items []string `json:"items"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if req.Type != "key" && req.Type != "symbol" {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidType")
+			return
+		}
+		if err := service.ReplaceKeyConfig(req.Type, req.Items); err != nil {
+			slog.Error("failed to replace key config", "error", err)
 			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 			return
 		}

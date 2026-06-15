@@ -157,6 +157,8 @@ tts:
 # Backends / 总结后端：
 #   "simple"    — Pure text cleaning only (default) / 纯文本清洗（默认），零延迟
 #   "api"       — Remote AI API (OpenAI/Anthropic format) / 远程AI API（OpenAI/Anthropic格式）
+#   ""         — Disabled, no summarization / 关闭，不生成摘要
+#   "simple"   — Extract final answer (no AI call) / 提取最终回答（无 AI 调用）
 #   "claude"    — Claude CLI / 使用 Claude CLI
 #   "codebuddy" — CodeBuddy CLI / 使用 CodeBuddy CLI
 #   "gemini"    — Gemini CLI / 使用 Gemini CLI
@@ -240,7 +242,7 @@ port_forward:
 # Default: enabled / 默认：启用
 # terminal:
 #   enabled: true             # Enable terminal (default: true) / 启用终端（默认: true）
-#   idle_timeout: "10m"       # Close PTY after no WS connections for this duration (default: 10m) / 无连接超时关闭（默认: 10m）
+#   idle_timeout: "0"        # Close PTY after no WS connections (default: "0" = never, e.g. "10m") / 无连接超时关闭（默认: "0" = 永不超时，如 "10m"）
 #   buffer_lines: 2000        # Replay buffer line count (default: 2000) / 回放缓冲行数（默认: 2000）
 #   max_line_bytes: 65536     # Per-line byte cap to prevent memory bloat (default: 64KB) / 单行字节上限（默认: 64KB）
 #   max_buffer_mb: 4          # Total buffer memory cap in MB (default: 4) / 缓冲总内存上限 MB（默认: 4）

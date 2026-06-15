@@ -235,10 +235,10 @@ function handleShowToolDetail(block) {
   }
 }
 
-function handleFileOpenInOverlay(filePath) {
+function handleFileOpenInOverlay(filePath, lineStart) {
   toolDetailOverlay.value.show = false
-  openFilePath(filePath)
-  emit('open-file', filePath)
+  openFilePath(filePath, lineStart)
+  emit('open-file', filePath, lineStart)
 }
 
 // ── Metadata Modal ──
@@ -303,9 +303,10 @@ function handleContentClick(event) {
   event.preventDefault()
   event.stopPropagation()
   const filePath = btn.getAttribute('data-file-path')
+  const lineStart = btn.getAttribute('data-line-start')
   if (filePath) {
-    openFilePath(filePath)
-    emit('open-file', filePath)
+    openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined)
+    emit('open-file', filePath, lineStart ? parseInt(lineStart, 10) : undefined)
   }
 }
 

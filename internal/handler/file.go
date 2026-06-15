@@ -180,6 +180,15 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// os.Stat fails on dangling symlinks. Check with Lstat —
+			// if it's a symlink, include the target in the error message
+			// so the user knows the link is broken (not just "file not found").
+			linfo, lerr := os.Lstat(absPath)
+			if lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				target, _ := os.Readlink(absPath)
+				writeLocalizedErrorf(w, r, http.StatusNotFound, "BrokenSymlink", map[string]any{"Target": target})
+				return
+			}
 			writeLocalizedError(w, r, model.NotFound(nil, "FileNotFoundShort"))
 		} else {
 			model.WriteError(w, model.Internal(fmt.Errorf("cannot access file")))

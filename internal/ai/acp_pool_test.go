@@ -7,6 +7,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"clawbench/internal/model"
 )
@@ -619,6 +620,109 @@ func TestGetOrCreateConn_PrePopulatesAcpSID_FromDB(t *testing.T) {
 
 	// Cleanup
 	mgr.CloseConn(clawbenchSID)
+}
+
+// --- ACPConn.PreApplyConfigCurrentID ---
+
+func TestACPConn_PreApplyConfigCurrentID_UpdatesRegistryConfigState(t *testing.T) {
+	agentID := "test-preapply-config-mode"
+	agent := &model.Agent{ID: agentID, Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-preapply")
+
+	// Set up registry with config state (simulating NewSession response with bypassPermissions)
+	reg := GetAgentCapabilityRegistry()
+	reg.UpdateConfigState(agentID, &ConfigOptionState{
+		ConfigID:  "mode",
+		CurrentID: "bypassPermissions",
+		Options: []ConfigOptionDef{{
+			ID:       "mode",
+			Category: "mode",
+			Values: []ConfigOptionValue{
+				{ID: "bypassPermissions", Name: "Auto-accept"},
+				{ID: "plan", Name: "Plan"},
+				{ID: "code", Name: "Code"},
+			},
+		}},
+	})
+
+	// Before pre-apply, config state should have the default
+	configState := reg.GetConfigState(agentID)
+	require.NotNil(t, configState)
+	assert.Equal(t, "bypassPermissions", configState.CurrentID)
+
+	// Pre-apply the user's mode selection
+	conn.PreApplyConfigCurrentID("mode", "plan")
+
+	// After pre-apply, config state should reflect the user's choice
+	configState = reg.GetConfigState(agentID)
+	require.NotNil(t, configState)
+	assert.Equal(t, "plan", configState.CurrentID)
+}
+
+func TestACPConn_PreApplyConfigCurrentID_InvalidValueNoChange(t *testing.T) {
+	agentID := "test-preapply-invalid"
+	agent := &model.Agent{ID: agentID, Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-preapply-invalid")
+
+	reg := GetAgentCapabilityRegistry()
+	reg.UpdateConfigState(agentID, &ConfigOptionState{
+		ConfigID:  "mode",
+		CurrentID: "bypassPermissions",
+		Options: []ConfigOptionDef{{
+			ID:       "mode",
+			Category: "mode",
+			Values: []ConfigOptionValue{
+				{ID: "bypassPermissions", Name: "Auto-accept"},
+				{ID: "code", Name: "Code"},
+			},
+		}},
+	})
+
+	// Try to pre-apply a mode that's not in the available values
+	conn.PreApplyConfigCurrentID("mode", "plan")
+
+	// Should NOT change because "plan" is not a valid value
+	configState := reg.GetConfigState(agentID)
+	require.NotNil(t, configState)
+	assert.Equal(t, "bypassPermissions", configState.CurrentID)
+}
+
+func TestACPConn_PreApplyConfigCurrentID_NoConfigState(t *testing.T) {
+	agentID := "test-preapply-noconfig"
+	agent := &model.Agent{ID: agentID, Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-preapply-noconfig")
+
+	// No config state registered — should not panic
+	assert.NotPanics(t, func() {
+		conn.PreApplyConfigCurrentID("mode", "plan")
+	})
+}
+
+func TestACPConn_PreApplyConfigCurrentID_ThinkingEffort(t *testing.T) {
+	agentID := "test-preapply-effort"
+	agent := &model.Agent{ID: agentID, Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "session-preapply-effort")
+
+	reg := GetAgentCapabilityRegistry()
+	reg.UpdateConfigState(agentID, &ConfigOptionState{
+		ConfigID:  "thinkingEffort",
+		CurrentID: "medium",
+		Options: []ConfigOptionDef{{
+			ID:       "thinkingEffort",
+			Category: "thinkingEffort",
+			Values: []ConfigOptionValue{
+				{ID: "low", Name: "Low"},
+				{ID: "medium", Name: "Medium"},
+				{ID: "high", Name: "High"},
+			},
+		}},
+	})
+
+	conn.PreApplyConfigCurrentID("thinkingEffort", "high")
+
+	configState := reg.GetConfigState(agentID)
+	require.NotNil(t, configState)
+	assert.Equal(t, "high", configState.CurrentID)
 }
 
 // --- ensureAliveWithSession preserves acpSID across spawnLocked ---

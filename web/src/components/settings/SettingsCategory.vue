@@ -12,10 +12,11 @@
       :max="item.max"
       :step="item.step"
       :needs-restart="item.needsRestart"
-      :force-close="openEditorKey !== null && openEditorKey !== item.key"
+      :force-close="activeKey !== null && activeKey !== item.key"
       @update:model-value="(v: any) => handleUpdate(item, v)"
       @click="handleClick(item)"
       @edit-toggle="(open: boolean) => handleEditToggle(item.key, open)"
+      @desc-toggle="(open: boolean) => handleDescToggle(item.key, open)"
       @discard="handleDiscard"
     />
     <!-- Password change dialog -->
@@ -37,7 +38,7 @@ import { useAgents } from '@/composables/useAgents'
 import { useToast } from '@/composables/useToast'
 import { useAppMode } from '@/composables/useAppMode'
 import { useGlobalEvents } from '@/composables/useGlobalEvents'
-import { categoryItems, type ItemSpec } from './settingsFieldMap'
+import { categoryItems, type ItemSpec, type DependsOn } from './settingsFieldMap'
 
 const props = defineProps<{
   categoryId: string
@@ -50,12 +51,12 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const toast = useToast()
-const { localConfig, serverConfig, setLocalConfig, getServerValueWithDefault, setServerValue, patchAgentPref } = useSettingsConfig()
-const { agents, loadAgents, getAgentModels } = useAgents()
+const { localConfig, serverConfig, setLocalConfig, getServerValueWithDefault, setServerValue } = useSettingsConfig()
+const { agents, loadAgents } = useAgents()
 const { isAppMode } = useAppMode()
 const { pushRegistered } = useGlobalEvents()
 
-const openEditorKey = ref<string | null>(null)
+const activeKey = ref<string | null>(null)
 const showPasswordDialog = ref(false)
 
 // Load agents when chat category is shown (for default_agent options)
@@ -68,11 +69,16 @@ function resolveConfigValue(key: string): any {
   return getServerValueWithDefault(key)
 }
 
+function isSingleDependsOnMet(dep: DependsOn): boolean {
+  const currentValue = resolveConfigValue(dep.key)
+  if ('value' in dep) return currentValue === dep.value
+  return dep.values!.includes(currentValue)
+}
+
 function isDependsOnMet(dependsOn: ItemSpec['dependsOn']): boolean {
   if (!dependsOn) return true
-  const currentValue = resolveConfigValue(dependsOn.key)
-  if ('value' in dependsOn) return currentValue === dependsOn.value
-  return dependsOn.values!.includes(currentValue)
+  if (Array.isArray(dependsOn)) return dependsOn.every(isSingleDependsOnMet)
+  return isSingleDependsOnMet(dependsOn)
 }
 
 // categoryItems is imported from the shared settingsFieldMap module
@@ -124,7 +130,7 @@ const items = computed(() => {
       ...item,
       label: item.label || t(item.labelKey),
       description: item.descriptionKey ? t(item.descriptionKey) : '',
-      options: resolvedOptions?.map(opt => ({
+      options: resolvedOptions?.map((opt: any) => ({
         ...opt,
         label: opt.label || resolveOptionLabel(item.key, opt),
       })),
@@ -198,9 +204,6 @@ async function handleUpdate(item: any, value: any) {
 }
 
 function handleClick(item: any) {
-  if (item.key === 'restart') {
-    emit('restartNeeded', [])
-  }
   if (item.key === 'reconfigureServer') {
     try {
       ;(window as any).AndroidNative?.showServerDialog?.()
@@ -221,9 +224,17 @@ function handlePasswordChanged(needsRestart: boolean) {
 
 function handleEditToggle(key: string, open: boolean) {
   if (open) {
-    openEditorKey.value = key
-  } else if (openEditorKey.value === key) {
-    openEditorKey.value = null
+    activeKey.value = key
+  } else if (activeKey.value === key) {
+    activeKey.value = null
+  }
+}
+
+function handleDescToggle(key: string, open: boolean) {
+  if (open) {
+    activeKey.value = key
+  } else if (activeKey.value === key) {
+    activeKey.value = null
   }
 }
 

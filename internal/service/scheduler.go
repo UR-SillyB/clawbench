@@ -533,7 +533,7 @@ func emitTaskEvent(taskID, status, executionID, sessionID, projectPath, taskName
 		}
 	}
 	mgr.BroadcastEvent(ws.ServerMessage{
-		Type:  "event",
+		Type:  ws.MessageTypeEvent,
 		ID:    ws.GenerateEventID(),
 		Event: "task_update",
 		Data:  data,
@@ -582,6 +582,17 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 		slog.String("session_id", sessionID),
 		slog.String("name", task.Name),
 	)
+
+	// ACP scheduled tasks have no user present to approve permission requests.
+	// Enable auto-approve so the ACP client automatically selects the first
+	// allow option, preventing indefinite blocking on permission dialogs.
+	if agent.Transport == "acp-stdio" {
+		if err := UpdateSessionAutoApprove(sessionID, true); err != nil {
+			slog.Error("failed to enable auto-approve for scheduled ACP session",
+				slog.String("session_id", sessionID),
+				slog.String("err", err.Error()))
+		}
+	}
 
 	// Record execution linked to the session
 	executionID, err := AddTaskExecution(task.ID, sessionID, triggerType)

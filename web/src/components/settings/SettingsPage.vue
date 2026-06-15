@@ -1,10 +1,17 @@
 <template>
   <div class="settings-page">
-    <header v-if="navStack.length > 0" class="settings-page__header">
-      <button class="settings-page__back" @click="popNav">
-        <ChevronLeft :size="22" />
-      </button>
-      <span class="settings-page__title">{{ currentCategoryTitle }}</span>
+    <header class="settings-page__header">
+      <template v-if="navStack.length > 0">
+        <button class="settings-page__back" @click="popNav">
+          <ChevronLeft :size="22" />
+        </button>
+        <span class="settings-page__title">{{ currentCategoryTitle }}</span>
+      </template>
+      <template v-else>
+        <Settings :size="20" class="settings-page__header-icon" />
+        <span class="settings-page__title">{{ t('nav.settings') }}</span>
+        <span v-if="serverVersion" class="settings-page__version">v{{ serverVersion }}</span>
+      </template>
     </header>
     <div class="settings-page__body">
       <SettingsIndex v-if="navStack.length === 0" @navigate="pushNav" />
@@ -40,11 +47,12 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { RefreshCw, ChevronLeft } from 'lucide-vue-next'
+import { RefreshCw, ChevronLeft, Settings } from 'lucide-vue-next'
 import SettingsIndex from './SettingsIndex.vue'
 import SettingsCategory from './SettingsCategory.vue'
 import SettingsRestartDialog from './SettingsRestartDialog.vue'
 import { useSettingsNavigation } from '@/composables/useSettingsNavigation'
+import { useSettingsConfig } from '@/composables/useSettingsConfig'
 import { useFeatureBackHandler } from '@/composables/useEdgeSwipeBack'
 
 const props = defineProps<{
@@ -59,6 +67,8 @@ const {
   handleRestartNeeded, handleRestart,
 } = useSettingsNavigation()
 
+const { serverConfig } = useSettingsConfig()
+
 // Register back handler for settings drill-down navigation
 useFeatureBackHandler(
   'settings',
@@ -69,6 +79,8 @@ useFeatureBackHandler(
 const currentCategoryTitle = computed(() => {
   return currentCategory.value ? t(`settings.categories.${currentCategory.value}`) : ''
 })
+
+const serverVersion = computed(() => serverConfig.value?.version ?? '')
 
 // Reset navigation when tab becomes active
 watch(() => props.active, (val) => {
@@ -91,11 +103,11 @@ watch(() => props.active, (val) => {
   display: flex;
   align-items: center;
   height: 44px;
-  padding: 0 4px;
+  padding: 0 4px 0 12px;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
   background: var(--bg-primary);
-  gap: 4px;
+  gap: 8px;
 }
 
 .settings-page__back {
@@ -130,6 +142,22 @@ watch(() => props.active, (val) => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.settings-page__header-icon {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.settings-page__version {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .settings-page__body {

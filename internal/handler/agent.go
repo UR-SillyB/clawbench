@@ -216,7 +216,7 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 //
 // Refresh strategy (in priority order):
 // 1. CLI model discovery via BackendSpec (e.g., pi --list-models)
-// 2. Fallback: re-read models from ProviderSpec.KnownModels (embedded provider_models.json)
+// 2. Fallback: re-read models from ProviderSpec.KnownModels (runtime provider_models.json)
 //
 //nolint:gocognit,gocyclo // refresh logic has multiple discovery paths, each with error handling
 func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {

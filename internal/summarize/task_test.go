@@ -229,3 +229,86 @@ func TestExtractTextFromBlocks_EmptyTextSkipped(t *testing.T) {
 	result := ExtractTextFromBlocks(blocks)
 	assert.Equal(t, "Content\n\nMore", result)
 }
+
+// --- ExtractLastAnswerFromBlocks ---
+
+func TestExtractLastAnswerFromBlocks_TextAfterToolUse(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "text", Text: "Let me check."},
+		{Type: "tool_use", Name: "Bash", ID: "1"},
+		{Type: "text", Text: "Here is the answer."},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "Here is the answer.", result)
+}
+
+func TestExtractLastAnswerFromBlocks_MultipleToolUse(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "text", Text: "Searching..."},
+		{Type: "tool_use", Name: "Grep", ID: "1"},
+		{Type: "text", Text: "Still looking..."},
+		{Type: "tool_use", Name: "Read", ID: "2"},
+		{Type: "text", Text: "Final answer here."},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "Final answer here.", result)
+}
+
+func TestExtractLastAnswerFromBlocks_NoToolUse(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "text", Text: "Short intro."},
+		{Type: "text", Text: "This is a much longer and more substantive answer that contains the actual content."},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "This is a much longer and more substantive answer that contains the actual content.", result) // falls back to longest text block
+}
+
+func TestExtractLastAnswerFromBlocks_NoTextAfterToolUse(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "text", Text: "Let me check."},
+		{Type: "tool_use", Name: "Bash", ID: "1"},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "Let me check.", result) // falls back to longest (only) text block
+}
+
+func TestExtractLastAnswerFromBlocks_OnlyToolUse(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "tool_use", Name: "Bash", ID: "1"},
+		{Type: "tool_use", Name: "Read", ID: "2"},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "", result)
+}
+
+func TestExtractLastAnswerFromBlocks_Empty(t *testing.T) {
+	result := ExtractLastAnswerFromBlocks([]model.ContentBlock{})
+	assert.Equal(t, "", result)
+}
+
+func TestExtractLastAnswerFromBlocks_SkipsThinking(t *testing.T) {
+	blocks := []model.ContentBlock{
+		{Type: "tool_use", Name: "Bash", ID: "1"},
+		{Type: "thinking", Text: "Let me think..."},
+		{Type: "text", Text: "The result is 42."},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, "The result is 42.", result)
+}
+
+// Simulates the message 11578 pattern: intro → many tool_use/text pairs →
+// substantive answer → final AskUserQuestion with no trailing text.
+func TestExtractLastAnswerFromBlocks_LongAnswerBeforeTerminalToolUse(t *testing.T) {
+	longAnswer := "Now I have the complete picture. Here is the full analysis of the terminal reconnection bug. When the user switches away from the terminal view and comes back, the current directory path gets output again on top of what was already there. This is caused by the PTY sending a fresh prompt on reconnect."
+	blocks := []model.ContentBlock{
+		{Type: "text", Text: "我来查看一下终端重连逻辑，以理解这个问题。"},
+		{Type: "tool_use", Name: "Grep", ID: "1"},
+		{Type: "tool_use", Name: "Read", ID: "2"},
+		{Type: "text", Text: "Now let me check the handler."},
+		{Type: "tool_use", Name: "Read", ID: "3"},
+		{Type: "text", Text: longAnswer},
+		{Type: "tool_use", Name: "AskUserQuestion", ID: "4"},
+	}
+	result := ExtractLastAnswerFromBlocks(blocks)
+	assert.Equal(t, longAnswer, result) // picks the longest text block, not the intro
+}

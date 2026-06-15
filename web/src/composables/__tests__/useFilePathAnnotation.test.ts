@@ -238,6 +238,26 @@ describe('fileOpenButtonHtml', () => {
     const html = fileOpenButtonHtml('test.ts')
     expect(html).toContain(FILE_OPEN_ICON_SVG)
   })
+
+  it('includes data-line-start when lineStart is provided', () => {
+    const html = fileOpenButtonHtml('src/main.go', 42)
+    expect(html).toContain('data-file-path="src/main.go"')
+    expect(html).toContain('data-line-start="42"')
+    expect(html).not.toContain('data-line-end')
+  })
+
+  it('includes data-line-start and data-line-end when both are provided', () => {
+    const html = fileOpenButtonHtml('src/main.go', 70, 81)
+    expect(html).toContain('data-file-path="src/main.go"')
+    expect(html).toContain('data-line-start="70"')
+    expect(html).toContain('data-line-end="81"')
+  })
+
+  it('does not include line attributes when lineStart is not provided', () => {
+    const html = fileOpenButtonHtml('src/main.go')
+    expect(html).not.toContain('data-line-start')
+    expect(html).not.toContain('data-line-end')
+  })
 })
 
 // --- annotateFilePaths ---
@@ -857,6 +877,79 @@ describe('annotateFilePaths', () => {
         const input = '<p>Navigate to ~/projects/clawbench</p>'
         const result = annotateFilePaths(input, { projectRoot, homeDir })
         expect(result.detectedPaths).toHaveLength(0)
+      })
+    })
+
+    describe('line suffix support', () => {
+      it('annotates path with single line suffix :42', () => {
+        const input = '<p>see internal/ai/acp_backend.go:70</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.detectedPaths).toContain('internal/ai/acp_backend.go')
+        expect(result.html).toContain('data-line-start="70"')
+        expect(result.html).toContain('chat-file-path')
+        expect(result.html).toContain('internal/ai/acp_backend.go:70')
+      })
+
+      it('annotates path with line range suffix :70-81', () => {
+        const input = '<p>see internal/ai/acp_backend.go:70-81</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.detectedPaths).toContain('internal/ai/acp_backend.go')
+        expect(result.html).toContain('data-line-start="70"')
+        expect(result.html).toContain('data-line-end="81"')
+        expect(result.html).toContain('chat-file-path')
+        expect(result.html).toContain('internal/ai/acp_backend.go:70-81')
+      })
+
+      it('annotates path without line suffix (backward compatible)', () => {
+        const input = '<p>see src/main.go</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.detectedPaths).toContain('src/main.go')
+        expect(result.html).toContain('chat-file-path')
+        expect(result.html).not.toContain('data-line-start')
+        expect(result.html).not.toContain('data-line-end')
+      })
+
+      it('annotates <code> tag with line suffix', () => {
+        const input = '<p>check <code>internal/ai/acp_backend.go:42</code> for details</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.detectedPaths).toContain('internal/ai/acp_backend.go')
+        expect(result.html).toContain('data-line-start="42"')
+        expect(result.html).toContain('chat-file-path')
+      })
+
+      it('button includes line attributes for path with line suffix', () => {
+        const input = '<p>see internal/ai/acp_backend.go:70-81</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.html).toContain('chat-file-open-btn')
+        // Button should have line attributes too
+        const btnMatch = result.html.match(/chat-file-open-btn[^>]*data-line-start="70"/)
+        expect(btnMatch).not.toBeNull()
+        const btnMatch2 = result.html.match(/chat-file-open-btn[^>]*data-line-end="81"/)
+        expect(btnMatch2).not.toBeNull()
+      })
+
+      it('span includes line attributes for path with line suffix', () => {
+        const input = '<p>see internal/ai/acp_backend.go:70-81</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        const spanMatch = result.html.match(/chat-file-path[^>]*data-line-start="70"/)
+        expect(spanMatch).not.toBeNull()
+        const spanMatch2 = result.html.match(/chat-file-path[^>]*data-line-end="81"/)
+        expect(spanMatch2).not.toBeNull()
+      })
+
+      it('resolved path does not include line suffix', () => {
+        const input = '<p>see internal/ai/acp_backend.go:70-81</p>'
+        const result = annotateFilePaths(input, { projectRoot })
+        // The resolved path in detectedPaths should NOT include the line suffix
+        expect(result.detectedPaths).toContain('internal/ai/acp_backend.go')
+        expect(result.detectedPaths).not.toContain('internal/ai/acp_backend.go:70-81')
+      })
+
+      it('annotates absolute path with line suffix', () => {
+        const input = `See ${projectRoot}/internal/handler/chat.go:10 for details`
+        const result = annotateFilePaths(input, { projectRoot })
+        expect(result.detectedPaths).toContain('internal/handler/chat.go')
+        expect(result.html).toContain('data-line-start="10"')
       })
     })
   })

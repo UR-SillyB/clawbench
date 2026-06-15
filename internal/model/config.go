@@ -84,7 +84,7 @@ type Config struct {
 // TerminalConfig holds configuration for the interactive web terminal.
 type TerminalConfig struct {
 	Enabled      bool   `yaml:"enabled"`        // Enable interactive terminal (default: true)
-	IdleTimeout  string `yaml:"idle_timeout"`   // Close PTY after no WS connections for this duration (default: "10m")
+	IdleTimeout  string `yaml:"idle_timeout"`   // Close PTY after no WS connections for this duration (default: "0" = never timeout)
 	BufferLines  int    `yaml:"buffer_lines"`   // Replay buffer line count (default: 2000)
 	MaxLineBytes int    `yaml:"max_line_bytes"` // Per-line byte cap to prevent memory bloat (default: 65536 = 64KB)
 	MaxBufferMB  int    `yaml:"max_buffer_mb"`  // Total buffer memory cap in MB (default: 4)
@@ -93,7 +93,7 @@ type TerminalConfig struct {
 
 // SummarizeConfig holds unified summarization configuration shared by TTS and scheduled tasks.
 type SummarizeConfig struct {
-	Backend     string    `yaml:"backend"`      // Summarization backend: "simple" (default), "api", "claude", "codebuddy", etc.
+	Backend     string    `yaml:"backend"`      // Summarization backend: "" (disabled), "simple" (extract final answer), "api", "claude", "codebuddy", etc.
 	Model       string    `yaml:"model"`        // Model for summarization (empty = backend default)
 	ChatSummary *bool     `yaml:"chat_summary"` // Enable auto-summarization for chat messages (default: true, nil = true)
 	API         APIConfig `yaml:"api"`          // API-based summarization (used when backend is "api")

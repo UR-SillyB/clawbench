@@ -266,14 +266,15 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 		sub.bufferEvent(msg)
 	}
 
-	// Send JPush only for terminal events (completed/cancelled/failed).
+	// Send JPush only for terminal events (completed/cancelled/failed)
+	// and permission_pending (needs immediate user action).
 	// Non-terminal events (running, etc.) are delivered via WS or buffered for replay,
 	// but should never trigger a push notification — the user doesn't need to be
 	// interrupted just because a session started running.
 	shouldPush := false
 	switch d := msg.Data.(type) {
 	case *SessionUpdateData:
-		shouldPush = d.Status == "completed" || d.Status == "cancelled"
+		shouldPush = d.Status == "completed" || d.Status == "cancelled" || d.Status == StatusPermissionPending
 	case *TaskUpdateData:
 		shouldPush = d.Status == "completed" || d.Status == "failed" || d.Status == "cancelled"
 	}
@@ -294,6 +295,9 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 			extras["session_id"] = d.SessionID
 			if d.ProjectPath != "" {
 				extras["project_path"] = d.ProjectPath
+			}
+			if d.Status == StatusPermissionPending {
+				extras["event_type"] = StatusPermissionPending
 			}
 		case *TaskUpdateData:
 			extras["task_id"] = d.TaskID
@@ -323,11 +327,20 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 		case *SessionUpdateData:
 			sessionTitle = d.SessionTitle
 			responsePreview = d.ResponsePreview
+			// Permission pending: override title/alert to show approval request
+			if d.Status == StatusPermissionPending {
+				title = i18n.T(loc, "PushPermissionPending")
+				if d.ToolName != "" {
+					alert = d.ToolName
+				} else {
+					alert = i18n.T(loc, "PushPermissionPending")
+				}
+			}
 		case *TaskUpdateData:
 			sessionTitle = d.SessionTitle
 			responsePreview = d.ResponsePreview
 		}
-		if sessionTitle != "" {
+		if sessionTitle != "" && title != i18n.T(loc, "PushPermissionPending") {
 			title = "Done:" + sessionTitle
 		}
 		if responsePreview != "" {

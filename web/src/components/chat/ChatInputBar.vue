@@ -7,7 +7,7 @@
           <MessageSquare :size="12" />
           {{ t('chat.actions.session') }}
         </span>
-        <button class="chat-action-btn" :class="{ 'has-unread': chatUnread, 'has-running': chatRunning }"
+        <button class="chat-action-btn" :class="{ 'has-unread': chatUnreadCount > 0, 'has-running': chatRunning }"
           @click="$emit('open-session-tab', 'sessions')"
           :title="t('chat.actions.session')">
           <List :size="14" />
@@ -194,7 +194,7 @@
       <span class="session-info-model" @click.stop="openSettingsModal('model')"><Cpu :size="11" />{{ currentModelName }}</span>
       <template v-if="showModeInfo">
         <span class="session-info-divider"></span>
-        <span class="session-info-mode" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
+        <span class="session-info-mode" :class="{ 'session-info-mode-auto': autoApprove }" @click.stop="openSettingsModal('mode')"><Compass :size="11" />{{ currentModeName }}</span>
       </template>
       <template v-if="showThinkingInfo">
         <span class="session-info-divider"></span>
@@ -230,7 +230,7 @@ import { useAgents, agentCanResume } from '@/composables/useAgents'
 import AcpSessionDrawer from '@/components/chat/AcpSessionDrawer.vue'
 
 const { t } = useI18n()
-const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport } = useSessionIdentity()
+const { availableCommands, availableModes, availableThinkingEfforts, currentThinkingEffortName, currentTransport: sessionTransport, autoApprove } = useSessionIdentity()
 const { supportsDualTransport, hasThinkingEffortLevels } = useAgents()
 
 // isACP: true when the current agent supports ACP (has acpCommand).
@@ -311,7 +311,7 @@ const props = defineProps({
   messages: Array,
   autoSpeechEnabled: Boolean,
   currentSessionId: String,
-  chatUnread: Boolean,
+  chatUnreadCount: Number,
   chatRunning: Boolean,
   currentModelId: String,
   currentModelName: String,
@@ -824,11 +824,22 @@ defineExpose({
 }
 
 .session-info-model:active,
-.session-info-mode:active,
 .session-info-thinking:active,
 .session-info-transport:active,
 .session-info-resume:active {
   color: var(--accent-color, #0066cc);
+}
+
+.session-info-mode:active {
+  color: var(--accent-color, #0066cc);
+}
+
+.session-info-mode-auto {
+  color: #4caf50;
+}
+
+.session-info-mode-auto:active {
+  color: #388e3c;
 }
 
 .session-info-model svg,
