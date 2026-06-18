@@ -197,7 +197,6 @@ const i18n = createI18n({
         sortClickToClear: '点击清除',
         hideHiddenFiles: '隐藏',
         showHiddenFiles: '显示隐藏',
-        syncToCurrentDir: '同步',
         uploadHere: '上传文件到当前目录',
         viewGrid: '网格视图',
         viewList: '列表视图',
@@ -255,6 +254,7 @@ vi.mock('@/utils/fileType.ts', () => ({
 
 vi.mock('@/utils/path.ts', () => ({
   dirName: (p: string) => p.split('/').slice(0, -1).join('/') || '',
+  splitPath: (p: string) => p.split('/').filter(Boolean),
 }))
 
 // Import after mocks
@@ -416,13 +416,13 @@ describe('FileManagerContent — more menu and upload', () => {
     expect(wrapper.find('.toolbar-dropdown-right').exists()).toBe(true)
   })
 
-  it('more menu contains upload, sync, and view toggle items', async () => {
+  it('more menu contains upload and view toggle items', async () => {
     const wrapper = mountComponent()
     const moreButton = wrapper.findAll('.toolbar-btn').find(b => b.attributes('title') === '更多')
     await moreButton!.trigger('click')
 
     const items = wrapper.findAll('.toolbar-dropdown-item')
-    expect(items.length).toBeGreaterThanOrEqual(3)
+    expect(items.length).toBeGreaterThanOrEqual(2)
   })
 
   it('clicking upload item triggers file input click', async () => {

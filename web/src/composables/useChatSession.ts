@@ -12,31 +12,48 @@ import { warmWorktreeCache } from '@/composables/useWorktreeAnnotation.ts'
 
 // Module-level one-time session list load (replaces continuous polling)
 // Accessible from App.vue without instantiating useChatSession
-export async function loadSessionsOnce() {
-  try {
-    const identity = useSessionIdentity()
-    const res = await fetch('/api/ai/sessions')
-    if (res.ok) {
-      const data = await res.json()
-      const sessions = data.sessions || []
-      const hasRunning = sessions.some((s: any) => s.running)
-      const unreadCount = sessions.filter((s: any) =>
-        (s.unreadCount > 0 || s.pendingApproval) && s.id !== identity.currentSessionId.value
-      ).length
-      store.state.chatRunning = hasRunning
-      store.state.chatUnreadCount = unreadCount
-      // Update session count for header indicator
-      if (typeof data.totalCount === 'number') {
-        store.state.sessionCount = data.totalCount
+let _sessionsLoadPromise: Promise<void> | null = null
+
+export async function loadSessionsOnce(): Promise<void> {
+  // Dedup: if a load is already in-flight, reuse its promise instead of
+  // firing a duplicate request (e.g. App.vue + ChatPanelContent.vue
+  // mounting in quick succession).
+  if (_sessionsLoadPromise) return _sessionsLoadPromise
+  _sessionsLoadPromise = (async () => {
+    try {
+      const identity = useSessionIdentity()
+      const res = await fetch('/api/ai/sessions')
+      if (res.ok) {
+        const data = await res.json()
+        const sessions = data.sessions || []
+        const hasRunning = sessions.some((s: any) => s.running)
+        const unreadCount = sessions.filter((s: any) =>
+          (s.unreadCount > 0 || s.pendingApproval) && s.id !== identity.currentSessionId.value
+        ).length
+        store.state.chatRunning = hasRunning
+        store.state.chatUnreadCount = unreadCount
+        // Update session count for header indicator
+        if (typeof data.totalCount === 'number') {
+          store.state.sessionCount = data.totalCount
+        }
+        // Populate runningSessions set from API data
+        identity.runningSessions.value.clear()
+        for (const s of sessions) {
+          if (s.running) identity.runningSessions.value.add(s.id)
+        }
+        identity.runningSessionsVersion.value++
       }
-      // Populate runningSessions set from API data
-      identity.runningSessions.value.clear()
-      for (const s of sessions) {
-        if (s.running) identity.runningSessions.value.add(s.id)
-      }
-      identity.runningSessionsVersion.value++
+    } catch { /* ignore */ }
+    finally {
+      _sessionsLoadPromise = null
     }
-  } catch { /* ignore */ }
+  })()
+  return _sessionsLoadPromise
+}
+
+/** Reset internal dedup state — called during SPA hot project switch. */
+export function resetChatSessionState(): void {
+  _sessionsLoadPromise = null
 }
 
 export interface UseChatSessionOptions {
@@ -228,29 +245,28 @@ export function useChatSession(options: UseChatSessionOptions) {
     const mySeq = ++loadHistorySeq
     if (showOverlay) switching.value = true
     try {
-      // Load agents first so we can resolve agent names
-      if (agents.value.length === 0) await loadAgents()
       // Warm worktree cache so annotateWorktreePaths has data when rendering messages
       warmWorktreeCache(store.state.projectRoot)
       // Use max of initialMessages and current loaded count to avoid truncating lazy-loaded messages
       const limit = Math.max(store.state.chatInitialMessages, messages.value.length)
-      // CRITICAL: When currentSessionId is empty, do NOT call the backend without
-      // session_id. The backend falls back to GetLatestSessionID (ORDER BY updated_at
-      // DESC) which can return a DIFFERENT session than what the user was viewing.
-      // Instead, use initSessionFromAPI to recover the session identity first, then
-      // load history with an explicit session_id.
+      // CRITICAL: When currentSessionId is empty, use the cookie-aware recovery
+      // endpoint WITHOUT session_id — but with the FULL limit so we get the session
+      // identity AND messages in a single request (no double-fetch).
+      // The backend falls back to GetLatestSessionID (ORDER BY updated_at DESC) which
+      // returns the cookie-remembered session for this project.
       if (!currentSessionId.value) {
-        // Recover session from backend — this sets currentSessionId from the
-        // cookie-aware /api/ai/chat endpoint, but using limit=1 to avoid loading
-        // all messages twice (the full load happens below after recovery).
+        // Recover session from backend — use full limit to get both identity and
+        // messages in one request, avoiding the previous double-fetch pattern.
         // AbortController timeout is a safety net only; the backend itself has
         // ACP RPC timeouts (60s) so 60s gives ample room even for slow remote
         // connections. On abort, we catch and bail gracefully (no toast error).
         const recoverCtrl = new AbortController()
         const recoverTimer = setTimeout(() => recoverCtrl.abort(), 60000)
         let recoverResp: Response
+        // Load agents in parallel with recovery fetch
+        const agentsPromise = agents.value.length === 0 ? loadAgents() : Promise.resolve()
         try {
-          recoverResp = await fetch(`/api/ai/chat?limit=1`, { signal: recoverCtrl.signal })
+          recoverResp = await fetch(`/api/ai/chat?limit=${limit}`, { signal: recoverCtrl.signal })
         } catch (e) {
           clearTimeout(recoverTimer)
           if (recoverCtrl.signal.aborted) {
@@ -260,9 +276,11 @@ export function useChatSession(options: UseChatSessionOptions) {
           throw e
         }
         clearTimeout(recoverTimer)
+        await agentsPromise
         if (loadHistorySeq !== mySeq) { return }
         if (recoverResp.ok) {
           const recoverData = await recoverResp.json()
+          if (loadHistorySeq !== mySeq) { return }
           if (recoverData.sessionId) {
             currentSessionId.value = recoverData.sessionId
             currentSessionTitle.value = recoverData.sessionTitle || ''
@@ -275,19 +293,90 @@ export function useChatSession(options: UseChatSessionOptions) {
             if (recoverData.autoApprove !== undefined) {
               autoApprove.value = recoverData.autoApprove
             }
+            // If the recovery response already contains messages, use them directly
+            // instead of making a second fetch below. This eliminates the double-fetch
+            // that previously used limit=1 then re-fetched with full limit.
+            const recoverMsgs = recoverData.messages || []
+            if (recoverMsgs.length > 0) {
+              // Change detection
+              const newSnapshot = buildMessageSnapshot(recoverMsgs)
+              if (skipIfUnchanged && newSnapshot === lastMessageSnapshot && !recoverData.running) {
+                return
+              }
+              lastMessageSnapshot = newSnapshot
+              const prevCount = messages.value.length
+              const newCount = recoverMsgs.length
+              const sameCore = prevCount === newCount && prevCount > 0 && recoverMsgs.slice(0, -1).every((m, i) => m.id === messages.value[i]?.id)
+              if (!sameCore) {
+                expandedTools.value = {}
+              }
+              Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
+              Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
+              const localPending = messages.value.filter((m: any) => m.pending)
+              const dbIds = new Set(recoverMsgs.filter((m: any) => m.id).map((m: any) => m.id))
+              messages.value = parseMessages(recoverMsgs, onParseAssistantContent, messages.value)
+              for (const pm of localPending) {
+                const alreadyInDB = messages.value.some(
+                  (m: any) => m.role === 'user' && m.content === pm.content && m.id
+                )
+                if (!alreadyInDB) {
+                  messages.value.push(pm)
+                }
+              }
+              totalMessages.value = recoverData.total || messages.value.length
+              // Sync remaining session metadata from recovery response
+              if (recoverData.modeState && recoverData.modeState?.availableModes?.length > 0) {
+                updateAvailableModes(recoverData.modeState.availableModes)
+              }
+              if (recoverData.thinkingEffortState && recoverData.thinkingEffortState.availableLevels?.length > 0) {
+                updateAvailableThinkingEfforts(recoverData.thinkingEffortState.availableLevels)
+              }
+              if (Array.isArray(recoverData.commands) && recoverData.commands.length > 0 && availableCommands.value.length === 0) {
+                updateCommandState(recoverData.commands)
+              }
+              if (recoverData.planState && recoverData.planState.entries?.length > 0) {
+                updatePlanEntries(recoverData.planState.entries)
+              }
+              onExtractScheduledTasks(messages.value)
+              onRenderUpdate(forceScrollBottom)
+              onScrollBottom(forceScrollBottom)
+              if (recoverData.running) {
+                loading.value = true
+                stopMsgCountPolling()
+                onConnectStream(currentSessionId.value)
+              } else {
+                loading.value = false
+                startMsgCountPolling()
+              }
+              // Skip the second fetch — we already have the data
+              return
+            }
           }
+        } else {
+          // Recovery request failed (e.g. 403 NoProjectSelected when
+          // clawbench_project cookie is missing). Don't silently bail —
+          // log the error so it's visible in devtools. If initSessionFromAPI
+          // sets currentSessionId later, the normal path below will fetch messages.
+          console.warn('loadHistory recovery failed:', recoverResp.status, recoverResp.statusText)
         }
         // If recovery still yields no session, bail — createSession will handle it
         if (!currentSessionId.value) {
           return
         }
       }
+      // Load agents in parallel with the main fetch when not in recovery path
+      const agentsPromise = agents.value.length === 0 ? loadAgents() : Promise.resolve()
       const url = `/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=${limit}`
       const fetchCtrl = new AbortController()
       const fetchTimer = setTimeout(() => fetchCtrl.abort(), 60000)
       let resp: Response
       try {
-        resp = await fetch(url, { signal: fetchCtrl.signal })
+        // Fire agents and chat fetch in parallel
+        const [, fetchResp] = await Promise.all([
+          agentsPromise,
+          fetch(url, { signal: fetchCtrl.signal }),
+        ])
+        resp = fetchResp
       } catch (e) {
         clearTimeout(fetchTimer)
         if (fetchCtrl.signal.aborted) {
@@ -382,7 +471,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (data.thinkingEffortState && data.thinkingEffortState.availableLevels?.length > 0) {
         updateAvailableThinkingEfforts(data.thinkingEffortState.availableLevels)
       } else if (data.agentId) {
-        // Fallback: agent config (e.g. OpenCode/Gemini ACP don't expose thought_level)
+        // Fallback: agent config (e.g. OpenCode/Kimi ACP don't expose thought_level)
         const agentLevels = getAgentThinkingEffortLevels(data.agentId)
         if (agentLevels.length > 0) {
           updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
@@ -509,10 +598,15 @@ export function useChatSession(options: UseChatSessionOptions) {
     // Clear plan progress from previous session — will be repopulated by SSE plan_update
     clearPlanState()
     try {
-      // Load agents first so we can resolve agent names
-      if (agents.value.length === 0) await loadAgents()
+      // Load agents and fetch chat data in parallel — agents are only needed
+      // for model name resolution which can happen after the initial render.
       const limit = store.state.chatInitialMessages
-      const resp = await fetch(`/api/ai/chat?session_id=${encodeURIComponent(sessionId)}&limit=${limit}`)
+      const chatUrl = `/api/ai/chat?session_id=${encodeURIComponent(sessionId)}&limit=${limit}`
+      const agentsPromise = agents.value.length === 0 ? loadAgents() : Promise.resolve()
+      const [_, resp] = await Promise.all([
+        agentsPromise,
+        fetch(chatUrl),
+      ])
       if (!resp.ok) {
         toast.show(gt('chat.session.switchFailed'), { icon: '⚠️', type: 'error' })
         return
@@ -533,6 +627,10 @@ export function useChatSession(options: UseChatSessionOptions) {
       syncThinkingEffortFromData(data.thinkingEffortState?.currentId || '')
       syncModeFromData(data.modeState?.currentModeId || '', data.modeState?.availableModes)
       syncTransportFromData(data.transport)
+      // Restore autoApprove from server state (per-session, not global)
+      if (data.autoApprove !== undefined) {
+        autoApprove.value = data.autoApprove
+      }
       // Populate ACP mode available modes from REST response.
       if (data.modeState && data.modeState?.availableModes?.length > 0) {
         updateAvailableModes(data.modeState.availableModes)
@@ -565,7 +663,8 @@ export function useChatSession(options: UseChatSessionOptions) {
       // marked this session as read (UpdateLastRead), so the session list will
       // reflect the correct unread state. Without this, chatUnread stays true
       // when the user is already on the chat tab (switchTab early-returns).
-      await loadSessionsOnce()
+      // Fire-and-forget: don't block the switching overlay on this secondary call.
+      loadSessionsOnce()
     } catch (err) {
       // If another switch happened, don't touch state
       if (switchSessionSeq !== mySeq) return

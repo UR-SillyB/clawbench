@@ -1,0 +1,9 @@
+{
+  "_comment": "TEST FIXTURE — not used by any application code, only for verifying file path annotation",
+  "host": "localhost",
+  "port": 8080,
+  "database": {
+    "driver": "sqlite",
+    "path": "data/app.db"
+  }
+}

@@ -10,6 +10,8 @@
       :word-wrap="wordWrap"
       :show-line-numbers="showLineNumbers"
       :sticky-scroll="stickyScroll"
+      :overlay-open="fileNav.overlayOpen.value"
+      :overlay-can-go-back="fileNav.canGoBack.value"
       @delete="emit('delete', file.path)"
       @toggle-view="emit('toggleView')"
       @show-details="emit('showDetails')"
@@ -21,12 +23,14 @@
       @toggle-line-numbers="toggleLineNumbers"
       @toggle-sticky-scroll="toggleStickyScroll"
       @refresh="emit('refresh')"
+      @overlay-close="emit('overlayClose')"
+      @overlay-go-back="emit('overlayGoBack')"
     />
 
     <div class="file-viewer-content" ref="contentRef">
-      <!-- Loading -->
-      <div v-if="loading" class="loading">
-        <div class="spinner" />
+      <!-- Loading (suppressed when external loading mask is active to avoid double flash) -->
+      <div v-if="loading && !externalLoading" class="loading">
+        <div class="loading-spinner"></div>
       </div>
 
       <!-- Error -->
@@ -132,6 +136,7 @@
           :sticky-scroll="stickyScroll"
           :flash-ranges="flashRanges"
           :flash-type="flashType"
+          @open-file="emit('openFile', $event)"
         />
       </template>
 
@@ -146,6 +151,7 @@
           :sticky-scroll="stickyScroll"
           :flash-ranges="flashRanges"
           :flash-type="flashType"
+          @open-file="emit('openFile', $event)"
         />
       </div>
     </div>
@@ -168,6 +174,7 @@ import FileHeader from './FileHeader.vue'
 import { getFileType, formatFileSize } from '@/utils/fileType.ts'
 import { store } from '@/stores/app.ts'
 import { useAppMode } from '@/composables/useAppMode.ts'
+import { useFileNavStack } from '@/composables/useFileNavStack.ts'
 
 const { t } = useI18n()
 const { isAppMode } = useAppMode()
@@ -177,8 +184,11 @@ const props = defineProps({
     tocOpen: Boolean,
     searchOpen: Boolean,
     markdownViewMode: String,
+    externalLoading: Boolean,
 })
-const emit = defineEmits(['delete', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'toggleView', 'refresh'])
+const emit = defineEmits(['delete', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'toggleView', 'refresh', 'openFile', 'overlayClose', 'overlayGoBack'])
+
+const fileNav = useFileNavStack()
 
 const fileType = computed(() => props.file ? getFileType(props.file.name) : null)
 const rawFileLanguage = computed(() => getFileType(props.file?.name)?.lang || 'plaintext')
@@ -459,6 +469,19 @@ defineExpose({
     align-items: center;
     justify-content: center;
     padding: 40px;
+}
+
+.loading-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--accent-color);
+    border-radius: 50%;
+    animation: loading-spin 0.7s linear infinite;
+}
+
+@keyframes loading-spin {
+    to { transform: rotate(360deg); }
 }
 
 .error-bubble {

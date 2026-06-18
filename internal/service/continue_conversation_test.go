@@ -438,7 +438,11 @@ func helperCreateScheduledSessionWithDetails(t *testing.T, projectPath, backend,
 	return id
 }
 
-func TestContinueFromExecution_CopiesTaskExecutionSummary(t *testing.T) {
+func TestContinueFromExecution_CopiesChatMessageSummary(t *testing.T) {
+	// Since the scheduler now stores summaries as target_type='chat_message'
+	// (keyed by the assistant message ID), ContinueFromExecution simply copies
+	// these chat_message summaries from the source session to the new session,
+	// just like interactive chat sessions.
 	setupDB(t)
 	projectPath := "/test/project"
 
@@ -451,8 +455,12 @@ func TestContinueFromExecution_CopiesTaskExecutionSummary(t *testing.T) {
 	assert.NoError(t, err)
 	execID := helperCreateTaskExecution(t, taskID, sessionID, "completed")
 
-	// Add task_execution type summary (this is what scheduled sessions have)
-	_, err = service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('task_execution', ?, 'This is the task execution summary', CURRENT_TIMESTAMP)", execID)
+	// Add chat_message type summary on the source assistant message (this is
+	// what the scheduler now creates — same as interactive sessions)
+	var sourceAssistantID int64
+	err = service.DB.QueryRow("SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1", sessionID).Scan(&sourceAssistantID)
+	assert.NoError(t, err)
+	_, err = service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('chat_message', ?, 'Scheduled task summary', CURRENT_TIMESTAMP)", sourceAssistantID)
 	assert.NoError(t, err)
 
 	// Continue
@@ -461,7 +469,7 @@ func TestContinueFromExecution_CopiesTaskExecutionSummary(t *testing.T) {
 	assert.False(t, alreadyExists)
 	assert.NotEmpty(t, newSessionID)
 
-	// Verify: task_execution summary is copied as chat_message type to the last assistant message
+	// Verify: chat_message summary is copied to the corresponding new message
 	var lastAssistantID int64
 	err = service.DB.QueryRow("SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1", newSessionID).Scan(&lastAssistantID)
 	assert.NoError(t, err)
@@ -469,7 +477,7 @@ func TestContinueFromExecution_CopiesTaskExecutionSummary(t *testing.T) {
 	var copiedSummary string
 	err = service.DB.QueryRow("SELECT summary FROM summaries WHERE target_type = 'chat_message' AND target_id = ?", lastAssistantID).Scan(&copiedSummary)
 	assert.NoError(t, err)
-	assert.Equal(t, "This is the task execution summary", copiedSummary)
+	assert.Equal(t, "Scheduled task summary", copiedSummary)
 }
 
 // ========== restoreDeletedSession (tested via DB) ==========
@@ -833,103 +841,4 @@ func TestRestoreDeletedSession_DBError(t *testing.T) {
 		"some-session-id",
 	)
 	assert.Error(t, err, "should fail with closed DB")
-}
-
-// ========== ContinueFromExecution: task_execution summary not copied when assistant message already has chat_message summary ==========
-
-func TestContinueFromExecution_TaskExecutionSummaryNotCopiedWhenChatMessageSummaryExists(t *testing.T) {
-	setupDB(t)
-	projectPath := "/test/project"
-
-	// Create task + session + assistant message + execution
-	taskID := helperCreateScheduledTask(t, projectPath, "Summary Priority Test", "agent1")
-	sessionID := helperCreateScheduledSessionWithDetails(t, projectPath, "claude", "Summary Priority Test", "agent1", "", "")
-	_, err := service.DB.Exec("INSERT INTO chat_history (session_id, project_path, role, content, backend) VALUES (?, ?, 'user', 'hello', 'claude')", sessionID, projectPath)
-	assert.NoError(t, err)
-	asstResult, err := service.DB.Exec("INSERT INTO chat_history (session_id, project_path, role, content, backend) VALUES (?, ?, 'assistant', '{\"blocks\":[{\"type\":\"text\",\"text\":\"response\"}]}', 'claude')", sessionID, projectPath)
-	assert.NoError(t, err)
-	asstID, _ := asstResult.LastInsertId()
-	execID := helperCreateTaskExecution(t, taskID, sessionID, "completed")
-
-	// Add BOTH a chat_message summary and a task_execution summary
-	_, err = service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('chat_message', ?, 'chat-level summary', CURRENT_TIMESTAMP)", asstID)
-	assert.NoError(t, err)
-	_, err = service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('task_execution', ?, 'task-level summary', CURRENT_TIMESTAMP)", execID)
-	assert.NoError(t, err)
-
-	// Continue
-	newSessionID, alreadyExists, err := service.ContinueFromExecution(execID, projectPath)
-	assert.NoError(t, err)
-	assert.False(t, alreadyExists)
-	assert.NotEmpty(t, newSessionID)
-
-	// The new assistant message should have the chat_message summary (from step 10a), NOT the task_execution summary
-	var newAsstID int64
-	err = service.DB.QueryRow("SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1", newSessionID).Scan(&newAsstID)
-	assert.NoError(t, err)
-
-	summary, found := service.GetSummary("chat_message", newAsstID)
-	assert.True(t, found)
-	assert.Equal(t, "chat-level summary", summary, "chat_message summary from 10a should take priority over task_execution summary from 10b")
-}
-
-// ========== ContinueFromExecution: task_execution summary with empty string not copied ==========
-
-func TestContinueFromExecution_TaskExecutionSummaryEmptyNotCopied(t *testing.T) {
-	setupDB(t)
-	projectPath := "/test/project"
-
-	// Create task + session + assistant message + execution
-	taskID := helperCreateScheduledTask(t, projectPath, "Empty Summary Test", "agent1")
-	sessionID := helperCreateScheduledSessionWithDetails(t, projectPath, "claude", "Empty Summary Test", "agent1", "", "")
-	_, err := service.DB.Exec("INSERT INTO chat_history (session_id, project_path, role, content, backend) VALUES (?, ?, 'user', 'hello', 'claude')", sessionID, projectPath)
-	assert.NoError(t, err)
-	_, err = service.DB.Exec("INSERT INTO chat_history (session_id, project_path, role, content, backend) VALUES (?, ?, 'assistant', '{\"blocks\":[{\"type\":\"text\",\"text\":\"response\"}]}', 'claude')", sessionID, projectPath)
-	assert.NoError(t, err)
-	execID := helperCreateTaskExecution(t, taskID, sessionID, "completed")
-
-	// Add an empty task_execution summary — should NOT be copied
-	_, err = service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('task_execution', ?, '', CURRENT_TIMESTAMP)", execID)
-	assert.NoError(t, err)
-
-	// Continue
-	newSessionID, alreadyExists, err := service.ContinueFromExecution(execID, projectPath)
-	assert.NoError(t, err)
-	assert.False(t, alreadyExists)
-	assert.NotEmpty(t, newSessionID)
-
-	// The new assistant message should NOT have any chat_message summary
-	var newAsstID int64
-	err = service.DB.QueryRow("SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1", newSessionID).Scan(&newAsstID)
-	assert.NoError(t, err)
-
-	_, found := service.GetSummary("chat_message", newAsstID)
-	assert.False(t, found, "empty task_execution summary should not be copied")
-}
-
-// ========== ContinueFromExecution: task_execution summary with no assistant message ==========
-
-func TestContinueFromExecution_TaskExecutionSummaryNoAssistantMessage(t *testing.T) {
-	setupDB(t)
-	projectPath := "/test/project"
-
-	// Create task + session with NO messages + execution
-	taskID := helperCreateScheduledTask(t, projectPath, "No Asst Test", "agent1")
-	sessionID := helperCreateScheduledSessionWithDetails(t, projectPath, "claude", "No Asst Test", "agent1", "", "")
-	execID := helperCreateTaskExecution(t, taskID, sessionID, "completed")
-
-	// Add a task_execution summary
-	_, err := service.DB.Exec("INSERT INTO summaries (target_type, target_id, summary, created_at) VALUES ('task_execution', ?, 'task summary', CURRENT_TIMESTAMP)", execID)
-	assert.NoError(t, err)
-
-	// Continue — no assistant message exists, so task_execution summary won't be copied as chat_message
-	newSessionID, alreadyExists, err := service.ContinueFromExecution(execID, projectPath)
-	assert.NoError(t, err)
-	assert.False(t, alreadyExists)
-	assert.NotEmpty(t, newSessionID)
-
-	// No chat_message summaries should exist for the new session's messages
-	msgs, err := service.GetChatHistory(projectPath, "claude", newSessionID)
-	assert.NoError(t, err)
-	assert.Empty(t, msgs)
 }

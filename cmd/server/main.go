@@ -898,7 +898,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 }
 
 // initTaskSummarizer creates a TaskSummarizer based on the summarize.backend config.
-// Supports: AI CLI backends (claude/codebuddy/gemini/etc.), "api" (OpenAI/Anthropic HTTP), "simple".
+// Supports: AI CLI backends (claude/codebuddy/kimi/etc.), "api" (OpenAI/Anthropic HTTP), "simple".
 func initTaskSummarizer(cfg model.Config) (*summarize.TaskSummarizer, error) {
 	backend := cfg.Summarize.Backend
 	modelName := cfg.Summarize.Model
@@ -939,7 +939,7 @@ func initTaskSummarizer(cfg model.Config) (*summarize.TaskSummarizer, error) {
 		return summarize.NewTaskSummarizerFromPipeline(pipeline), nil
 
 	default:
-		// AI CLI backends (claude/codebuddy/gemini/opencode/codex/qoder/vecli/deepseek)
+		// AI CLI backends (claude/codebuddy/kimi/opencode/codex/qoder/vecli/deepseek)
 		return summarize.NewTaskSummarizer(backend, modelName)
 	}
 }

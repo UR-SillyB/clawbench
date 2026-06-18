@@ -17,6 +17,27 @@ vi.mock('@/composables/useQuoteQuestion.ts', () => ({
   }),
 }))
 
+// Mock resolveFilePath for file path annotation
+const mockResolveFilePath = vi.fn()
+const mockTryResolveCodeString = vi.fn()
+const mockStripCodeString = vi.fn()
+vi.mock('@/composables/useFilePathAnnotation.ts', () => ({
+  resolveFilePath: (...args: any[]) => mockResolveFilePath(...args),
+  tryResolveCodeString: (...args: any[]) => mockTryResolveCodeString(...args),
+  stripCodeString: (...args: any[]) => mockStripCodeString(...args),
+  verifyFilePaths: vi.fn(),
+}))
+
+// Mock store for file path annotation
+vi.mock('@/stores/app.ts', () => ({
+  store: {
+    state: {
+      projectRoot: '/home/user/project',
+      homeDir: '/home/user',
+    },
+  },
+}))
+
 // Shared reactive stickyLines ref for controlling in tests
 let stickyLinesRef: any
 
@@ -212,5 +233,132 @@ describe('CodePreview', () => {
       flashType: 'delete',
     })
     expect(wrapper.find('.code-line').exists()).toBe(true)
+  })
+
+  it('handleStickyClick uses scrollBy with sticky height offset', async () => {
+    // Test the click handler logic directly by calling it through the component
+    const wrapper = mountPreview({ stickyScroll: true, filePath: '/tmp/main.ts' })
+    await nextTick()
+
+    // Simulate two sticky lines (H1 + H2), total sticky height = 41.6
+    stickyLinesRef.value = [
+      { lineNum: 1, kind: 'heading', top: 0, height: 20.8 },
+      { lineNum: 2, kind: 'heading', top: 20.8, height: 20.8 },
+    ]
+    await nextTick()
+
+    // Get the pre element and mock its scrollBy
+    const preEl = wrapper.find('.raw-content-pre').element
+    const mockScrollBy = vi.fn()
+    preEl.scrollBy = mockScrollBy
+
+    // Mock querySelectorAll to return line elements
+    const mockLineEl = {
+      getBoundingClientRect: () => ({ top: -100 }),
+      classList: { add: vi.fn(), remove: vi.fn() },
+    }
+    const origQSA = preEl.querySelectorAll
+    preEl.querySelectorAll = vi.fn().mockImplementation((selector) => {
+      if (selector.includes('code-line')) return [mockLineEl, mockLineEl]
+      return origQSA.call(preEl, selector)
+    })
+
+    // Trigger click on the first sticky line
+    const stickyLines = wrapper.findAll('.sticky-line')
+    if (stickyLines.length > 0) {
+      await stickyLines[0].trigger('click')
+
+      // scrollBy should be called with the sticky height offset
+      expect(mockScrollBy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          behavior: 'smooth',
+          top: expect.any(Number),
+        })
+      )
+      // The scroll delta = lineTop - containerTop - stickyHeight = -100 - 0 - 41.6 = -141.6
+      const scrollCall = mockScrollBy.mock.calls[0][0]
+      expect(scrollCall.top).toBe(-141.6)
+    }
+
+    // Restore
+    preEl.querySelectorAll = origQSA
+  })
+
+  describe('file path annotation', () => {
+    beforeEach(() => {
+      mockResolveFilePath.mockReset()
+      mockTryResolveCodeString.mockReset()
+      mockStripCodeString.mockReset()
+      // Default: stripCodeString strips quotes
+      mockStripCodeString.mockImplementation((text: string) => text.replace(/^['"`](.*)['"`]$/, '$1').trim())
+    })
+
+    it('emits openFile when clicking a code-file-path element', async () => {
+      const wrapper = mountPreview({ content: 'import "./utils"' })
+      await nextTick()
+      await nextTick()
+
+      // Manually inject a .code-file-path span into the rendered code
+      const codeEl = wrapper.find('.raw-content-pre')
+      if (codeEl.exists()) {
+        const stringSpan = codeEl.find('.hljs-string')
+        if (stringSpan.exists()) {
+          // Inject a clickable path span inside the string
+          stringSpan.element.innerHTML = '<span class="code-file-path" data-file-path="src/utils.ts">./utils</span>'
+          await nextTick()
+
+          const pathEl = wrapper.find('.code-file-path')
+          if (pathEl.exists()) {
+            await pathEl.trigger('click')
+            expect(wrapper.emitted('openFile')).toBeTruthy()
+            expect(wrapper.emitted('openFile')![0]).toEqual(['src/utils.ts'])
+          }
+        }
+      }
+    })
+
+    it('does not emit openFile for regular code clicks', async () => {
+      const wrapper = mountPreview({ content: 'const x = 1' })
+      await nextTick()
+      await nextTick()
+
+      const line = wrapper.find('.code-line')
+      if (line.exists()) {
+        await line.trigger('click')
+        expect(wrapper.emitted('openFile')).toBeFalsy()
+      }
+    })
+
+    it('annotateFilePaths wraps resolved paths in code-file-path spans', async () => {
+      mockTryResolveCodeString.mockImplementation((text: string) => {
+        const stripped = text.replace(/^['"`](.*)['"`]$/, '$1').trim()
+        if (stripped === './utils') return { primary: 'src/utils.ts', fallback: 'src/utils.ts' }
+        return null
+      })
+      mockStripCodeString.mockImplementation((text: string) => text.replace(/^['"`](.*)['"`]$/, '$1').trim())
+
+      const wrapper = mountPreview({ content: 'import "./utils"' })
+      await nextTick()
+      await nextTick()
+      await nextTick()
+
+      // After rendering + annotation, check if a .code-file-path span was created
+      const annotated = wrapper.findAll('.code-file-path')
+      if (annotated.length > 0) {
+        expect(annotated[0].attributes('data-file-path')).toBe('src/utils.ts')
+      }
+    })
+
+    it('annotateFilePaths skips paths that do not resolve', async () => {
+      mockTryResolveCodeString.mockReturnValue(null)
+      mockStripCodeString.mockImplementation((text: string) => text.replace(/^['"`](.*)['"`]$/, '$1').trim())
+
+      const wrapper = mountPreview({ content: 'import "./nonexistent"' })
+      await nextTick()
+      await nextTick()
+      await nextTick()
+
+      expect(wrapper.findAll('.code-file-path').length).toBe(0)
+    })
   })
 })

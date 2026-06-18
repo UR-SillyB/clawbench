@@ -139,6 +139,22 @@ const legacyKeys: Record<string, {
       } catch { /* not in app mode */ }
     },
   },
+  sortField: {
+    sideEffect(value: string | null) {
+      window.dispatchEvent(new CustomEvent('clawbench-sort-change', { detail: { field: value } }))
+      // Reset sortDir when sort is cleared
+      if (value === null && localConfig.sortDir !== 'asc') {
+        localConfig.sortDir = 'asc'
+        try { localStorage.setItem(LOCAL_PREFIX + 'sortDir', JSON.stringify('asc')) } catch { /* ignore */ }
+        window.dispatchEvent(new CustomEvent('clawbench-sort-change', { detail: { dir: 'asc' } }))
+      }
+    },
+  },
+  sortDir: {
+    sideEffect(value: string) {
+      window.dispatchEvent(new CustomEvent('clawbench-sort-change', { detail: { dir: value } }))
+    },
+  },
 }
 
 /** Read initial value from prefixed key (falls back to legacy key, then default) */
@@ -185,6 +201,8 @@ const localDefaults: Record<string, any> = {
   androidLogCapture: false,
   swipeSession: false,
   pushPersistentNotification: true,
+  sortField: null,
+  sortDir: 'asc',
 }
 
 // Build reactive local config from legacy localStorage + defaults

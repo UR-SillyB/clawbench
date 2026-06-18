@@ -147,17 +147,31 @@ func ListFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, files)
 }
 
-// GetFile returns the content of a single file.
-func GetFile(w http.ResponseWriter, r *http.Request) {
-	projectPath, ok := requireProject(w, r)
-	if !ok {
-		return
+// resolveFilePath determines the absolute path and whether it's external to the
+// project. Supports absolute paths via ?path= query param and project-relative
+// paths via URL path.
+func resolveFilePath(w http.ResponseWriter, r *http.Request, projectPath string) (absPath string, isExternal bool, ok bool) {
+	if queryPath := r.URL.Query().Get("path"); queryPath != "" {
+		// Accept paths starting with / (POSIX-style absolute from frontend)
+		// or platform-native absolute paths (e.g. C:\ on Windows).
+		if !strings.HasPrefix(queryPath, "/") && !filepath.IsAbs(queryPath) {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidFilePath")
+			return "", false, false
+		}
+		var err error
+		absPath, err = filepath.Abs(queryPath)
+		if err != nil {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidFilePath")
+			return "", false, false
+		}
+		return absPath, true, true
 	}
 
+	// Project-relative path from URL path
 	filepathStr := r.URL.Path
 	if !strings.HasPrefix(filepathStr, "/api/file/") {
 		http.NotFound(w, r)
-		return
+		return "", false, false
 	}
 	filepathStr = filepathStr[len("/api/file/"):]
 	// Strip leading slashes to handle double-slash URLs (/api/file//path)
@@ -168,11 +182,22 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 
 	if filepathStr == ".." || path.IsAbs(filepathStr) {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidFilePath")
-		return
+		return "", false, false
 	}
 
 	basePath, _ := filepath.Abs(projectPath)
-	absPath, ok := validateAndResolvePath(w, r, basePath, filepathStr)
+	absPath, ok = validateAndResolvePath(w, r, basePath, filepathStr)
+	return absPath, false, ok
+}
+
+// GetFile returns the content of a single file.
+func GetFile(w http.ResponseWriter, r *http.Request) {
+	projectPath, ok := requireProject(w, r)
+	if !ok {
+		return
+	}
+
+	absPath, isExternal, ok := resolveFilePath(w, r, projectPath)
 	if !ok {
 		return
 	}
@@ -210,11 +235,15 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 	// Use ?forceText=1 to override (e.g. user explicitly wants to view as text).
 	forceText := r.URL.Query().Get("forceText") == "1"
 	if !forceText && !model.IsTextFile(info.Name()) {
-		relPath, _ := filepath.Rel(projectPath, absPath)
+		respPath := absPath
+		if !isExternal {
+			relPath, _ := filepath.Rel(projectPath, absPath)
+			respPath = filepath.ToSlash(relPath)
+		}
 		writeJSON(w, http.StatusOK, FileContent{
 			Content:   "",
 			Name:      info.Name(),
-			Path:      filepath.ToSlash(relPath),
+			Path:      respPath,
 			Supported: false,
 			IsBinary:  true,
 			Size:      info.Size(),
@@ -228,11 +257,15 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	relPath, _ := filepath.Rel(projectPath, absPath)
+	respPath := absPath
+	if !isExternal {
+		relPath, _ := filepath.Rel(projectPath, absPath)
+		respPath = filepath.ToSlash(relPath)
+	}
 	writeJSON(w, http.StatusOK, FileContent{
 		Content:   string(content),
 		Name:      info.Name(),
-		Path:      filepath.ToSlash(relPath),
+		Path:      respPath,
 		Supported: model.IsSupportedFile(info.Name()),
 		Size:      info.Size(),
 	})
@@ -447,10 +480,23 @@ func ServeFileBatchExists(w http.ResponseWriter, r *http.Request) {
 		}
 		// Expand ~ to home directory so paths like ~/.bashrc resolve correctly
 		p = platform.ExpandTilde(p)
-		absPath, ok := model.ValidatePath(baseAbs, p)
-		if !ok {
-			results[p] = "none"
-			continue
+		var absPath string
+		if strings.HasPrefix(p, "/") || filepath.IsAbs(p) {
+			// Absolute path — stat directly without project scoping
+			var err error
+			absPath, err = filepath.Abs(p)
+			if err != nil {
+				results[p] = "none"
+				continue
+			}
+		} else {
+			// Relative path — resolve against project root
+			var ok bool
+			absPath, ok = model.ValidatePath(baseAbs, p)
+			if !ok {
+				results[p] = "none"
+				continue
+			}
 		}
 		info, err := os.Stat(absPath)
 		if err != nil {

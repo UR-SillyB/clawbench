@@ -50,13 +50,18 @@
             <MoreHorizontal :size="16" />
           </button>
           <div v-if="moreMenuOpen" class="toolbar-dropdown toolbar-dropdown-right" @click.stop>
+            <button class="toolbar-dropdown-item" @click="doNewFile(); moreMenuOpen = false">
+              <FilePlus :size="14" />
+              <span>{{ t('file.context.newFile') }}</span>
+            </button>
+            <button class="toolbar-dropdown-item" @click="doNewFolder(); moreMenuOpen = false">
+              <FolderPlus :size="14" />
+              <span>{{ t('file.context.newFolder') }}</span>
+            </button>
+            <div class="toolbar-dropdown-divider" />
             <button class="toolbar-dropdown-item" :disabled="dirUploading" @click="triggerUpload(); moreMenuOpen = false">
               <Upload :size="14" />
               <span>{{ t('file.uploadHere') }}</span>
-            </button>
-            <button class="toolbar-dropdown-item" :disabled="syncButtonDisabled" @click="syncToCurrentFile(); moreMenuOpen = false">
-              <ArrowRightLeft :size="14" />
-              <span>{{ t('file.syncToCurrentDir') }}</span>
             </button>
             <button class="toolbar-dropdown-item" @click="viewMode = viewMode === 'grid' ? 'list' : 'grid'; moreMenuOpen = false">
               <LayoutGrid v-if="viewMode === 'list'" :size="14" />
@@ -77,7 +82,7 @@
           {{ isAllSelected ? t('file.multiSelect.deselectAll') : t('file.multiSelect.selectAll') }}
         </button>
       </div>
-      <DirBreadcrumb v-else :path="currentDir" @navigate="$emit('navigateDir', $event)" />
+      <DirBreadcrumb v-else :path="currentDir" @navigate="$emit('navigateDir', $event, 'truncate')" />
     </div>
 
     <!-- Hidden file input for upload -->
@@ -92,18 +97,18 @@
     <!-- File list -->
     <div v-if="viewMode === 'list'" class="file-list" id="fileList"
       @click="handleItemClick"
-      @contextmenu.prevent="showCtx($event, null)"
-      @touchstart="onContainerTouchStart"
-      @touchmove="onContainerTouchMove"
-      @touchend="onContainerTouchEnd"
-      @touchcancel="onContainerTouchEnd"
+      @contextmenu.prevent="handleCtxMenu"
+      @touchstart="onLongPressStart"
+      @touchmove="onLongPressMove"
+      @touchend="onLongPressEnd"
+      @touchcancel="onLongPressEnd"
     >
-      <div v-if="dirLoading" class="dir-loading-overlay">
-        <Loader :size="24" class="dir-loading-spinner" />
-        <span>{{ t('common.loading') }}</span>
-      </div>
-      <template v-else>
-      <div v-if="filteredEntries.length === 0" class="empty-state">
+      <Transition name="loading-fade">
+        <div v-if="dirLoading" class="loading-mask">
+          <div class="loading-mask-spinner"></div>
+        </div>
+      </Transition>
+      <div v-if="filteredEntries.length === 0 && !dirLoading" class="empty-state">
         <Folder :size="48" />
         <p>{{ currentDir ? t('file.emptyDir') : t('file.noFiles') }}</p>
       </div>
@@ -112,20 +117,21 @@
         <!-- Directory -->
         <div v-if="entry.type === 'dir'"
           class="file-item dir-item"
-          :class="{ 'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name)) }"
+          :class="{
+            'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name)),
+            'ctx-highlight': ctxMenu.visible && ctxMenu.entry?.path === itemPath(entry.name)
+          }"
           :data-action="'dir'"
           :data-path="itemPath(entry.name)"
-          @contextmenu.prevent="showCtx($event, entry)"
-          @touchstart="onItemTouchStart($event, entry)"
-          @touchmove="onItemTouchMove"
-          @touchend="onItemTouchEnd"
-          @touchcancel="onItemTouchEnd">
+        >
           <div v-if="multiSelect.active" class="ms-check" :class="{ checked: multiSelect.selected.has(itemPath(entry.name)) }">
             <Check v-if="multiSelect.selected.has(itemPath(entry.name))" :size="12" />
           </div>
-          <Folder class="file-icon" :size="28" />
+          <div class="file-icon-wrap" :class="{ 'has-attach': hasAttachedFile(itemPath(entry.name)) }">
+            <Folder class="file-icon" :size="28" />
+            <Paperclip v-if="hasAttachedFile(itemPath(entry.name))" class="attach-badge" :size="15" @click.stop="toggleAttach(itemPath(entry.name))" />
+          </div>
           <span class="file-name">{{ entry.name }}</span>
-          <ChevronRight v-if="!multiSelect.active" :size="14" class="chevron" />
           <span class="file-meta">{{ formatDate(entry.modified) }}</span>
         </div>
 
@@ -134,22 +140,22 @@
           class="file-item"
           :class="{
             active: !multiSelect.active && currentFile?.path === itemPath(entry.name),
-            'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name))
+            'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name)),
+            'ctx-highlight': ctxMenu.visible && ctxMenu.entry?.path === itemPath(entry.name)
           }"
           :data-action="'file'"
           :data-path="itemPath(entry.name)"
-          @contextmenu.prevent="showCtx($event, entry)"
-          @touchstart="onItemTouchStart($event, entry)"
-          @touchmove="onItemTouchMove"
-          @touchend="onItemTouchEnd"
-          @touchcancel="onItemTouchEnd">
+        >
           <div v-if="multiSelect.active" class="ms-check" :class="{ checked: multiSelect.selected.has(itemPath(entry.name)) }">
             <Check v-if="multiSelect.selected.has(itemPath(entry.name))" :size="12" />
           </div>
-          <img v-if="isThumbLoaded(entry)" class="file-thumb" :src="thumbUrl(entry)" :alt="entry.name" loading="lazy" @error="onThumbError(entry)" />
-          <FileImage v-else-if="isImage(entry)" class="file-icon" :size="28" color="#a855f7" />
-          <FileMusic v-else-if="isAudio(entry)" class="file-icon" :size="28" color="#22c55e" />
-          <FileText v-else class="file-icon" :size="28" :color="getFileType(entry.name).color" />
+          <div class="file-icon-wrap" :class="{ 'has-attach': hasAttachedFile(itemPath(entry.name)) }">
+            <img v-if="isThumbLoaded(entry)" class="file-thumb" :src="thumbUrl(entry)" :alt="entry.name" loading="lazy" @error="onThumbError(entry)" />
+            <FileImage v-else-if="isImage(entry)" class="file-icon" :size="28" color="#a855f7" />
+            <FileMusic v-else-if="isAudio(entry)" class="file-icon" :size="28" color="#22c55e" />
+            <FileText v-else class="file-icon" :size="28" :color="getFileType(entry.name).color" />
+            <Paperclip v-if="hasAttachedFile(itemPath(entry.name))" class="attach-badge" :size="15" @click.stop="toggleAttach(itemPath(entry.name))" />
+          </div>
           <span class="file-name">{{ entry.name }}</span>
           <span class="file-meta">{{ formatFileSize(entry.size) }} · {{ formatDate(entry.modified) }}</span>
         </div>
@@ -157,24 +163,23 @@
       <div v-if="hasMoreEntries" class="truncate-hint">
         {{ t('file.truncateHint', { max: MAX_VISIBLE_ENTRIES, total: filteredEntries.length }) }}
       </div>
-      </template>
     </div>
 
     <!-- File grid -->
     <div v-else class="file-grid" id="fileList"
       @click="handleItemClick"
-      @contextmenu.prevent="showCtx($event, null)"
-      @touchstart="onContainerTouchStart"
-      @touchmove="onContainerTouchMove"
-      @touchend="onContainerTouchEnd"
-      @touchcancel="onContainerTouchEnd"
+      @contextmenu.prevent="handleCtxMenu"
+      @touchstart="onLongPressStart"
+      @touchmove="onLongPressMove"
+      @touchend="onLongPressEnd"
+      @touchcancel="onLongPressEnd"
     >
-      <div v-if="dirLoading" class="dir-loading-overlay">
-        <Loader :size="24" class="dir-loading-spinner" />
-        <span>{{ t('common.loading') }}</span>
-      </div>
-      <template v-else>
-      <div v-if="filteredEntries.length === 0" class="empty-state">
+      <Transition name="loading-fade">
+        <div v-if="dirLoading" class="loading-mask">
+          <div class="loading-mask-spinner"></div>
+        </div>
+      </Transition>
+      <div v-if="filteredEntries.length === 0 && !dirLoading" class="empty-state">
         <Folder :size="48" />
         <p>{{ currentDir ? t('file.emptyDir') : t('file.noFiles') }}</p>
       </div>
@@ -184,28 +189,25 @@
         :class="{
           'grid-dir': entry.type === 'dir',
           'grid-active': !multiSelect.active && entry.type !== 'dir' && currentFile?.path === itemPath(entry.name),
-          'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name))
+          'ms-selected': multiSelect.active && multiSelect.selected.has(itemPath(entry.name)),
+          'ctx-highlight': ctxMenu.visible && ctxMenu.entry?.path === itemPath(entry.name)
         }"
         :data-action="entry.type === 'dir' ? 'dir' : 'file'"
         :data-path="itemPath(entry.name)"
-        @contextmenu.prevent="showCtx($event, entry)"
-        @touchstart="onItemTouchStart($event, entry)"
-        @touchmove="onItemTouchMove"
-        @touchend="onItemTouchEnd"
-        @touchcancel="onItemTouchEnd">
+      >
         <div v-if="multiSelect.active" class="grid-ms-check" :class="{ checked: multiSelect.selected.has(itemPath(entry.name)) }">
           <Check v-if="multiSelect.selected.has(itemPath(entry.name))" :size="12" />
         </div>
-        <div class="grid-thumb">
+        <div class="grid-thumb" :class="{ 'has-attach': hasAttachedFile(itemPath(entry.name)) }">
           <img v-if="isThumbLoaded(entry)" :src="thumbUrl(entry)" :alt="entry.name" loading="lazy" @error="onThumbError(entry)" />
           <component v-else :is="entryIcon(entry)" class="grid-icon" :size="32" :color="entryIconColor(entry)" />
+          <Paperclip v-if="hasAttachedFile(itemPath(entry.name))" class="attach-badge" :size="15" @click.stop="toggleAttach(itemPath(entry.name))" />
         </div>
         <div class="grid-name">{{ entry.name }}</div>
       </div>
       <div v-if="hasMoreEntries" class="truncate-hint">
         {{ t('file.truncateHint', { max: MAX_VISIBLE_ENTRIES, total: filteredEntries.length }) }}
       </div>
-      </template>
     </div>
 
     <!-- Multi-select bottom action bar -->
@@ -246,17 +248,7 @@
           <ClipboardPaste :size="14" />
           {{ t('file.context.paste') }}
         </div>
-        <!-- Group 2: Create -->
-        <div class="context-menu-divider" />
-        <div class="context-menu-item" @click.stop="doNewFile">
-          <FilePlus :size="14" />
-          {{ ctxMenu.entry?.type === 'dir' ? t('file.context.newFileInDir', { name: ctxMenu.entry.name }) : t('file.context.newFile') }}
-        </div>
-        <div class="context-menu-item" @click.stop="doNewFolder">
-          <FolderPlus :size="14" />
-          {{ ctxMenu.entry?.type === 'dir' ? t('file.context.newFolderInDir', { name: ctxMenu.entry.name }) : t('file.context.newFolder') }}
-        </div>
-        <!-- Group 3: Entry actions -->
+        <!-- Group 2: Entry actions -->
         <template v-if="ctxMenu.entry">
           <div class="context-menu-divider" />
           <div class="context-menu-item" @click.stop="doRename">
@@ -270,6 +262,10 @@
           <div class="context-menu-item" v-if="ctxMenu.entry.type === 'dir'" @click.stop="doArchiveDir">
             <Package :size="14" />
             {{ t('file.context.archiveDir') }}
+          </div>
+          <div class="context-menu-item" @click.stop="doAttachToChat">
+            <Paperclip :size="14" />
+            {{ ctxMenu.entry && hasAttachedFile(ctxMenu.entry.path) ? t('chat.attach.removeFromChat') : t('chat.actions.attachToChat') }}
           </div>
           <div class="context-menu-item danger" @click.stop="doDelete">
             <Trash2 :size="14" />
@@ -289,17 +285,17 @@
           </div>
         </template>
       </div>
-      <div v-if="ctxMenu.visible" class="ctx-overlay" @click="ctxMenu.visible = false" @touchstart="ctxMenu.visible = false" />
+      <div v-if="ctxMenu.visible" class="ctx-overlay" @click="closeCtxMenu" @touchstart="closeCtxMenu" />
     </Teleport>
   </div>
 </template>
 
 <script setup>
+import '@/assets/loading-mask.css'
 import { ref, computed, reactive, inject, nextTick, onMounted, onUnmounted, Teleport, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Folder, ArrowDownAz, ArrowUpZa, ChevronDown, ChevronUp, Clock, FileText, HardDrive, Eye, EyeOff, ArrowRightLeft, Loader, FileImage, FileMusic, ChevronRight, Copy, Scissors, ClipboardPaste, FilePlus, FolderPlus, Pencil, Download, Trash2, FolderOpen, RotateCw, Terminal as TerminalIcon, CheckSquare, Check, X, LayoutList, LayoutGrid, FileVideo, Package, Upload, MoreHorizontal } from 'lucide-vue-next'
+import { Folder, ArrowDownAz, ArrowUpZa, ChevronDown, ChevronUp, Clock, FileText, HardDrive, Eye, EyeOff, FileImage, FileMusic, Copy, Scissors, ClipboardPaste, FilePlus, FolderPlus, Pencil, Download, Trash2, FolderOpen, RotateCw, Terminal as TerminalIcon, CheckSquare, Check, X, LayoutList, LayoutGrid, FileVideo, Package, Upload, MoreHorizontal, Paperclip } from 'lucide-vue-next'
 import { getFileType } from '@/utils/fileType.ts'
-import { dirName } from '@/utils/path.ts'
 import {
   buildThumbUrl,
   isImage as isImageEntry, isAudio as isAudioEntry, isVideo as isVideoEntry,
@@ -312,8 +308,12 @@ import { localConfig, setLocalConfig, useSettingsConfig } from '@/composables/us
 import { useAppMode } from '@/composables/useAppMode.ts'
 import { useDialog } from '@/composables/useDialog.ts'
 import { useTerminalStatus } from '@/composables/useTerminalStatus.ts'
-import { useFeatureBackHandler } from '@/composables/useEdgeSwipeBack'
+import { useFeatureBackHandler, PRIORITY_PAGE } from '@/composables/useEdgeSwipeBack'
 import { useFileUpload } from '@/composables/useFileUpload.ts'
+import { useChatContext } from '@/composables/useChatContext.ts'
+import { useToast } from '@/composables/useToast.ts'
+import { useDirStack } from '@/composables/useDirStack'
+import { useFileNavStack } from '@/composables/useFileNavStack'
 import SearchInput from '@/components/common/SearchInput.vue'
 import DirBreadcrumb from './DirBreadcrumb.vue'
 
@@ -335,16 +335,23 @@ async function onUploadFileSelect(e) {
   emit('refresh')
 }
 const dialog = useDialog()
+const { addAttachedFile, hasAttachedFile, removeAttachedFileByPath } = useChatContext()
 const { terminalRuntimeEnabled } = useTerminalStatus()
 const isTerminalDisabled = computed(() => terminalRuntimeEnabled.value !== true)
 
 const activeTab = inject('activeTab', ref(''))
 
+const dirStack = useDirStack()
+const fileNav = useFileNavStack()
+
 // Register back handler for file browser directory navigation
+// PRIORITY_PAGE < PRIORITY_OVERLAY, so file-overlay always wins when open.
+// The !overlayOpen guard is redundant with priority but makes intent explicit.
 useFeatureBackHandler(
   'browse',
-  () => activeTab.value === 'browse' && !!props.currentDir,
-  () => emit('navigateDir', dirName(props.currentDir)),
+  () => activeTab.value === 'browse' && !fileNav.overlayOpen.value && dirStack.canGoBack.value,
+  () => emit('navigateBack'),
+  PRIORITY_PAGE,
 )
 
 const props = defineProps({
@@ -357,7 +364,7 @@ const props = defineProps({
     dirLoading: Boolean,
 })
 
-const emit = defineEmits(['navigateDir', 'selectFile', 'toggleSort', 'toggleHidden', 'rename', 'delete', 'refresh', 'openTerminal', 'batchDelete'])
+const emit = defineEmits(['navigateDir', 'navigateBack', 'selectFile', 'toggleSort', 'toggleHidden', 'rename', 'delete', 'refresh', 'openTerminal', 'batchDelete'])
 
 
 const searchQuery = ref('')
@@ -419,30 +426,6 @@ function closeDropdowns(e) {
 onMounted(() => document.addEventListener('click', closeDropdowns))
 onUnmounted(() => document.removeEventListener('click', closeDropdowns))
 
-// Sync button: navigate to the directory of the currently opened file
-const isInSync = computed(() => {
-    if (!props.currentFile?.path) return false
-    // Don't consider "in sync" if the file has an error (e.g. doesn't exist)
-    if (props.currentFile.error) return false
-    return dirName(props.currentFile.path) === props.currentDir
-})
-
-// Sync button disabled state: no file selected or file has error (issue #166)
-const syncButtonDisabled = computed(() => !props.currentFile?.path || !!props.currentFile?.error)
-
-function syncToCurrentFile() {
-    if (!props.currentFile?.path) return
-    // Don't sync if the file has an error (e.g. doesn't exist) —
-    // navigating to its directory may lead to a non-existent path (issue #166)
-    if (props.currentFile.error) return
-    const targetDir = dirName(props.currentFile.path)
-    if (targetDir === props.currentDir) {
-        if (toast) toast.show(t('file.alreadyInDir'), { icon: '📍', type: 'success', duration: 1500 })
-        return
-    }
-    emit('navigateDir', targetDir)
-}
-
 // Helper: build item path from entry name
 function itemPath(name) {
     return (props.currentDir ? props.currentDir + '/' : '') + name
@@ -450,6 +433,10 @@ function itemPath(name) {
 
 // ── Multi-select ──
 const { state: multiSelect, enterMultiSelect, exitMultiSelect, toggleSelect } = _createMultiSelect()
+
+defineExpose({
+    multiSelectState: multiSelect,
+})
 
 const isAllSelected = computed(() => {
     if (!multiSelect.active || visibleEntries.value.length === 0) return false
@@ -475,64 +462,57 @@ watch(() => props.currentDir, () => {
 
 const ctxMenu = reactive({ visible: false, x: 0, y: 0, entry: null })
 
-// Container long-press for empty area (mobile)
-let containerPressTimer = null
-let containerPressMoved = false
-let containerPressPos = { x: 0, y: 0 }
+function closeCtxMenu() {
+    ctxMenu.visible = false
+    ctxMenu.entry = null
+}
 
-function onContainerTouchStart(e) {
-    // Only trigger if touch started on empty area (not on a file-item)
-    if (e.target.closest('.file-item, .grid-item')) return
-    containerPressMoved = false
+// ── Unified context menu trigger (right-click + long-press) ──
+
+function resolveEntryFromEvent(e) {
+    const item = e.target?.closest('.file-item, .grid-item')
+    if (!item) return null
+    const action = item.dataset.action
+    const path = item.dataset.path
+    const name = item.querySelector('.file-name, .grid-name')?.textContent || ''
+    return { type: action === 'dir' ? 'dir' : 'file', name, path }
+}
+
+function handleCtxMenu(e) {
+    const entry = resolveEntryFromEvent(e)
+    ctxMenu.x = e.clientX
+    ctxMenu.y = e.clientY
+    ctxMenu.entry = entry
+    ctxMenu.visible = true
+    nextTick(() => clampCtxMenu())
+}
+
+// Long-press (mobile): single timer, entry resolved on trigger
+let longPressTimer = null
+let longPressMoved = false
+
+function onLongPressStart(e) {
+    longPressMoved = false
     const touch = e.touches[0]
-    containerPressPos = { x: touch.clientX, y: touch.clientY }
-    containerPressTimer = setTimeout(() => {
-        if (!containerPressMoved) {
+    longPressTimer = setTimeout(() => {
+        if (!longPressMoved) {
+            const entry = resolveEntryFromEvent(e)
             ctxMenu.x = touch.clientX
             ctxMenu.y = touch.clientY + 10
-            ctxMenu.entry = null
+            ctxMenu.entry = entry
             ctxMenu.visible = true
             nextTick(() => clampCtxMenu())
         }
-        containerPressTimer = null
+        longPressTimer = null
     }, 450)
 }
 
-function onContainerTouchMove() { containerPressMoved = true }
+function onLongPressMove() { longPressMoved = true }
 
-function onContainerTouchEnd() {
-    if (containerPressTimer) {
-        clearTimeout(containerPressTimer)
-        containerPressTimer = null
-    }
-}
-
-// File item long-press (mobile)
-let itemPressTimer = null
-let itemPressMoved = false
-
-function onItemTouchStart(e, entry) {
-    itemPressMoved = false
-    const touch = e.touches[0]
-    itemPressTimer = setTimeout(() => {
-        if (!itemPressMoved) {
-            const path = itemPath(entry.name)
-            ctxMenu.x = touch.clientX
-            ctxMenu.y = touch.clientY + 10
-            ctxMenu.entry = { ...entry, path }
-            ctxMenu.visible = true
-            nextTick(() => clampCtxMenu())
-        }
-        itemPressTimer = null
-    }, 450)
-}
-
-function onItemTouchMove() { itemPressMoved = true }
-
-function onItemTouchEnd() {
-    if (itemPressTimer) {
-        clearTimeout(itemPressTimer)
-        itemPressTimer = null
+function onLongPressEnd() {
+    if (longPressTimer) {
+        clearTimeout(longPressTimer)
+        longPressTimer = null
     }
 }
 
@@ -550,7 +530,7 @@ async function doCopy() {
     if (!ctxMenu.entry) return
     clipboard.entries = [ctxMenu.entry]
     clipboard.isCut = false
-    ctxMenu.visible = false
+    closeCtxMenu()
     if (toast) toast.show(t('common.copied'), { icon: '📋', type: 'success', duration: 1500 })
 }
 
@@ -558,13 +538,13 @@ async function doCut() {
     if (!ctxMenu.entry) return
     clipboard.entries = [ctxMenu.entry]
     clipboard.isCut = true
-    ctxMenu.visible = false
+    closeCtxMenu()
     if (toast) toast.show(t('file.toast.cutDone'), { icon: '✂️', type: 'success', duration: 1500 })
 }
 
 async function doPaste() {
     if (!clipboard.entries.length) return
-    ctxMenu.visible = false
+    closeCtxMenu()
     const destDir = getDestDir(ctxMenu.entry)
     const api = clipboard.isCut ? '/api/file/move' : '/api/file/copy'
     let allOk = true
@@ -601,7 +581,8 @@ async function doPaste() {
 }
 
 async function doNewFile() {
-    ctxMenu.visible = false
+    closeCtxMenu()
+    moreMenuOpen.value = false
     const name = await dialog.prompt(t('file.prompt.fileName'))
     if (!name || !name.trim()) return
     const dir = getDestDir(ctxMenu.entry)
@@ -624,7 +605,8 @@ async function doNewFile() {
 }
 
 async function doNewFolder() {
-    ctxMenu.visible = false
+    closeCtxMenu()
+    moreMenuOpen.value = false
     const name = await dialog.prompt(t('file.prompt.folderName'))
     if (!name || !name.trim()) return
     const dir = getDestDir(ctxMenu.entry)
@@ -760,24 +742,6 @@ function formatDate(modified) {
         : d.toLocaleDateString(loc, { month: '2-digit', day: '2-digit' })
 }
 
-function showCtx(e, entry) {
-    if (!entry) {
-        // Empty-area context menu: no specific entry selected
-        ctxMenu.x = e.clientX
-        ctxMenu.y = e.clientY
-        ctxMenu.entry = null
-        ctxMenu.visible = true
-        nextTick(() => clampCtxMenu())
-        return
-    }
-    const path = itemPath(entry.name)
-    ctxMenu.x = e.clientX
-    ctxMenu.y = e.clientY
-    ctxMenu.entry = { ...entry, path }
-    ctxMenu.visible = true
-    nextTick(() => clampCtxMenu())
-}
-
 // Clamp menu position to stay within viewport on all sides
 function clampCtxMenu() {
     const menu = document.querySelector('.context-menu.visible')
@@ -794,7 +758,7 @@ function clampCtxMenu() {
 
 function doOpenAsProject() {
     if (!ctxMenu.entry || ctxMenu.entry.type !== 'dir') return
-    ctxMenu.visible = false
+    closeCtxMenu()
     const absPath = store.state.projectRoot + '/' + ctxMenu.entry.path
     fetch('/api/project', {
         method: 'POST',
@@ -816,7 +780,7 @@ function doOpenAsProject() {
 }
 
 function doOpenTerminal() {
-    ctxMenu.visible = false
+    closeCtxMenu()
     const targetCwd = ctxMenu.entry && ctxMenu.entry.type === 'dir'
         ? ctxMenu.entry.path
         : props.currentDir
@@ -826,14 +790,14 @@ function doOpenTerminal() {
 async function doRename() {
     if (!ctxMenu.entry) return
     const newName = await dialog.prompt(t('file.prompt.newName'), { value: ctxMenu.entry.name })
-    if (!newName || newName === ctxMenu.entry.name) { ctxMenu.visible = false; return }
+    if (!newName || newName === ctxMenu.entry.name) { closeCtxMenu(); return }
     emit('rename', { path: ctxMenu.entry.path, name: newName })
-    ctxMenu.visible = false
+    closeCtxMenu()
 }
 
 function doDownload() {
     if (!ctxMenu.entry) return
-    ctxMenu.visible = false
+    closeCtxMenu()
     const path = ctxMenu.entry.path
     const native = window.AndroidNative
     if (isAppMode.value && native && native.downloadFile) {
@@ -896,7 +860,7 @@ async function doArchive(paths, zipName) {
 
 function doArchiveDir() {
     if (!ctxMenu.entry || ctxMenu.entry.type !== 'dir') return
-    ctxMenu.visible = false
+    closeCtxMenu()
     const zipName = ctxMenu.entry.name + '.zip'
     doArchive([ctxMenu.entry.path], zipName)
 }
@@ -911,9 +875,44 @@ function doBatchArchive() {
     exitMultiSelect()
 }
 
+function doAttachToChat() {
+    if (!ctxMenu.entry) return
+    const path = ctxMenu.entry.path
+    closeCtxMenu()
+    if (hasAttachedFile(path)) {
+        removeAttachedFileByPath(path)
+        toast.show(t('chat.attach.removedFromChat'), { icon: '📎', type: 'info', duration: 1500 })
+        return
+    }
+    addAttachedFile(path)
+    toast.show(t('chat.attach.addedToChat'), { icon: '📎', type: 'success', duration: 1500 })
+
+    // Fly-to-chat particle animation
+    const dockChatBtn = document.querySelector('.dock-center')?.querySelector('.dock-btn')
+    const animTo = dockChatBtn?.getBoundingClientRect() ?? null
+    if (animTo && ctxMenu.x && ctxMenu.y) {
+        window.dispatchEvent(new CustomEvent('attach-to-chat', {
+            detail: {
+                from: { x: ctxMenu.x, y: ctxMenu.y },
+                to: { x: animTo.left + animTo.width / 2, y: animTo.top + animTo.height / 2 },
+            }
+        }))
+    }
+}
+
+function toggleAttach(path) {
+    if (hasAttachedFile(path)) {
+        removeAttachedFileByPath(path)
+        toast.show(t('chat.attach.removedFromChat'), { icon: '📎', type: 'info', duration: 1500 })
+    } else {
+        addAttachedFile(path)
+        toast.show(t('chat.attach.addedToChat'), { icon: '📎', type: 'success', duration: 1500 })
+    }
+}
+
 function doDelete() {
     if (!ctxMenu.entry) return
-    ctxMenu.visible = false
+    closeCtxMenu()
     emit('delete', ctxMenu.entry.path)
 }
 
@@ -1060,6 +1059,10 @@ function doDelete() {
     background: color-mix(in srgb, var(--accent-color, #4a90d9) 8%, transparent);
 }
 
+.file-item.ctx-highlight {
+    background: color-mix(in srgb, var(--accent-color, #4a90d9) 12%, transparent);
+}
+
 /* ── Multi-select bottom action bar ── */
 .ms-action-bar {
     display: flex;
@@ -1111,6 +1114,7 @@ function doDelete() {
 
 /* ── File list area ── */
 .file-list {
+    position: relative;
     flex: 1;
     overflow-y: auto;
     padding: 4px 6px;
@@ -1212,6 +1216,12 @@ function doDelete() {
     flex-shrink: 0;
 }
 
+.toolbar-dropdown-divider {
+    height: 1px;
+    background: var(--border-color, #e5e5e5);
+    margin: 4px 6px;
+}
+
 .toolbar-dropdown-item .sort-dir-icon {
     margin-left: auto;
 }
@@ -1269,21 +1279,49 @@ function doDelete() {
     background: var(--bg-tertiary, #f0f0f0);
 }
 
-.file-item.dir-item .chevron {
+.file-item.dir-item .file-meta {
     margin-left: auto;
-    color: var(--text-muted, #999);
-    transition: transform 0.2s;
-}
-
-.file-item.dir-item:hover .chevron {
-    transform: translateX(2px);
-    color: var(--accent-color, #4a90d9);
 }
 
 .file-icon {
     flex-shrink: 0;
     width: 28px;
     height: 28px;
+}
+
+.file-icon-wrap {
+    position: relative;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+}
+
+.file-icon-wrap .file-icon {
+    width: 28px;
+    height: 28px;
+}
+
+.file-icon-wrap .file-thumb {
+    width: 28px;
+    height: 28px;
+}
+
+.attach-badge {
+    position: absolute;
+    bottom: -5px;
+    right: -5px;
+    background: var(--accent-color, #4a90d9);
+    color: #fff;
+    border-radius: 50%;
+    padding: 3px;
+    cursor: pointer;
+    z-index: 2;
+    transition: transform 0.15s, background 0.15s;
+}
+
+.attach-badge:hover {
+    transform: scale(1.2);
+    background: #ef4444;
 }
 
 .file-thumb {
@@ -1339,31 +1377,9 @@ function doDelete() {
     flex-shrink: 0;
 }
 
-/* Loading overlay */
-.dir-loading-overlay {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 40px 20px;
-    color: var(--text-muted, #999);
-    font-size: 13px;
-}
-
-.dir-loading-spinner {
-    width: 24px;
-    height: 24px;
-    animation: dir-spin 1s linear infinite;
-}
-
-@keyframes dir-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
 /* ── File Grid ── */
 .file-grid {
+    position: relative;
     flex: 1;
     overflow-y: auto;
     padding: 8px;
@@ -1398,6 +1414,10 @@ function doDelete() {
     background: color-mix(in srgb, var(--accent-color, #4a90d9) 8%, transparent);
 }
 
+.grid-item.ctx-highlight {
+    background: color-mix(in srgb, var(--accent-color, #4a90d9) 12%, transparent);
+}
+
 .grid-thumb {
     width: 100%;
     aspect-ratio: 1;
@@ -1407,6 +1427,25 @@ function doDelete() {
     align-items: center;
     justify-content: center;
     background: var(--bg-tertiary, #f5f5f5);
+    position: relative;
+}
+
+.grid-thumb .attach-badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: var(--accent-color, #4a90d9);
+    color: #fff;
+    border-radius: 50%;
+    padding: 3px;
+    cursor: pointer;
+    z-index: 2;
+    transition: transform 0.15s, background 0.15s;
+}
+
+.grid-thumb .attach-badge:hover {
+    transform: scale(1.2);
+    background: #ef4444;
 }
 
 .grid-thumb img {

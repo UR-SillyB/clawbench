@@ -33,9 +33,9 @@
     />
 
     <!-- Session switching overlay — placed here to cover the entire message area -->
-    <Transition name="session-switch-fade">
-      <div v-if="session.switching.value" class="session-switch-overlay">
-        <div class="session-switch-spinner"></div>
+    <Transition name="loading-fade">
+      <div v-if="session.switching.value" class="loading-mask">
+        <div class="loading-mask-spinner"></div>
       </div>
     </Transition>
 
@@ -77,6 +77,7 @@
       :currentDir="currentDir"
       :pendingFiles="pendingFiles"
       :attachedFiles="attachedFiles"
+      :quoteData="quoteData"
       :messages="messages"
       :autoSpeechEnabled="autoSpeech.enabled.value"
       :currentSessionId="identity.currentSessionId.value"
@@ -96,6 +97,8 @@
       @remove-file="removeFile"
       @add-attached="addAttachedFile"
       @remove-attached="removeAttachedFile"
+      @remove-quote="setQuoteData(null)"
+      @quote-click="handleQuoteClick"
       @open-session-tab="identity.openSessionTab"
       @file-tag-click="handleFileTagClick"
       @toggle-auto-speech="autoSpeech.toggle"
@@ -181,6 +184,7 @@ import { useFilePathAnnotation } from '@/composables/useFilePathAnnotation.ts'
 import { useNotification } from '@/composables/useNotification.ts'
 import { applySummaryUpdate } from '@/utils/chatSessionUtils.ts'
 import { useFileUpload } from '@/composables/useFileUpload.ts'
+import { useChatContext } from '@/composables/useChatContext.ts'
 import { refreshCurrentFile } from '@/composables/useFileRefresh.ts'
 import { playNotificationSound } from '@/composables/useNotificationSound.ts'
 import { useAutoSpeech, extractSpeakableText } from '@/composables/useAutoSpeech.ts'
@@ -190,6 +194,7 @@ import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import { useDialog } from '@/composables/useDialog'
 import { ChevronRight } from 'lucide-vue-next'
+import '@/assets/loading-mask.css'
 import { syncPendingFromBackend } from '@/utils/chatStreamUtils.ts'
 
 const { t } = useI18n()
@@ -253,7 +258,16 @@ const { openFilePath } = useFilePathAnnotation()
 async function handleFileTagClick(filePath) {
     if (filePath) {
         const ok = await openFilePath(filePath)
-        if (ok) switchTab('viewer')
+        if (ok) switchTab('browse')
+    }
+}
+
+function handleQuoteClick() {
+    const q = quoteData.value
+    if (q?.filePath) {
+        store.selectFile(q.filePath).then(() => {
+            switchTab('browse')
+        })
     }
 }
 
@@ -360,6 +374,7 @@ const stream = useChatStream({
 })
 
 const { pendingFiles, attachedFiles, handleFileSelect, handleFileDrop, removeFile, addAttachedFile, removeAttachedFile, cleanupPreviewUrls, clearPendingFiles } = useFileUpload()
+const { quoteData, setQuoteData, clearAll } = useChatContext()
 
 const manager = useSessionManager({
   messages,
@@ -373,7 +388,7 @@ const manager = useSessionManager({
   stopPolling: stream.stopPolling,
   updateRenderedContents: (forceFull) => render.updateRenderedContents(forceFull),
   clearInputState: () => {
-    attachedFiles.value = []
+    clearAll()
     inputBarRef.value?.clearInput()
     clearPendingFiles()
   },
@@ -420,7 +435,7 @@ provide('chatRender', {
   hasImagesInContent: render.hasImagesInContent,
 })
 provide('chatSession', { getAgentIcon, getAgentName })
-provide('chatUI', { navigateToFileViewer: () => switchTab('viewer') })
+provide('chatUI', { navigateToFileViewer: () => switchTab('browse') })
 provide('autoSpeech', autoSpeech)
 provide('layoutRefreshKey', layoutRefreshKey)
 
@@ -559,20 +574,20 @@ function persistSessionUpdate(fields) {
 
 async function sendMessage(text, extraFilePaths) {
     const inputText = text !== undefined ? text : (inputBarRef.value?.inputText?.trim() || '')
-    const hasFiles = pendingFiles.value.length > 0 || attachedFiles.value.length > 0
+    const hasFiles = pendingFiles.value.length > 0 || attachedFiles.value.length > 0 || quoteData.value
 
     if ((!inputText && !hasFiles) || inputDisabled.value) return
 
     // If AI is generating, enqueue the message instead of sending immediately
     if (loading.value) {
       // Capture file arrays before clearing (they're passed by reference)
-      const capturedAttached = attachedFiles.value
+      const capturedAttached = [...attachedFiles.value]
       const capturedPending = pendingFiles.value.map(f => f.path)
-      // Merge all file paths for the pending message
-      const filePaths = [...(extraFilePaths || []), ...(capturedAttached.length > 0 ? capturedAttached : [])]
-      const allFiles = [...capturedPending, ...filePaths]
+      // Merge all file paths for the pending message (deduplicated)
+      const mergedPaths = [...new Set([...(extraFilePaths || []), ...(capturedAttached.length > 0 ? capturedAttached : [])])]
+      const allFiles = [...capturedPending, ...mergedPaths]
       // Clear input state synchronously so user sees immediate feedback
-      attachedFiles.value = []
+      clearAll()
       inputBarRef.value?.clearInput()
       clearPendingFiles()
       // Push a pending user message into messages.value — single source of truth
@@ -592,13 +607,14 @@ async function sendMessage(text, extraFilePaths) {
     }
 
     // Merge attached files from the input bar with extra file paths (e.g. from quote-question)
-    const filePaths = [...(extraFilePaths || []), ...(attachedFiles.value.length > 0 ? attachedFiles.value : [])]
+    // Deduplicate paths that may appear in both extraFilePaths and attachedFiles
+    const filePaths = [...new Set([...(extraFilePaths || []), ...(attachedFiles.value.length > 0 ? attachedFiles.value : [])])]
     const uploadedFiles = pendingFiles.value.map(f => ({ path: f.path }))
     const projectFiles = filePaths.map(p => ({ path: p }))
     const allFiles = [...uploadedFiles, ...projectFiles].map(f => f.path)
 
     // Clear input state before async request
-    attachedFiles.value = []
+    clearAll()
     inputBarRef.value?.clearInput()
     clearPendingFiles()
 
@@ -790,7 +806,7 @@ function findToolBlock({ msgId, blockIdx }) {
 async function handleFileOpenInOverlay(filePath, lineStart) {
   toolDetailOverlay.value.show = false
   const ok = await openFilePath(filePath, lineStart)
-  if (ok) switchTab('viewer')
+  if (ok) switchTab('browse')
 }
 
 // Wire up WS event handler for session_update
@@ -918,42 +934,6 @@ onUnmounted(() => {
    the message+input area only (not the header above it). */
 :deep(.chat-panel-content) {
   position: relative;
-}
-
-/* Session switch overlay — covers the entire body area (messages + input) */
-.session-switch-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-primary);
-  z-index: 5;
-  opacity: 0.85;
-}
-
-.session-switch-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--accent-color);
-  border-radius: 50%;
-  animation: session-switch-spin 0.7s linear infinite;
-}
-
-@keyframes session-switch-spin {
-  to { transform: rotate(360deg); }
-}
-
-.session-switch-fade-enter-active {
-  transition: opacity 0.12s ease-out;
-}
-.session-switch-fade-leave-active {
-  transition: opacity 0.18s ease-in;
-}
-.session-switch-fade-enter-from,
-.session-switch-fade-leave-to {
-  opacity: 0;
 }
 
 /* Session swipe indicator — floats at top of message area */

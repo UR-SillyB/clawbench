@@ -52,7 +52,8 @@ type Session struct {
 	// The flag is cleared shortly after the first HandleResize() call
 	// (which is when SIGWINCH fires), once the redraw output has been
 	// consumed and discarded by readPTY().
-	suppressOutput bool
+	suppressOutput      bool
+	suppressSafetyTimer *time.Timer // safety timeout to prevent permanent suppression
 }
 
 // generateSessionID creates a random 8-byte hex string for session identification.
@@ -151,7 +152,9 @@ func (s *Session) readPTY(ctx context.Context) {
 			suppressed := s.suppressOutput
 			s.mu.Unlock()
 
-			if !suppressed {
+			if suppressed {
+				// Output discarded; will be sent once suppressOutput clears
+			} else {
 				msg := ServerMessage{
 					Type: "output",
 					Data: string(data),
@@ -272,6 +275,18 @@ func (s *Session) Connect(conn *websocket.Conn) error {
 			Type: "replay",
 			Data: string(replayData),
 		})
+
+		// Safety timeout: if HandleResize is never called (e.g. fit() fails
+		// or the terminal dimensions don't change), clear suppressOutput
+		// after 500ms so the client is not permanently stuck receiving no output.
+		s.suppressSafetyTimer = time.AfterFunc(500*time.Millisecond, func() {
+			s.mu.Lock()
+			if s.suppressOutput {
+				s.suppressOutput = false
+				slog.Warn("terminal: suppressOutput safety timeout", slog.String("session", s.id))
+			}
+			s.mu.Unlock()
+		})
 	}
 
 	// Send current status with session ID
@@ -344,6 +359,12 @@ func (s *Session) HandleResize(cols, rows uint16) error {
 	})
 
 	if suppressing {
+		// Cancel the safety timer since HandleResize was called normally
+		if s.suppressSafetyTimer != nil {
+			s.suppressSafetyTimer.Stop()
+			s.suppressSafetyTimer = nil
+		}
+
 		// Setsize() just sent SIGWINCH. The shell will redraw its prompt
 		// and readPTY() will read that output within microseconds (same
 		// machine, no network). 50ms is more than enough for the kernel
@@ -377,6 +398,10 @@ func (s *Session) Close() {
 
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
+	}
+	if s.suppressSafetyTimer != nil {
+		s.suppressSafetyTimer.Stop()
+		s.suppressSafetyTimer = nil
 	}
 	if s.cancelRead != nil {
 		s.cancelRead()

@@ -38,71 +38,55 @@
             />
           </TabPanel>
 
-          <!-- File Browse Tab -->
+          <!-- File Browse Tab (合一：目录浏览 + 文件覆盖预览) -->
           <TabPanel tabId="browse" :activeTab="activeTab" :noHeader="true">
-            <FileManagerContent
-              :entries="dirEntries"
-              :current-dir="currentDir"
-              :current-file="currentFile"
-              :show-hidden="showHidden"
-              :sort-field="sortField"
-              :sort-dir="sortDir"
-              :dir-loading="store.state.dirLoading"
-              @navigate-dir="handleNavigateDir"
-              @select-file="handleBrowseSelectFile"
-              @toggle-sort="handleToggleSort"
-              @toggle-hidden="toggleHidden"
-              @rename="handleRename"
-              @delete="handleDelete"
-              @batch-delete="handleBatchDelete"
-              @refresh="handleRefresh"
-              @open-terminal="handleOpenTerminal"
-            />
-          </TabPanel>
-
-          <!-- File Viewer Tab -->
-          <TabPanel tabId="viewer" :activeTab="activeTab" :noHeader="true">
-            <div class="viewer-panel">
-              <WelcomeView v-if="!currentFile" />
-              <FileViewer
-                v-if="currentFile"
-                ref="fileViewerRef"
-                :file="currentFile"
+            <div class="browse-panel">
+              <FileManagerContent
+                ref="fileManagerRef"
+                :entries="dirEntries"
+                :current-dir="currentDir"
+                :current-file="currentFile"
+                :show-hidden="showHidden"
+                :sort-field="sortField"
+                :sort-dir="sortDir"
+                :dir-loading="store.state.dirLoading"
+                @navigate-dir="handleNavigateDir"
+                @navigate-back="handleNavigateBack"
+                @select-file="handleBrowseSelectFile"
+                @toggle-sort="handleToggleSort"
+                @toggle-hidden="toggleHidden"
+                @rename="handleRename"
+                @delete="handleDelete"
+                @batch-delete="handleBatchDelete"
+                @refresh="handleRefresh"
+                @open-terminal="handleOpenTerminal"
+              />
+              <FileOverlay
+                ref="fileOverlayRef"
+                :overlay-open="fileNav.overlayOpen.value"
+                :current-file="currentFile"
+                :file-loading="store.state.fileLoading"
                 :toc-open="tocOpen"
                 :search-open="searchOpen"
                 :markdown-view-mode="markdownViewMode"
-                @delete="handleDelete(currentFile?.path)"
+                :file-history-open="fileHistoryOpen"
+                :toc-file="tocFile"
+                :pdf-outline="pdfOutline"
+                @delete="handleDelete($event)"
                 @show-details="detailsOpen = true"
                 @open-git-history="openFileHistory"
                 @toggle-toc="tocOpen = !tocOpen"
                 @toggle-search="currentFile?.content && (searchOpen = !searchOpen)"
                 @toggle-view="markdownViewMode = markdownViewMode === 'rendered' ? 'raw' : 'rendered'"
                 @refresh="handleRefresh"
+                @jump="scrollToLine"
+                @jump-page="handleJumpPdfPage"
+                @close-git-history="fileHistoryOpen = false"
+                @open-file="handleOverlayOpenFile"
+                @overlay-close="handleOverlayClose"
+                @overlay-go-back="handleOverlayGoBack"
               />
             </div>
-            <!-- Auxiliary overlays for viewer tab — open only when viewer tab is active -->
-            <TocDrawer
-              :file="tocFile"
-              :pdf-outline="pdfOutline"
-              :open="activeTab === 'viewer' && tocOpen"
-              @close="tocOpen = false"
-              @jump="scrollToLine"
-              @jump-page="handleJumpPdfPage"
-            />
-            <SearchDrawer
-              :file="currentFile"
-              :open="activeTab === 'viewer' && searchOpen"
-              :view-mode="currentFileIsMarkdown ? markdownViewMode : undefined"
-              @close="searchOpen = false"
-              @jump="scrollToLine"
-            />
-            <GitHistoryDrawer
-              :open="activeTab === 'viewer' && fileHistoryOpen"
-              mode="file"
-              :file="currentFile"
-              @close="fileHistoryOpen = false"
-              @open-file="handleSelectFile"
-            />
           </TabPanel>
 
           <!-- History Tab -->
@@ -149,7 +133,7 @@
 
       <FileDetailsDialog
         :file="currentFile"
-        :open="activeTab === 'viewer' && detailsOpen"
+        :open="activeTab === 'browse' && fileNav.overlayOpen.value && detailsOpen"
         @close="detailsOpen = false"
       />
 
@@ -189,11 +173,11 @@
               </button>
               <span v-if="store.state.chatUnreadCount > 0 && activeTab !== 'chat'" class="dock-badge dock-badge-count">{{ store.state.chatUnreadCount }}</span>
             </div>
-            <button class="dock-btn" :class="{ active: activeTab === 'viewer' }" @click.stop="switchTab('viewer')" :title="t('nav.fileViewer')">
-              <FileText />
-            </button>
             <button class="dock-btn" :class="{ active: activeTab === 'browse' }" @click.stop="switchTab('browse')" :title="t('nav.fileManager')">
               <FolderOpen />
+            </button>
+            <button class="dock-btn" :class="{ active: activeTab === 'history' }" @click.stop="switchTab('history')" :title="t('git.history.projectHistory')">
+              <GitBranch />
             </button>
             <div class="dock-btn-wrap">
               <button class="dock-btn" :class="{ active: activeTab === dockSlot4Tab, 'has-unread': dockSlot4Tab === 'tasks' && store.state.taskUnreadCount > 0 && activeTab !== 'tasks', 'just-completed': dockSlot4Tab === 'tasks' && store.state.taskJustCompleted && activeTab !== 'tasks', 'has-running': dockSlot4Tab === 'tasks' && store.state.taskRunning && activeTab !== 'tasks' }" @click.stop="handleDockSlot4Click" :title="dockSlot4Title">
@@ -230,10 +214,6 @@
             <span>{{ t('nav.tasks') }}</span>
             <span v-if="store.state.taskUnreadCount > 0" class="dock-overflow-count">{{ store.state.taskUnreadCount }}</span>
           </button>
-          <button class="dock-overflow-item" :class="{ active: activeTab === 'history' }" @click.stop="handleOverflowSelect('history')">
-            <GitBranch :size="16" />
-            <span>{{ t('git.history.projectHistory') }}</span>
-          </button>
           <button v-if="!isSSHDisabled" class="dock-overflow-item" :class="{ active: activeTab === 'proxy' }" @click.stop="handleOverflowSelect('proxy')">
             <EthernetPort :size="16" />
             <span>{{ t('nav.portForward') }}</span>
@@ -262,11 +242,10 @@
 import { ref, computed, watch, onMounted, onUnmounted, provide, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSettingsConfig } from '@/composables/useSettingsConfig'
-import { MessageSquare, FolderOpen, FileText, GitBranch, EthernetPort, Terminal as TerminalIcon, CalendarClock, MoreHorizontal, Settings } from 'lucide-vue-next'
+import { MessageSquare, FolderOpen, GitBranch, EthernetPort, Terminal as TerminalIcon, CalendarClock, MoreHorizontal, Settings } from 'lucide-vue-next'
 import AppHeader from './components/common/AppHeader.vue'
 import TabPanel from './components/common/TabPanel.vue'
-import WelcomeView from './components/WelcomeView.vue'
-import FileViewer from './components/file/FileViewer.vue'
+import FileOverlay from './components/file/FileOverlay.vue'
 import Lightbox from './components/media/Lightbox.vue'
 import ChatPanelContent from './components/chat/ChatPanelContent.vue'
 import FileManagerContent from './components/file/FileManagerContent.vue'
@@ -291,19 +270,22 @@ import { useQuoteQuestion } from './composables/useQuoteQuestion.ts'
 import { useTaskTab, registerSwitchTab, onTaskEvent } from '@/composables/useTaskTab.ts'
 import { resetAgents } from '@/composables/useAgents'
 import { useSessionIdentity, registerSessionDrawerRef, resetIdentity } from './composables/useSessionIdentity.ts'
-import { loadSessionsOnce } from './composables/useChatSession.ts'
+import { loadSessionsOnce, resetChatSessionState } from './composables/useChatSession.ts'
 import { useToast } from './composables/useToast.ts'
+import { gt } from './composables/useLocale'
 import { useAppMode } from './composables/useAppMode.ts'
 import { useTerminalKeyboard } from './composables/useTerminalKeyboard.ts'
 import { useChatKeyboard } from './composables/useChatKeyboard.ts'
 import { usePortForward } from './composables/usePortForward.ts'
 import { useTerminalStatus } from './composables/useTerminalStatus.ts'
 import { useFileWatch } from './composables/useFileWatch.ts'
+import { useFileNavStack } from './composables/useFileNavStack'
 import { refreshCurrentFile } from './composables/useFileRefresh.ts'
 import { useGlobalEvents } from './composables/useGlobalEvents'
-import { useEdgeSwipeBack } from './composables/useEdgeSwipeBack'
+import { useEdgeSwipeBack, useFeatureBackHandler, PRIORITY_OVERLAY } from './composables/useEdgeSwipeBack'
 import { handleBackNavigation } from './composables/useBackHandler'
 import { store } from './stores/app.ts'
+import { dirName } from './utils/path.ts'
 import { setPendingCommitNavigation } from './composables/useCommitNavigation.ts'
 import { initMermaid, reRenderMermaid } from './utils/mermaid.ts'
 import { getFileType } from './utils/fileType.ts'
@@ -350,6 +332,9 @@ async function hotSwitchProject(newProjectPath, pendingSessionId) {
   // (store state already reset by setProject, but identity/agents need explicit reset)
   resetIdentity()
   resetAgents()
+  resetChatSessionState()
+  fileNav.closeOverlay()
+  store.resetDirStack()
 
   // ── Phase 4: Change key → Vue destroys old component tree & builds new one ──
   projectKey.value = newProjectPath
@@ -372,8 +357,9 @@ async function hotSwitchProject(newProjectPath, pendingSessionId) {
   const lastFile = localStorage.getItem('clawbenchLastFile_' + store.state.projectRoot)
   if (lastFile && lastFile !== store.state.currentFile?.path) {
     const lastSlash = lastFile.lastIndexOf('/')
-    store.state.currentDir = lastSlash > 0 ? lastFile.slice(0, lastSlash) : ''
-    await store.loadFiles(store.state.currentDir)
+    const targetDir = lastSlash > 0 ? lastFile.slice(0, lastSlash) : ''
+    store.resetDirStack(targetDir)
+    await store.loadFiles(targetDir)
     await store.selectFile(lastFile)
     if (store.state.currentFile?.error) store.state.currentFile = null
   }
@@ -400,6 +386,14 @@ const activeTab = ref('chat')
 function switchTab(tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
+  // Close file browser panels when leaving browse tab — they are teleported
+  // to <body> via BottomSheet so v-show hiding the tab-panel doesn't affect them.
+  if (activeTab.value !== 'browse') {
+    tocOpen.value = false
+    searchOpen.value = false
+    fileHistoryOpen.value = false
+    detailsOpen.value = false
+  }
   if (tab === 'chat') {
     // Recalculate instead of blindly clearing — if the user switches to chat
     // but hasn't opened the unread session, the indicator should keep flashing.
@@ -506,14 +500,38 @@ const showHidden = ref(false)
 const { localConfig, setLocalConfig: setSetting, loadConfig, getServerValueWithDefault } = useSettingsConfig()
 // Initialize from settings config (which handles legacy key migration)
 showHidden.value = !!localConfig.showHidden
-const sortField = ref(null)
-const sortDir = ref('asc')
+const sortField = ref(localConfig.sortField || null)
+const sortDir = ref(localConfig.sortDir || 'asc')
 
 useFileWatch({
   fileManagerOpen: computed(() => activeTab.value === 'browse'),
   currentDir: computed(() => store.state.currentDir),
   currentFile: computed(() => store.state.currentFile),
 })
+
+const fileNav = useFileNavStack()
+
+/** Sync the directory listing to the current file's parent dir.
+ *  Used after closing the file overlay so the browse view matches. */
+function syncDirToFileParent() {
+  const filePath = store.state.currentFile?.path
+  if (filePath) {
+    const targetDir = dirName(filePath)
+    if (targetDir !== store.state.currentDir) {
+      store.replaceDirTop(targetDir)
+    }
+  }
+}
+
+/** Close overlay + all side panels, then sync directory to file parent. */
+function closeOverlayAndSync() {
+  fileNav.closeOverlay()
+  tocOpen.value = false
+  detailsOpen.value = false
+  searchOpen.value = false
+  fileHistoryOpen.value = false
+  syncDirToFileParent()
+}
 
 const { isAppMode } = useAppMode()
 const { syncToNative, sshInfo, loadSSHInfo } = usePortForward()
@@ -552,6 +570,21 @@ const handleForeground = () => {
 
 // Edge swipe back gesture detection (right-edge-left-swipe → go back)
 useEdgeSwipeBack()
+
+// 文件覆盖层的返回手势：overlay 优先级高于 browse，无论 mount 顺序如何
+useFeatureBackHandler(
+  'file-overlay',
+  () => activeTab.value === 'browse' && fileNav.overlayOpen.value,
+  () => {
+    if (fileNav.canGoBack.value) {
+      const prevPath = fileNav.goBack()
+      if (prevPath) store.selectFile(prevPath)
+    } else {
+      closeOverlayAndSync()
+    }
+  },
+  PRIORITY_OVERLAY,
+)
 
 // Android hardware back button / predictive back gesture → delegate to JS
 window.addEventListener('clawbench-back-press', () => {
@@ -622,11 +655,75 @@ function handleSessionDelete(sessionId, backend) {
   sessionIdentity.deleteSession(sessionId, backend)
 }
 
+/** Register global DOM event listeners (idempotent — safe to call multiple times). */
+let appEventListenersRegistered = false
+function registerAppEventListeners() {
+  if (appEventListenersRegistered) return
+  appEventListenersRegistered = true
+  window.addEventListener('open-file-manager', handleOpenFileManager)
+  window.addEventListener('open-file-overlay', handleOpenFileOverlay)
+  window.addEventListener('close-file-overlay', handleOverlayClose)
+  window.addEventListener('navigate-to-commit', handleNavigateToCommit)
+  window.addEventListener('quote-sent', playQuoteEmitAnimation)
+  window.addEventListener('attach-to-chat', playQuoteEmitAnimation)
+  window.addEventListener('scroll-to-line', (e) => { scrollToLine(e.detail.line) })
+  window.addEventListener('clawbench-open-session', handleOpenSession)
+  window.addEventListener('clawbench-open-task', handleOpenTask)
+  document.addEventListener('click', handleOverflowOutsideClick)
+  window.addEventListener('clawbench-theme-change', (e) => {
+      const resolved = e.detail
+      theme.value = resolved
+      initMermaid()
+      reRenderMermaid()
+  })
+  window.addEventListener('clawbench-showhidden-change', (e) => {
+      showHidden.value = e.detail
+  })
+  window.addEventListener('clawbench-sort-change', (e) => {
+      if (e.detail.field !== undefined) sortField.value = e.detail.field
+      if (e.detail.dir !== undefined) sortDir.value = e.detail.dir
+  })
+}
+
+/**
+ * Full app initialization: load project cookie, session identity,
+ * agents, config, and register all infrastructure.
+ * Must complete BEFORE isAuthenticated is set to true (which triggers
+ * ChatPanelContent mount and loadHistory).
+ * Returns false if a fatal error occurred (callers should not set isAuthenticated).
+ */
+async function initializeApp() {
+  // 1. Prerequisite data — must complete before UI renders
+  //    loadProject sets clawbench_project cookie (needed by loadHistory).
+  //    initSessionFromAPI sets session identity (needed by ChatPanelContent).
+  try { await store.loadProject() } catch (_) {
+      toast.show(t('toast.projectLoadFailed'), { icon: '⚠️', type: 'error', duration: 0, onClick: () => location.reload() }); return false
+  }
+  await sessionIdentity.initSessionFromAPI()
+
+  // 2. Infrastructure — global events, rendering, config
+  initGlobalEvents()
+  initMermaid()
+  loadTasks()
+  loadConfig()
+  registerAppEventListeners()
+
+  // 3. Secondary data — non-blocking, can load in parallel with UI render
+  loadSessionsOnce()
+  if (isAppMode.value) syncToNative().catch(() => {})
+  if (isAppMode.value && localConfig.androidLogCapture) {
+    try { if (window.AndroidNative?.startLogCapture) window.AndroidNative.startLogCapture() } catch {}
+  }
+  loadSSHInfo().catch(() => {})
+  loadTerminalStatus().catch(() => {})
+  store.loadGitBranch().catch(() => {})
+  try { await store.loadFiles('') } catch (_) {
+      toast.show(t('toast.fileListLoadFailed'), { icon: '⚠️', type: 'error', duration: 6000 })
+  }
+  return true
+}
+
 async function handleLoginSuccess() {
-    // Load project BEFORE setting isAuthenticated so the backend sets the
-    // clawbench_project cookie first. Without this, ChatPanelContent mounts
-    // and calls loadHistory() which fails with NoProjectSelected (no cookie).
-    try { await store.loadProject() } catch (_) { /* loadProject has its own error handling */ }
     // Check if setup wizard is needed (no agents + embedded Pi binary)
     try {
       const resp = await fetch('/api/setup/status')
@@ -639,55 +736,25 @@ async function handleLoginSuccess() {
         }
       }
     } catch { /* proceed to normal app if check fails */ }
+    // Full initialization BEFORE setting isAuthenticated — ensures
+    // clawbench_project cookie, session identity, and all infrastructure
+    // are ready before ChatPanelContent mounts and calls loadHistory().
+    if (!(await initializeApp())) return
     isAuthenticated.value = true
-    initMermaid()
-    await store.loadFiles('')
 }
 
 async function handleSetupComplete() {
     // Reset cached agents so fresh data is loaded
     resetAgents()
 
-    // Register event listeners that were skipped during wizard (onMounted skipped them)
-    window.addEventListener('open-file-manager', handleOpenFileManager)
-    window.addEventListener('navigate-to-commit', handleNavigateToCommit)
-    window.addEventListener('quote-sent', playQuoteEmitAnimation)
-    window.addEventListener('scroll-to-line', (e) => { scrollToLine(e.detail.line) })
-    window.addEventListener('clawbench-open-session', handleOpenSession)
-    window.addEventListener('clawbench-open-task', handleOpenTask)
-    document.addEventListener('click', handleOverflowOutsideClick)
-    window.addEventListener('clawbench-theme-change', (e) => {
-        const resolved = e.detail
-        theme.value = resolved
-        initMermaid()
-        reRenderMermaid()
-    })
-    window.addEventListener('clawbench-showhidden-change', (e) => {
-        showHidden.value = e.detail
-    })
-    loadTasks()
-    loadConfig()
-
-    // Load project first so backend sets clawbench_project cookie
-    try { await store.loadProject() } catch (_) { /* best effort */ }
-
-    // Load agents and session data BEFORE switching to main UI
-    // to prevent error flashes (e.g., "no agent configured")
-    try {
-        await sessionIdentity.initSessionFromAPI()
-    } catch { /* best effort */ }
-    loadSessionsOnce().catch(() => {})
-    store.loadGitBranch().catch(() => {})
+    // Full initialization BEFORE switching to main UI — ensures all
+    // prerequisites (cookie, session, agents) are ready before
+    // ChatPanelContent mounts. initGlobalEvents is guarded against
+    // duplicate calls (already called during setup wizard phase).
+    if (!(await initializeApp())) return
 
     // Now switch to main UI — agents and session are loaded
     needsSetup.value = false
-    initMermaid()
-
-    // Continue with remaining init that was deferred
-    if (isAppMode.value) syncToNative().catch(() => {})
-    loadSSHInfo().catch(() => {})
-    loadTerminalStatus().catch(() => {})
-    try { await store.loadFiles('') } catch (_) {}
 }
 
 const projectDialogOpen = ref(false)
@@ -724,10 +791,11 @@ const tocFile = computed(() => {
 })
 
 // PDF TOC integration
-const fileViewerRef = ref(null)
-const pdfOutline = computed(() => fileViewerRef.value?.pdfOutline || [])
+const fileOverlayRef = ref(null)
+const fileManagerRef = ref(null)
+const pdfOutline = computed(() => fileOverlayRef.value?.pdfOutline || [])
 function handleJumpPdfPage(pageNum) {
-    fileViewerRef.value?.pdfScrollToPage(pageNum)
+    fileOverlayRef.value?.pdfScrollToPage(pageNum)
 }
 
 watch(() => currentFile.value, (f) => {
@@ -754,28 +822,81 @@ function handleToggleSort(field) {
         sortField.value = field
         sortDir.value = 'asc'
     }
+    setSetting('sortField', sortField.value)
+    setSetting('sortDir', sortDir.value)
 }
 
-async function handleNavigateDir(path) {
-    if (store.state.dirLoading) return
-    await store.navigateToDir(path)
+async function handleNavigateDir(path, mode = 'push') {
+    if (mode === 'truncate') {
+        await store.truncateToDir(path)
+    } else if (mode === 'replace') {
+        await store.replaceDirTop(path)
+    } else {
+        await store.pushDir(path)
+    }
+}
+
+async function handleNavigateBack() {
+    await store.popDir()
 }
 
 async function handleSelectFile(path) {
-    await store.selectFile(path)
+    const ok = await store.selectFile(path)
+    if (ok) {
+        activeTab.value = 'browse'
+        fileNav.openFile(path)
+    }
 }
 
 async function handleBrowseSelectFile(path) {
+    if (fileManagerRef.value?.multiSelectState?.active) return
     const ok = await store.selectFile(path)
-    if (ok) activeTab.value = 'viewer'
+    if (ok) {
+        fileNav.openFile(path)
+    }
 }
 
 async function handleTaskOpenFile(filePath, lineStart) {
     const ok = await store.selectFile(filePath)
     if (ok) {
-        switchTab('viewer')
+        activeTab.value = 'browse'
+        fileNav.openFile(filePath)
         if (lineStart) scrollToLine(lineStart)
     }
+}
+
+function handleOverlayClose() {
+    closeOverlayAndSync()
+}
+
+async function handleOverlayGoBack() {
+    if (fileNav.canGoBack.value) {
+        const prevPath = fileNav.goBack()
+        if (prevPath) {
+            await store.selectFile(prevPath)
+        }
+    } else {
+        handleOverlayClose()
+    }
+}
+
+async function handleOverlayOpenFile(path) {
+    const isExternal = path.startsWith('/')
+    const ok = await store.selectFile(path)
+    if (ok) {
+        fileNav.openFile(path)
+        if (isExternal) {
+            toast.show(gt('file.toast.externalFile'), { type: 'info', duration: 2000 })
+        }
+    }
+}
+
+function handleOpenFileOverlay(e) {
+    const { path, lineStart } = e.detail || {}
+    if (!path) return
+    activeTab.value = 'browse'
+    fileNav.openFile(path)
+    if (lineStart) scrollToLine(lineStart)
 }
 
 function onTaskCardClick(taskId) {
@@ -788,7 +909,18 @@ async function handleRename({ path, name }) {
 }
 
 async function handleDelete(path) {
+    const wasOverlay = fileNav.overlayOpen.value
     await store.deleteFile(path)
+    if (wasOverlay) {
+        if (fileNav.canGoBack.value) {
+            const prevPath = fileNav.goBack()
+            if (prevPath) {
+                await store.selectFile(prevPath)
+            }
+        } else {
+            handleOverlayClose()
+        }
+    }
 }
 
 async function handleBatchDelete(paths) {
@@ -808,7 +940,7 @@ function handleDockTerminal() {
 const overflowMenuOpen = ref(false)
 const overflowBtnRef = ref(null)
 const overflowTabs = computed(() => {
-  const tabs = ['tasks', 'history']
+  const tabs = ['tasks']
   if (!isSSHDisabled.value) tabs.push('proxy')
   if (!isTerminalDisabled.value) tabs.push('terminal')
   tabs.push('settings')
@@ -816,7 +948,6 @@ const overflowTabs = computed(() => {
 })
 const overflowTabMeta = {
   tasks:   { icon: CalendarClock, titleKey: 'nav.tasks' },
-  history: { icon: GitBranch, titleKey: 'git.history.projectHistory' },
   proxy:   { icon: EthernetPort, titleKey: 'nav.portForward' },
   terminal:{ icon: TerminalIcon, titleKey: 'terminal.title' },
   settings:{ icon: Settings, titleKey: 'nav.settings' },
@@ -1012,8 +1143,9 @@ onMounted(async () => {
         }
         return
     }
+    let authed = false
     if (resp.ok) {
-        isAuthenticated.value = true
+        authed = true
     } else if (resp.status === 401 || resp.status === 403) {
         if (isAppMode.value && window.AndroidNative?.getPassword?.()) {
             const savedPwd = window.AndroidNative.getPassword()
@@ -1021,7 +1153,7 @@ onMounted(async () => {
                 try {
                     const loginRes = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: savedPwd }) })
                     if (loginRes.ok) {
-                        isAuthenticated.value = true
+                        authed = true
                         if (window.AndroidNative?.setSSHPassword) window.AndroidNative.setSSHPassword(savedPwd)
                     } else { isAuthenticated.value = false; return }
                 } catch (_) { isAuthenticated.value = false; return }
@@ -1044,6 +1176,7 @@ onMounted(async () => {
       if (setupResp.ok) {
         const setupData = await setupResp.json()
         if (setupData.needs_setup) {
+          isAuthenticated.value = true
           needsSetup.value = true
           initGlobalEvents() // Needed for WS connection (setup wizard uses API)
           return  // Skip ALL main app initialization — wizard will handle it
@@ -1052,46 +1185,13 @@ onMounted(async () => {
     } catch { /* proceed to normal app if check fails */ }
 
     // ── Main app initialization (only when setup is NOT needed) ──
-    initGlobalEvents()
-    initMermaid()
-    loadTasks()
-    loadConfig()
-    window.addEventListener('open-file-manager', handleOpenFileManager)
-    window.addEventListener('navigate-to-commit', handleNavigateToCommit)
-    window.addEventListener('quote-sent', playQuoteEmitAnimation)
-    window.addEventListener('scroll-to-line', (e) => { scrollToLine(e.detail.line) })
-    window.addEventListener('clawbench-open-session', handleOpenSession)
-    window.addEventListener('clawbench-open-task', handleOpenTask)
-    document.addEventListener('click', handleOverflowOutsideClick)
-    window.addEventListener('clawbench-theme-change', (e) => {
-        const resolved = e.detail
-        theme.value = resolved
-        initMermaid()
-        reRenderMermaid()
-    })
-    window.addEventListener('clawbench-showhidden-change', (e) => {
-        showHidden.value = e.detail
-    })
-    // Load project first so the backend sets the clawbench_project cookie.
-    // Without this, subsequent chat/session API calls fail with NoProjectSelected
-    // on first login (no cookie yet) and show "加载聊天记录失败".
-    try { await store.loadProject() } catch (_) {
-        toast.show(t('toast.projectLoadFailed'), { icon: '⚠️', type: 'error', duration: 0, onClick: () => location.reload() }); return
-    }
-    await sessionIdentity.initSessionFromAPI()
-    // Use loadSessionsOnce() which correctly sets chatUnread to true OR false.
-    // The old code only set chatUnread=true and never corrected a stale true.
-    loadSessionsOnce()
-    if (isAppMode.value) syncToNative().catch(() => {})
-    // Resume Android log capture if previously enabled
-    if (isAppMode.value && localConfig.androidLogCapture) {
-      try { if (window.AndroidNative?.startLogCapture) window.AndroidNative.startLogCapture() } catch {}
-    }
-    loadSSHInfo().catch(() => {})
-    loadTerminalStatus().catch(() => {})
-    try { await store.loadFiles('') } catch (_) {
-        toast.show(t('toast.fileListLoadFailed'), { icon: '⚠️', type: 'error', duration: 6000 })
-    }
+    // Complete ALL initialization BEFORE setting isAuthenticated = true,
+    // so that ChatPanelContent mounts only when the clawbench_project cookie
+    // and session identity are already available. This prevents loadHistory()
+    // from firing with missing cookies (Android first-login bug).
+    if (!(await initializeApp())) return
+    isAuthenticated.value = true
+
     // Handle pending navigation from push notification deep link
     // (cross-project reload or cold start via AndroidNative bridge)
     const processPendingSessionNav = (navSessionId) => {
@@ -1189,12 +1289,13 @@ onMounted(async () => {
     const lastFile = localStorage.getItem('clawbenchLastFile_' + store.state.projectRoot)
     if (lastFile && lastFile !== store.state.currentFile?.path) {
         const lastSlash = lastFile.lastIndexOf('/')
-        store.state.currentDir = lastSlash > 0 ? lastFile.slice(0, lastSlash) : ''
-        await store.loadFiles(store.state.currentDir)
+        const targetDir = lastSlash > 0 ? lastFile.slice(0, lastSlash) : ''
+        store.resetDirStack(targetDir)
+        await store.loadFiles(targetDir)
         await store.selectFile(lastFile)
         if (store.state.currentFile?.error) store.state.currentFile = null
-        // 不再自动跳转到 viewer，保持默认 tab（chat）
-        // 用户切到 browse 时可以直接看到上次打开的文件
+        // 不自动切换 Tab 或打开覆盖层，保持默认 tab（chat）
+        // 用户切到 browse 时可以在 handleBrowseSelectFile 中打开覆盖层
     }
 })
 
@@ -1203,8 +1304,11 @@ onUnmounted(() => {
     window.removeEventListener('clawbench-foreground', handleForeground)
     destroyGlobalEvents()
     window.removeEventListener('open-file-manager', handleOpenFileManager)
+    window.removeEventListener('open-file-overlay', handleOpenFileOverlay)
+    window.removeEventListener('close-file-overlay', handleOverlayClose)
     window.removeEventListener('navigate-to-commit', handleNavigateToCommit)
     window.removeEventListener('quote-sent', playQuoteEmitAnimation)
+    window.removeEventListener('attach-to-chat', playQuoteEmitAnimation)
     window.removeEventListener('clawbench-open-session', handleOpenSession)
     window.removeEventListener('clawbench-open-task', handleOpenTask)
     document.removeEventListener('click', handleOverflowOutsideClick)
@@ -1220,11 +1324,12 @@ onUnmounted(() => {
     opacity: 0;
 }
 
-.viewer-panel {
-  flex: 1;
+.browse-panel {
+  position: relative;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 0;
   overflow: hidden;
 }
 

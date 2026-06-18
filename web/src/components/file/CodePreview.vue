@@ -18,6 +18,9 @@ import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
 import { useQuoteQuestion } from '@/composables/useQuoteQuestion.ts'
 import { useStickyScroll } from '@/composables/useStickyScroll.ts'
 import { renderCodeLines } from '@/utils/codeRender.ts'
+import { tryResolveCodeString, stripCodeString, verifyFilePaths } from '@/composables/useFilePathAnnotation.ts'
+import { escapeHtml } from '@/utils/html.ts'
+import { store } from '@/stores/app.ts'
 
 const props = defineProps({
     /** Raw file content */
@@ -37,6 +40,8 @@ const props = defineProps({
     /** Enable VS Code-style sticky scroll */
     stickyScroll: { type: Boolean, default: true },
 })
+
+const emit = defineEmits(['openFile'])
 
 const codeHtml = ref('')
 const codeRef = ref(null)
@@ -64,7 +69,18 @@ function handleStickyClick(lineNum) {
     if (!lineEls) return
     const el = lineEls[lineNum - 1]
     if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+    // Calculate sticky zone height to scroll target below it (avoid occlusion)
+    let stickyHeight = 0
+    for (const s of stickyLines.value) {
+        stickyHeight += s.height
+    }
+
+    const containerTop = codeRef.value.getBoundingClientRect().top
+    const lineTop = el.getBoundingClientRect().top
+    const scrollDelta = lineTop - containerTop - stickyHeight
+    codeRef.value.scrollBy({ top: scrollDelta, behavior: 'smooth' })
+
     // Flash animation
     el.classList.add('line-flash')
     setTimeout(() => el.classList.remove('line-flash'), 1200)
@@ -91,7 +107,58 @@ const { handleDblClick } = useDoubleClickCopy({
 })
 
 function handleClick(event) {
+    // Intercept clicks on annotated file-path spans in code
+    const pathEl = event.target.closest('.code-file-path')
+    if (pathEl) {
+        event.preventDefault()
+        event.stopPropagation()
+        const filePath = pathEl.getAttribute('data-file-path')
+        if (filePath) {
+            emit('openFile', filePath)
+        }
+        return
+    }
     handleDblClick(event)
+}
+
+function annotateFilePaths() {
+    if (!codeRef.value) return
+    const projectRoot = store.state.projectRoot
+    const homeDir = store.state.homeDir
+    // Use file's own directory as baseDir for relative path resolution
+    const baseDir = props.filePath ? props.filePath.substring(0, props.filePath.lastIndexOf('/')) : undefined
+    const detectedPaths = []
+
+    for (const span of codeRef.value.querySelectorAll('.hljs-string')) {
+        // Skip already-annotated spans
+        if (span.querySelector('.code-file-path')) continue
+
+        const text = span.textContent || ''
+        const result = tryResolveCodeString(text, projectRoot, homeDir, baseDir)
+        if (!result) continue
+
+        // Get the stripped path text for HTML replacement
+        const stripped = stripCodeString(text)
+        const isExternal = result.primary.startsWith('/')
+        const externalClass = isExternal ? ' external' : ''
+        const fallbackAttr = result.fallback !== result.primary ? ` data-fallback-path="${escapeHtml(result.fallback)}"` : ''
+        const innerHtml = span.innerHTML
+        const escapedPath = stripped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const pathRegex = new RegExp(`(${escapedPath})`)
+        if (pathRegex.test(innerHtml)) {
+            span.innerHTML = innerHtml.replace(
+                pathRegex,
+                `<span class="code-file-path${externalClass}" data-file-path="${escapeHtml(result.primary)}"${fallbackAttr}>$1</span>`
+            )
+            detectedPaths.push(result.primary)
+            if (result.fallback !== result.primary) detectedPaths.push(result.fallback)
+        }
+    }
+
+    // Verify paths asynchronously — removes non-existent annotations
+    if (detectedPaths.length > 0) {
+        verifyFilePaths(detectedPaths, codeRef.value)
+    }
 }
 
 function doRender(content) {
@@ -117,6 +184,7 @@ function doRender(content) {
     lineHtmlCache.clear()
     invalidateCache()
     nextTick(() => {
+        annotateFilePaths()
         if (props.stickyScroll && props.filePath && codeRef.value) {
             initSticky(props.filePath, codeRef.value)
         } else {
@@ -208,8 +276,8 @@ watch(
     position: sticky;
     left: 0;
     z-index: 3;
-    min-width: 48px;
-    padding-right: 12px;
+    min-width: 32px;
+    padding-right: 6px;
     text-align: right;
     user-select: none;
     color: var(--text-muted);
@@ -223,7 +291,7 @@ watch(
 
 .raw-content-pre .sticky-code-text {
     white-space: pre;
-    padding-left: 12px;
+    padding-left: 8px;
     font-size: 13px;
     line-height: 20.8px;
     position: relative;
@@ -305,5 +373,23 @@ watch(
 .char-flash-add {
     animation: char-flash-add-anim 1.5s ease-out forwards;
     border-radius: 2px;
+}
+
+/* Clickable file path in code strings */
+.code-file-path {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--accent-color);
+    transition: background 0.15s;
+    border-radius: 2px;
+}
+.code-file-path:hover {
+    background: rgba(255, 230, 0, 0.2);
+}
+/* Project-external file path — orange underline */
+.code-file-path.external {
+    border-bottom-color: #e67e22;
+}
+.code-file-path.external:hover {
+    background: rgba(230, 126, 34, 0.2);
 }
 </style>

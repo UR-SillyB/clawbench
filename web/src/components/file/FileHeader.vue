@@ -15,9 +15,9 @@
         <Search :size="14" />
       </button>
 
-      <!-- Refresh button -->
-      <button class="file-header-btn" @click.stop="$emit('refresh')" :title="t('nav.refresh')">
-        <RotateCw :size="14" />
+      <!-- Attach to chat button -->
+      <button ref="attachBtnRef" class="file-header-btn" :class="{ active: isAttached }" @click.stop="handleAttachToChat" :title="isAttached ? t('chat.attach.removeFromChat') : t('chat.actions.attachToChat')">
+        <Paperclip :size="14" />
       </button>
 
       <!-- More actions dropdown -->
@@ -27,6 +27,10 @@
         </button>
         <Teleport to="body">
           <div v-if="menuOpen" ref="menuRef" class="file-header-dropdown-menu" :style="menuStyle">
+            <button class="dropdown-item" @click="handleRefresh">
+              <RotateCw :size="14" />
+              {{ t('nav.refresh') }}
+            </button>
             <button v-if="file.isBinary" class="dropdown-item" @click="handleOpenAsText">
               <Code2 :size="14" />
               {{ t('file.header.openAsText') }}
@@ -58,7 +62,7 @@
               <Download :size="14" />
               {{ t('common.download') }}
             </button>
-            <button class="dropdown-item" @click="handleDelete">
+            <button class="dropdown-item danger" @click="handleDelete">
               <Trash2 :size="14" />
               {{ t('common.delete') }}
             </button>
@@ -69,6 +73,14 @@
           </div>
         </Teleport>
       </div>
+
+      <!-- Overlay nav: back and close (only when in overlay mode) -->
+      <button v-if="overlayCanGoBack" class="file-header-btn overlay-nav-btn" @click.stop="$emit('overlayGoBack')" :title="t('file.overlay.back')">
+        <ChevronLeft :size="14" />
+      </button>
+      <button v-if="overlayOpen" class="file-header-btn overlay-nav-btn" @click.stop="$emit('overlayClose')" :title="t('common.close')">
+        <X :size="14" />
+      </button>
     </div>
   </div>
 </template>
@@ -76,9 +88,11 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { List, Search, MoreVertical, Code2, Download, Trash2, GitBranch, TextWrap, Hash, RotateCw, Pin } from 'lucide-vue-next'
+import { List, Search, MoreVertical, Code2, Download, Trash2, GitBranch, TextWrap, Hash, RotateCw, Pin, ChevronLeft, X, Paperclip } from 'lucide-vue-next'
 import { getFileType } from '@/utils/fileType.ts'
 import { useAppMode } from '@/composables/useAppMode.ts'
+import { useChatContext } from '@/composables/useChatContext.ts'
+import { useToast } from '@/composables/useToast.ts'
 
 const props = defineProps({
     file: Object,
@@ -88,16 +102,23 @@ const props = defineProps({
     wordWrap: Boolean,
     showLineNumbers: Boolean,
     stickyScroll: Boolean,
+    overlayOpen: Boolean,
+    overlayCanGoBack: Boolean,
 })
-const emit = defineEmits(['delete', 'toggleView', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'openAsText', 'toggleWordWrap', 'toggleLineNumbers', 'toggleStickyScroll', 'refresh'])
+const emit = defineEmits(['delete', 'toggleView', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'openAsText', 'toggleWordWrap', 'toggleLineNumbers', 'toggleStickyScroll', 'refresh', 'overlayClose', 'overlayGoBack'])
 
 const { isAppMode } = useAppMode()
 const { t } = useI18n()
+const { addAttachedFile, hasAttachedFile, toggleAttachedFile, removeAttachedFileByPath } = useChatContext()
+const toast = useToast()
+
+const isAttached = computed(() => !!props.file?.path && hasAttachedFile(props.file.path))
 
 const menuOpen = ref(false)
 const dropdownRef = ref(null)
 const menuRef = ref(null)
 const menuStyle = ref({})
+const attachBtnRef = ref(null)
 
 function toggleMenu() {
     menuOpen.value = !menuOpen.value
@@ -174,6 +195,37 @@ function handleDelete() {
 function handleGitHistory() {
     menuOpen.value = false
     emit('openGitHistory')
+}
+
+function handleRefresh() {
+    menuOpen.value = false
+    emit('refresh')
+}
+
+function handleAttachToChat() {
+    const path = props.file?.path
+    if (!path) return
+    if (hasAttachedFile(path)) {
+        removeAttachedFileByPath(path)
+        toast.show(t('chat.attach.removedFromChat'), { icon: '📎', type: 'info', duration: 1500 })
+        return
+    }
+    addAttachedFile(path)
+    toast.show(t('chat.attach.addedToChat'), { icon: '📎', type: 'success', duration: 1500 })
+
+    // Fly-to-chat animation — capture button position before any async work
+    const btn = attachBtnRef.value
+    const dockChatBtn = document.querySelector('.dock-center')?.querySelector('.dock-btn')
+    const animFrom = btn?.getBoundingClientRect() ?? null
+    const animTo = dockChatBtn?.getBoundingClientRect() ?? null
+    if (animFrom && animTo) {
+        window.dispatchEvent(new CustomEvent('attach-to-chat', {
+            detail: {
+                from: { x: animFrom.left + animFrom.width / 2, y: animFrom.top + animFrom.height / 2 },
+                to: { x: animTo.left + animTo.width / 2, y: animTo.top + animTo.height / 2 },
+            }
+        }))
+    }
 }
 
 // Close dropdown on outside click
@@ -286,6 +338,11 @@ onBeforeUnmount(() => {
     position: relative;
 }
 
+/* Overlay nav buttons (back/close) */
+.overlay-nav-btn {
+    margin-left: 4px;
+}
+
 .wrap-check {
     margin-left: auto;
     color: var(--accent-color);
@@ -328,6 +385,16 @@ onBeforeUnmount(() => {
 }
 .file-header-dropdown-menu .dropdown-item svg {
     flex-shrink: 0;
+}
+.file-header-dropdown-menu .dropdown-item.danger {
+    color: #ef4444;
+}
+.file-header-dropdown-menu .dropdown-item.danger:hover {
+    background: #fef2f2;
+    color: #dc2626;
+}
+[data-theme="dark"] .file-header-dropdown-menu .dropdown-item.danger:hover {
+    background: #2d1b1b;
 }
 .file-header-dropdown-menu .wrap-check {
     margin-left: auto;
