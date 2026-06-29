@@ -118,7 +118,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Always update cookie with current session ID
-		setSessionID(w, sessionID)
+		setSessionID(w, r, sessionID)
 		// Mark session as read
 		service.UpdateLastRead(sessionID)
 
@@ -187,15 +187,16 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		// look up from AgentCapabilityRegistry so mode chips appear on first load.
 		// For CLI sessions, synthesize a read-only mode from the backend name
 		// so the mode chip is visible but non-switchable.
-		var modeState, thinkingEffortState, modelListState, planState any
+		var modeState, thinkingEffortState, modelListState, planState, usageState any
 		var commands []ai.AvailableCommandInfo
 		if sessionID != "" && sessionTransport != "cli" {
-			if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Effort != nil || len(s.Commands) > 0 || s.ModelList != nil || s.Plan != nil {
+			if s := ai.GetACPConnManager().GetCachedStateByClawbenchSID(sessionID); s.Mode != nil || s.Effort != nil || len(s.Commands) > 0 || s.ModelList != nil || s.Plan != nil || s.Usage != nil {
 				modeState = s.Mode
 				thinkingEffortState = s.Effort
 				commands = s.Commands
 				modelListState = s.ModelList
 				planState = s.Plan
+				usageState = s.Usage
 			} else if sessionAgentID != "" {
 				// No session-level mapping yet (new session, never sent a message).
 				// Fall back to agent-level registry so mode/thinking/command chips
@@ -220,10 +221,10 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState, "usageState": usageState})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "transport": sessionTransport, "autoApprove": sessionAutoApprove, "total": totalCount, "modeState": modeState, "thinkingEffortState": thinkingEffortState, "commands": commands, "modelListState": modelListState, "planState": planState, "usageState": usageState})
 		return
 	}
 
@@ -361,6 +362,9 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 	// allFiles already includes filePaths (frontend merges them before sending)
 	allFiles := req.Files
 
+	// Determine if the user message carries file attachments for conditional prompt injection
+	hasAttachments := len(req.FilePaths) > 0 || len(req.Files) > 0
+
 	// Resolve agent config early (needed for both enqueue and execution paths)
 	effectiveAgentID := req.AgentID
 	if effectiveAgentID == "" {
@@ -400,9 +404,6 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}
 		queueState := service.EnqueueMessage(sessionID, qMsg)
-
-		// Persist user message to DB immediately
-		service.AddChatMessage(projectPath, backendName, sessionID, "user", req.Message, allFiles, false, T(r, "FileMessage"))
 
 		// Notify the running goroutine via SSE
 		service.SendSessionEvent(sessionID, ai.StreamEvent{
@@ -496,7 +497,7 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		// Build the first chat request
-		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, req.Transport, fileDir)
+		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, req.ModeID, req.Transport, fileDir, hasAttachments)
 
 		// Execute first message
 		result := executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, firstChatReq, fileDir)
@@ -535,27 +536,22 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Queue has next message — notify frontend that current message is done,
-			// then send queue_consume + queue_update, persist, execute the next one
+			// Queue has next message — drain it atomically
 			slog.Info("draining queued message", slog.String("session", sessionID), slog.String("text", qMsg.Text))
-
-			// Notify frontend: current streaming message is finalized (remove loading dots)
-			ai.SendStreamEvent(ctx, streamCh, ai.StreamEvent{Type: "queue_done"})
-
-			// Notify frontend: a queued message is about to execute
-			ai.SendStreamEvent(ctx, streamCh, ai.StreamEvent{
-				Type:       "queue_consume",
-				QueueEvent: &ai.QueueEventData{Text: qMsg.Text, FilePaths: qMsg.FilePaths, Files: qMsg.Files},
-			})
 
 			// Persist user message to DB
 			service.AddChatMessage(projectPath, backendName, sessionID, "user", qMsg.Text, qMsg.Files, false, T(r, "FileMessage"))
 
-			// Send updated queue state
+			// Send single atomic queue_drain event (replaces old queue_done + queue_consume + queue_update)
 			remainingQueue := service.GetQueue(sessionID)
 			ai.SendStreamEvent(ctx, streamCh, ai.StreamEvent{
-				Type:       "queue_update",
-				QueueEvent: &ai.QueueEventData{Queue: remainingQueue},
+				Type: "queue_drain",
+				QueueEvent: &ai.QueueEventData{
+					Text:      qMsg.Text,
+					FilePaths: qMsg.FilePaths,
+					Files:     qMsg.Files,
+					Queue:     remainingQueue,
+				},
 			})
 
 			// Build chat request from queued message and execute
@@ -623,18 +619,19 @@ func executeStreamRun(
 
 	// Create streaming placeholder message in DB
 	emptyContent, _ := json.Marshal(map[string]any{"blocks": []any{}})
-	_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "assistant", string(emptyContent), nil, true, "")
+	streamingMsgID, _ := service.AddChatMessage(projectPath, backendName, sessionID, "assistant", string(emptyContent), nil, true, "")
 
 	// Delegate event loop to SessionExecutor
 	cfg := service.RunConfig{
-		Mode:        service.ModeInteractive,
-		ProjectPath: projectPath,
-		BackendName: backendName,
-		SessionID:   sessionID,
-		AgentID:     agentID,
-		ChatRequest: chatReq,
-		FileDir:     fileDir,
-		StreamCh:    streamCh,
+		Mode:               service.ModeInteractive,
+		ProjectPath:        projectPath,
+		BackendName:        backendName,
+		SessionID:          sessionID,
+		AgentID:            agentID,
+		ChatRequest:        chatReq,
+		FileDir:            fileDir,
+		StreamingMessageID: streamingMsgID,
+		StreamCh:           streamCh,
 		LocalizeError: func(err error, key string, args map[string]any) string {
 			return T(r, key, args)
 		},
@@ -675,7 +672,7 @@ func executeStreamRun(
 // modelOverride, if non-empty, takes precedence over the agent's default model.
 // thinkingEffortOverride, if non-empty, takes precedence over the agent's YAML default.
 // modeOverride, if non-empty, takes precedence over the current ACP session mode.
-func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, modeOverride, transportOverride, fileDir string) ai.ChatRequest {
+func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelOverride, thinkingEffortOverride, modeOverride, transportOverride, fileDir string, hasAttachments bool) ai.ChatRequest {
 	systemPrompt := ""
 	agentModel := ""
 	agentCommand := ""
@@ -724,18 +721,23 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 	} else if agent, ok := model.Agents[agentID]; ok && agent.SupportsACP() {
 		isACP = true
 	}
-	if resume && !isACP {
+	// Resolve external_session_id for fork detection (used by both CLI resume and fork context injection).
+	var resolvedExtID string
+	if resume {
 		extStart := time.Now()
-		extID := service.GetExternalSessionID(sessionID)
-		slog.Info("acp perf: buildChatRequest.GetExternalSessionID", "session_id", sessionID, "ext_id", extID, "elapsed", time.Since(extStart))
-		if extID != "" {
-			effectiveSessionID = extID
+		resolvedExtID = service.GetExternalSessionID(sessionID)
+		slog.Info("acp perf: buildChatRequest.GetExternalSessionID", "session_id", sessionID, "ext_id", resolvedExtID, "elapsed", time.Since(extStart))
+	}
+
+	if resume && !isACP {
+		if resolvedExtID != "" {
+			effectiveSessionID = resolvedExtID
 			slog.Info("session resume: resolved external_session_id",
 				slog.String("session", sessionID),
-				slog.String("external_session_id", extID),
+				slog.String("external_session_id", resolvedExtID),
 				slog.String("backend", backendName),
 				slog.String("agent", agentID),
-				slog.Bool("ext_id_is_clawbench_uuid", extID == sessionID))
+				slog.Bool("ext_id_is_clawbench_uuid", resolvedExtID == sessionID))
 		} else {
 			// No external session ID available — the CLI cannot resume a session
 			// it has never seen. Clear effectiveSessionID so the backend does not
@@ -754,6 +756,50 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 			slog.String("agent", agentID))
 	}
 
+	// Detect fork session first message: resume=true (has copied assistant messages)
+	// but no external_session_id (AI side has no context). This happens after
+	// ForkSession which copies messages in DB but doesn't inherit the AI-side session.
+	// Inject formatted history so the AI can continue with context.
+	//
+	// Guard against re-injection on subsequent messages:
+	// After the first AI response, session_capture persists external_session_id,
+	// so resolvedExtID != "" and this branch is skipped. If capture fails
+	// (unlikely), the condition would re-trigger, but that's acceptable
+	// because the AI still needs context.
+	var forkContext string
+	if resume && resolvedExtID == "" {
+		forkContext = buildForkContext(sessionID)
+		if forkContext != "" {
+			slog.Info("fork session: injecting context history",
+				slog.String("session", sessionID),
+				slog.String("backend", backendName),
+				slog.String("agent", agentID),
+				slog.Bool("is_acp", isACP))
+
+			// For ACP sessions: external_session_id is empty, so the ACP pool
+			// has no existing connection for this session. Setting Resume=false
+			// ensures the ACP backend calls NewSession (not ResumeSession with
+			// an invalid ID). The fork context in the prompt provides the
+			// necessary history, so a new session is the correct approach.
+			if isACP {
+				resume = false
+			}
+		}
+	}
+
+	// Inject media handling rules only when the user message carries attachments.
+	// These rules are omitted for text-only messages to save tokens.
+	if hasAttachments {
+		mediaPrompt := model.BuildMediaPrompt()
+		if mediaPrompt != "" {
+			if systemPrompt != "" {
+				systemPrompt += "\n\n" + mediaPrompt
+			} else {
+				systemPrompt = mediaPrompt
+			}
+		}
+	}
+
 	return ai.ChatRequest{
 		Prompt:                prompt,
 		SessionID:             effectiveSessionID,
@@ -765,8 +811,58 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 		ThinkingEffort:        effectiveThinkingEffort,
 		Mode:                  effectiveMode,
 		Resume:                resume,
+		HasAttachments:        hasAttachments,
 		AssistantMessageCount: service.GetAssistantMessageCount(sessionID),
+		ForkContext:           forkContext,
 	}
+}
+
+// buildForkContext reads the chat history from DB and formats it as a text block
+// that can be prepended to the user's prompt. This gives the AI context from the
+// parent session when the forked session sends its first message.
+//
+// Limits: each message is truncated to 2000 bytes; total context is capped at
+// 10000 bytes to avoid token explosion. Assistant message content in JSON block
+// format is converted to plain text via ExtractPlainText before inclusion.
+func buildForkContext(sessionID string) string {
+	msgs, err := service.GetMessagesBySessionID(sessionID)
+	if err != nil || len(msgs) == 0 {
+		return ""
+	}
+
+	const maxPerMsg = 2000
+	const maxTotal = 10000
+
+	var sb strings.Builder
+	sb.WriteString("[Below is the conversation history from before this session. Continue based on this context.]\n\n")
+
+	total := 0
+	for _, m := range msgs {
+		role := "User"
+		if m.Role == "assistant" {
+			role = "Assistant"
+		}
+		// Convert JSON block format to readable plain text.
+		// For assistant messages this strips tool_use/tool_result blocks
+		// and keeps only the text content.
+		content := service.ExtractPlainText(m.Content)
+		if content == "" {
+			continue // skip messages with no readable text (e.g. pure tool calls)
+		}
+		if len(content) > maxPerMsg {
+			content = content[:maxPerMsg] + "...(truncated)"
+		}
+		line := fmt.Sprintf("%s: %s\n\n", role, content)
+		if total+len(line) > maxTotal {
+			sb.WriteString("...(history too long, remaining messages omitted)\n\n")
+			break
+		}
+		sb.WriteString(line)
+		total += len(line)
+	}
+
+	sb.WriteString("[End of conversation history. Now answer the user's new question.]\n\n")
+	return sb.String()
 }
 
 // buildChatRequestFromQueue constructs an ai.ChatRequest from a queued message.
@@ -812,7 +908,8 @@ func buildChatRequestFromQueue(qMsg model.QueuedMessage, sessionID, projectPath,
 	// so queued messages respect the user's model choice, not just the agent default.
 	sessionModel := service.GetSessionModel(sessionID)
 	sessionTransport := service.GetSessionTransport(sessionID)
-	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, "", "", sessionTransport, fileDir)
+	hasAttachments := len(qMsg.FilePaths) > 0 || len(qMsg.Files) > 0
+	return buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, sessionModel, "", "", sessionTransport, fileDir, hasAttachments)
 }
 
 // CancelChat handles POST to cancel an ongoing AI stream for a session.

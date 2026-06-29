@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"clawbench/internal/ai"
 	"clawbench/internal/model"
 
 	_ "modernc.org/sqlite" // register SQLite driver
@@ -38,13 +39,21 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// SQLite concurrency: single connection + WAL mode + busy timeout
-	DB.SetMaxOpenConns(1)
+	// SQLite concurrency: WAL mode + busy timeout
+	// MaxOpenConns must be > 1 to avoid deadlocks when iterating rows (which holds
+	// a connection) and performing writes (which needs a separate connection) in the
+	// same loop — e.g., MigrateCustomSystemPrompt's SELECT + UPDATE pattern.
+	DB.SetMaxOpenConns(2)
 
 	// Enable WAL mode for concurrent reads during writes
 	if _, err := DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("failed to set WAL mode: %w", err)
 	}
+	// Enable foreign key enforcement (required for ON DELETE CASCADE)
+	if _, err := DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
+
 	// Wait up to 5 seconds when database is locked instead of failing immediately
 	if _, err := DB.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		return fmt.Errorf("failed to set busy_timeout: %w", err)
@@ -83,7 +92,8 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		CREATE TABLE IF NOT EXISTS recent_projects (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT UNIQUE NOT NULL,
-			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_default INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS scheduled_tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,6 +151,24 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		-- Without this, the unread subquery can only use the project_path prefix of idx_history_session,
 		-- requiring a full scan of all messages in the project to filter by role and streaming.
 		CREATE INDEX IF NOT EXISTS idx_history_unread ON chat_history(project_path, role, streaming, created_at);
+
+		-- Tool call detail storage (input/output split from chat_history.content for performance)
+		CREATE TABLE IF NOT EXISTS chat_tool_calls (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL REFERENCES chat_history(id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL,
+			tool_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			input TEXT NOT NULL DEFAULT '{}',
+			output TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			done INTEGER NOT NULL DEFAULT 0,
+			summary TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(tool_id, message_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON chat_tool_calls(message_id);
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON chat_tool_calls(session_id, created_at DESC);
 		-- Covering index for session list ORDER BY + cursor pagination:
 		-- WHERE session_type = 'chat' AND project_path = ? AND deleted = 0 ORDER BY updated_at DESC, id DESC
 		-- Without this, idx_sessions_type covers WHERE but requires a filesort for ORDER BY.
@@ -257,19 +285,6 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 	}
 
-	// Migrate: backfill external_session_id for sessions where it's empty.
-	// NOTE: This must run AFTER the transport column migration below.
-	// We moved it here for schema compatibility; the actual backfill happens
-	// after the transport column is guaranteed to exist.
-	var needBackfillExternalID bool
-	var backfillErr error
-	// Check if external_session_id needs backfilling (any empty rows exist).
-	var emptyExtIDCount int
-	_ = DB.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE (external_session_id = '' OR external_session_id IS NULL) AND id != ''").Scan(&emptyExtIDCount)
-	if emptyExtIDCount > 0 {
-		needBackfillExternalID = true
-	}
-
 	// Migrate: add source_session_id column for "continue conversation" feature
 	var hasTransport int
 	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='transport'").Scan(&hasTransport)
@@ -277,35 +292,6 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN transport TEXT DEFAULT ''"); err != nil {
 			return fmt.Errorf("failed to add transport column: %w", err)
 		}
-	}
-
-	// Now that transport column exists, run the external_session_id backfill
-	// and cleanup that we deferred from earlier in this function.
-	if needBackfillExternalID {
-		// Only backfill for CLI sessions (transport != 'acp-stdio') — ACP sessions
-		// get their external_session_id from session_capture events, and pre-filling
-		// it with the ClawBench UUID causes ResumeSession to fail.
-		result, err := DB.Exec("UPDATE chat_sessions SET external_session_id = id WHERE (external_session_id = '' OR external_session_id IS NULL) AND id != '' AND COALESCE(transport, '') != 'acp-stdio'")
-		if err != nil {
-			backfillErr = err
-		} else if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
-			slog.Info("backfilled external_session_id for existing CLI sessions", slog.Int64("rows", rowsAffected))
-		}
-	}
-	if backfillErr != nil {
-		return fmt.Errorf("failed to backfill external_session_id: %w", backfillErr)
-	}
-
-	// Clear incorrectly backfilled external_session_id for ACP sessions.
-	// The original migration unconditionally set external_session_id = id for all
-	// sessions, but ACP sessions get their external_session_id from session_capture.
-	// The backfilled ClawBench UUID is not a valid ACP session ID, causing
-	// ResumeSession to fail with "Resource not found".
-	cleanResult, cleanErr := DB.Exec("UPDATE chat_sessions SET external_session_id = '' WHERE transport = 'acp-stdio' AND external_session_id = id")
-	if cleanErr != nil {
-		slog.Warn("failed to clean external_session_id for ACP sessions", "error", cleanErr)
-	} else if rows, _ := cleanResult.RowsAffected(); rows > 0 {
-		slog.Info("cleaned incorrectly backfilled external_session_id for ACP sessions", slog.Int64("rows", rows))
 	}
 
 	// Migrate: add auto_approve column for per-session auto-approve (甩手掌柜) mode
@@ -337,6 +323,15 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		// Backfill: local_port = port for existing rows
 		if _, err := DB.Exec("UPDATE forwarded_ports SET local_port = port WHERE local_port IS NULL"); err != nil {
 			return fmt.Errorf("failed to backfill local_port in forwarded_ports: %w", err)
+		}
+	}
+
+	// Migrate: add custom_system_prompt column to agents for user-editable system prompt
+	var hasCustomSystemPrompt int
+	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='custom_system_prompt'").Scan(&hasCustomSystemPrompt)
+	if hasCustomSystemPrompt == 0 {
+		if _, err := DB.Exec("ALTER TABLE agents ADD COLUMN custom_system_prompt TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("failed to add custom_system_prompt column to agents: %w", err)
 		}
 	}
 
@@ -406,7 +401,7 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 	}
 
 	// Initialize read connection pool for concurrent reads (WAL mode).
-	// WAL contract: DB (MaxOpenConns=1) serializes writes; DBRead (MaxOpenConns=2)
+	// WAL contract: DB (MaxOpenConns=2) serializes writes + avoids deadlocks; DBRead (MaxOpenConns=2)
 	// allows concurrent reads that never block writes and vice versa.
 	// Both pools must use WAL mode + busy_timeout for this to work correctly.
 	DBRead, err = sql.Open("sqlite", dbPath)
@@ -514,6 +509,17 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 		}
 	}
 
+	// Migrate: add is_default column to recent_projects for server-side default project.
+	var hasIsDefault int
+	_ = DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('recent_projects') WHERE name='is_default'").Scan(&hasIsDefault)
+	if hasIsDefault == 0 {
+		if _, err := DB.Exec("ALTER TABLE recent_projects ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("failed to add is_default column: %w", err)
+		}
+		// Backfill: set the most recently accessed project as default
+		_, _ = DB.Exec("UPDATE recent_projects SET is_default = 1 WHERE id = (SELECT id FROM recent_projects ORDER BY accessed_at DESC LIMIT 1)")
+	}
+
 	// Migrate: extract metadata from chat_history.content into chat_metadata table.
 	// This is a one-time migration for existing data; new messages are saved
 	// to chat_metadata automatically via SaveMetadata().
@@ -524,6 +530,10 @@ func InitDB(runFromServer ...bool) error { //nolint:gocognit,gocyclo // multi-ta
 	// the assistant message ID (chat_history.id), same as interactive sessions.
 	// This converts any existing 'task_execution' summaries to the new format.
 	MigrateTaskExecutionSummaries()
+
+	// Migrate: extract tool_use input/output from chat_history.content into
+	// chat_tool_calls table and rewrite content to slim format (no input/output).
+	MigrateToolCallsFromContent()
 
 	return nil
 }
@@ -730,6 +740,183 @@ func MigrateTaskExecutionSummaries() {
 	slog.Info("task_execution summary migration complete", slog.Int("migrated", migrated), slog.Int("total", count))
 }
 
+// MigrateToolCallsFromContent scans assistant messages that contain tool_use blocks
+// with input/output still embedded in content JSON, extracts them into chat_tool_calls,
+// and rewrites content to the slim format (no input/output).
+// This is a one-time migration for data created before the tool-call-split feature.
+// Runs in batches to avoid excessive memory usage on large databases.
+func MigrateToolCallsFromContent() {
+	// Find assistant messages that have tool_use blocks with input field in content,
+	// but have no entries in chat_tool_calls yet.
+	// We detect old-format data by checking for "input" key inside tool_use blocks,
+	// which the slim format does not include.
+	var needed int
+	_ = DBRead.QueryRow(`
+		SELECT COUNT(*) FROM chat_history h
+		WHERE h.role = 'assistant'
+		  AND h.content LIKE '%"tool_use"%'
+		  AND h.content LIKE '%"input"%'
+		  AND h.streaming = 0
+		  AND NOT EXISTS (
+		    SELECT 1 FROM chat_tool_calls tc
+		    WHERE tc.message_id = h.id
+		    LIMIT 1
+		  )
+	`).Scan(&needed)
+	if needed == 0 {
+		return
+	}
+	slog.Info("migrating tool_use input/output from chat_history to chat_tool_calls", slog.Int("rows", needed))
+
+	batchSize := 200
+	offset := 0
+	migrated := 0
+	failed := 0
+
+	for {
+		rows, err := DBRead.Query(
+			`
+			SELECT h.id, h.session_id, h.content FROM chat_history h
+			WHERE h.role = 'assistant'
+			  AND h.content LIKE '%"tool_use"%'
+			  AND h.content LIKE '%"input"%'
+			  AND h.streaming = 0
+			  AND NOT EXISTS (
+			    SELECT 1 FROM chat_tool_calls tc
+			    WHERE tc.message_id = h.id
+			    LIMIT 1
+			  )
+			ORDER BY h.id
+			LIMIT ? OFFSET ?`,
+			batchSize, offset,
+		)
+		if err != nil {
+			slog.Error("tool_use migration: query failed", slog.String("err", err.Error()))
+			return
+		}
+
+		type msgRow struct {
+			ID        int64
+			SessionID string
+			Content   string
+		}
+		var batch []msgRow
+		for rows.Next() {
+			var r msgRow
+			if err := rows.Scan(&r.ID, &r.SessionID, &r.Content); err != nil {
+				slog.Error("tool_use migration: scan failed", slog.String("err", err.Error()))
+				continue
+			}
+			batch = append(batch, r)
+		}
+		_ = rows.Close() //nolint:sqlclosecheck // batched loop: cannot defer inside for-loop
+
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, r := range batch {
+			if err := migrateToolCallsForRow(r.ID, r.SessionID, r.Content); err != nil {
+				slog.Error("tool_use migration: row failed",
+					slog.Int64("id", r.ID),
+					slog.String("err", err.Error()))
+				failed++
+				continue
+			}
+			migrated++
+		}
+
+		slog.Info("tool_use migration progress",
+			slog.Int("migrated", migrated),
+			slog.Int("failed", failed),
+			slog.Int("total", needed),
+			slog.Int("remaining", max(0, needed-migrated)))
+
+		if len(batch) < batchSize {
+			break
+		}
+		offset += batchSize
+	}
+
+	slog.Info("tool_use migration complete",
+		slog.Int("migrated", migrated),
+		slog.Int("failed", failed),
+		slog.Int("needed", needed))
+}
+
+// migrateToolCallsForRow processes a single chat_history row:
+// 1. Parse content JSON, find tool_use blocks with input/output
+// 2. Insert into chat_tool_calls
+// 3. Rewrite content to slim format (remove input/output from tool_use blocks)
+func migrateToolCallsForRow(msgID int64, sessionID, content string) error {
+	var contentMap struct {
+		Blocks []model.ContentBlock `json:"blocks"`
+		Meta   any                  `json:"metadata,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(content), &contentMap); err != nil {
+		return fmt.Errorf("unmarshal content: %w", err)
+	}
+
+	hasToolUse := false
+	needsRewrite := false
+	for i := range contentMap.Blocks {
+		b := &contentMap.Blocks[i]
+		if b.Type != "tool_use" || b.ID == "" {
+			continue
+		}
+		hasToolUse = true
+
+		// Check if this block still has input (old format)
+		// Slim format blocks have nil/empty input
+		if len(b.Input) > 0 {
+			needsRewrite = true
+
+			// Extract metadata before stripping input/output
+			meta := ai.ExtractToolCallMetaFromInput(b.Name, b.ID, b.Input)
+			b.Summary = meta.Summary
+			b.DisplayName = meta.DisplayName
+			b.FilePath = meta.FilePath
+
+			// Upsert to chat_tool_calls
+			inputJSON, _ := json.Marshal(b.Input)
+			if err := UpsertToolCall(msgID, sessionID, b.ID, b.Name, inputJSON, b.Output, b.Status, b.Summary, b.Done); err != nil {
+				// Log but continue — don't block the whole migration
+				slog.Warn("tool_use migration: upsert failed",
+					slog.String("toolID", b.ID),
+					slog.String("err", err.Error()))
+			}
+		} else if b.Output != "" {
+			// Block has no input but has output — still need to save output and strip it
+			needsRewrite = true
+			meta := ai.ExtractToolCallMetaFromInput(b.Name, b.ID, b.Input)
+			b.Summary = meta.Summary
+			b.DisplayName = meta.DisplayName
+			b.FilePath = meta.FilePath
+			inputJSON, _ := json.Marshal(b.Input)
+			_ = UpsertToolCall(msgID, sessionID, b.ID, b.Name, inputJSON, b.Output, b.Status, b.Summary, b.Done)
+		}
+	}
+
+	if !hasToolUse || !needsRewrite {
+		return nil
+	}
+
+	// Rewrite content: MarshalJSON on each block produces slim format for tool_use
+	newContentMap := map[string]any{
+		"blocks": contentMap.Blocks,
+	}
+	if contentMap.Meta != nil {
+		newContentMap["metadata"] = contentMap.Meta
+	}
+	newContent, err := json.Marshal(newContentMap)
+	if err != nil {
+		return fmt.Errorf("marshal slim content: %w", err)
+	}
+
+	_, err = DB.Exec("UPDATE chat_history SET content = ? WHERE id = ?", string(newContent), msgID)
+	return err
+}
+
 // CloseDB closes both write and read database connections.
 func CloseDB() {
 	if DB != nil {
@@ -848,7 +1035,7 @@ type crudHelpers[T any, E any] struct {
 
 // list returns all rows from the helper's table ordered by sort_order.
 func (h crudHelpers[T, E]) list() ([]T, error) {
-	rows, err := DBRead.Query("SELECT " + h.scanCols + " FROM " + h.table + " ORDER BY sort_order") //nolint:gosec // table/scanCols are package constants, not user input
+	rows, err := DBRead.Query("SELECT " + h.scanCols + " FROM " + h.table + " ORDER BY sort_order")
 	if err != nil {
 		return nil, err
 	}
@@ -871,7 +1058,7 @@ func (h crudHelpers[T, E]) insert(item T) (int64, error) {
 	// without calling the closure twice.
 	label, command, sortOrder, extra := h.addFn(item)
 	if e, ok := any(extra).(quickCommandExtra); ok && e.autoExec == 1 {
-		if _, err := DB.Exec("UPDATE " + h.table + " SET auto_execute = 0 WHERE auto_execute = 1"); err != nil { //nolint:gosec // table is package constant
+		if _, err := DB.Exec("UPDATE " + h.table + " SET auto_execute = 0 WHERE auto_execute = 1"); err != nil {
 			return 0, err
 		}
 	}
@@ -898,7 +1085,7 @@ func (h crudHelpers[T, E]) insert(item T) (int64, error) {
 func (h crudHelpers[T, E]) update(id int64, item T) error {
 	label, command, _, extra := h.addFn(item)
 	if e, ok := any(extra).(quickCommandExtra); ok && e.autoExec == 1 {
-		if _, err := DB.Exec("UPDATE "+h.table+" SET auto_execute = 0 WHERE auto_execute = 1 AND id != ?", id); err != nil { //nolint:gosec // table is package constant
+		if _, err := DB.Exec("UPDATE "+h.table+" SET auto_execute = 0 WHERE auto_execute = 1 AND id != ?", id); err != nil {
 			return err
 		}
 	}
@@ -914,7 +1101,7 @@ func (h crudHelpers[T, E]) update(id int64, item T) error {
 
 // delete removes a row by id.
 func (h crudHelpers[T, E]) delete(id int64) error {
-	_, err := DB.Exec("DELETE FROM "+h.table+" WHERE id = ?", id) //nolint:gosec // table is package constant
+	_, err := DB.Exec("DELETE FROM "+h.table+" WHERE id = ?", id)
 	return err
 }
 
@@ -925,7 +1112,7 @@ func (h crudHelpers[T, E]) reorder(ids []int64) error {
 		return err
 	}
 	for i, id := range ids {
-		if _, err := tx.Exec("UPDATE "+h.table+" SET sort_order = ? WHERE id = ?", i, id); err != nil { //nolint:gosec // table is package constant
+		if _, err := tx.Exec("UPDATE "+h.table+" SET sort_order = ? WHERE id = ?", i, id); err != nil {
 			_ = tx.Rollback()
 			return err
 		}

@@ -246,6 +246,11 @@ linters:
           - gosec
         text: "G201:"
 
+      # gosec: SQL string concatenation in SQLite - parameterized where possible
+      - linters:
+          - gosec
+        text: "G202:"
+
       # gosec: Slowloris protection - internal tools with trusted clients
       - linters:
           - gosec

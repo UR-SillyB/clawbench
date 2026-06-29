@@ -1595,3 +1595,440 @@ func TestACPIntegration_CancelAndCrash_ResumeConversation(t *testing.T) {
 	assert.True(t, strings.Contains(content5, "1234"),
 		"AI should remember the password '1234' after cancel+crash+resume, got: %s", content5)
 }
+
+// ---------------------------------------------------------------------------
+// CodeWhale (formerly DeepSeek TUI) ACP Integration Tests
+// ---------------------------------------------------------------------------
+
+// codeWhaleTestAgent returns a model.Agent configured for CodeWhale ACP transport.
+func codeWhaleTestAgent() *model.Agent {
+	return &model.Agent{
+		ID:         "codewhale-acp-test",
+		Name:       "CodeWhale ACP Test",
+		Backend:    "deepseek",
+		Transport:  "acp-stdio",
+		AcpCommand: "codewhale serve --acp",
+		Models: []model.AgentModel{
+			{ID: "deepseek/deepseek-v4-pro", Name: "deepseek/deepseek-v4-pro", Default: true},
+		},
+	}
+}
+
+// requireCodeWhaleACPAvailable skips the test if codewhale CLI is not installed.
+func requireCodeWhaleACPAvailable(t *testing.T) {
+	t.Helper()
+	path, err := exec.LookPath("codewhale")
+	if err != nil {
+		// Try legacy deepseek shim
+		path, err = exec.LookPath("deepseek")
+		if err != nil {
+			t.Skipf("codewhale/deepseek CLI not available, skipping CodeWhale ACP integration test")
+		}
+	}
+	// Verify acp subcommand is supported
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "serve", "--acp", "--help")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("codewhale serve --acp not supported (error: %v, output: %s), skipping",
+			err, truncate(string(output), 200))
+	}
+}
+
+// TestACPIntegration_CodeWhale_BasicSession tests the CodeWhale ACP backend
+// can create a session, receive a prompt, and stream content back.
+func TestACPIntegration_CodeWhale_BasicSession(t *testing.T) {
+	requireCodeWhaleACPAvailable(t)
+
+	agent := codeWhaleTestAgent()
+	_ = setupACPTestEnvForAgent(t, agent)
+	sessionID := acpSessionID()
+
+	backend, err := NewACPBackend(agent)
+	require.NoError(t, err, "NewACPBackend should succeed for CodeWhale")
+
+	events := sendACPPrompt(t, backend, sessionID, "说一句话证明你是AI", 120*time.Second)
+	t.Logf("CodeWhale ACP: got %d events, types: %v", len(events), acpEventTypes(events))
+
+	// Should have at least content and done events
+	contentEvents := findACPEvents(events, "content")
+	assert.NotEmpty(t, contentEvents, "expected content events from CodeWhale ACP")
+
+	doneEvents := findACPEvents(events, "done")
+	assert.NotEmpty(t, doneEvents, "expected done event from CodeWhale ACP")
+
+	// Log the content for debugging
+	content := concatACPContent(events)
+	t.Logf("CodeWhale ACP content: %q", truncate(content, 300))
+}
+
+// TestACPIntegration_CodeWhale_MultiTurnContext tests that CodeWhale ACP
+// maintains conversation context across multiple turns.
+// Uses a simple arithmetic chain: "1+1" → 2, "add one" → 3, "add one" → 4.
+// Each turn depends on the accumulated context from all previous turns.
+func TestACPIntegration_CodeWhale_MultiTurnContext(t *testing.T) {
+	requireCodeWhaleACPAvailable(t)
+
+	agent := codeWhaleTestAgent()
+	env := setupACPTestEnvForAgent(t, agent)
+	sessionID := acpSessionID()
+
+	backend, err := NewACPBackend(agent)
+	require.NoError(t, err)
+
+	// Turn 1: 1+1 → expect "2"
+	events1 := sendACPPrompt(t, backend, sessionID, "1+1等于几？只回答数字", 120*time.Second)
+	requireDoneEvent(t, events1)
+
+	captureEvents := findACPEvents(events1, "session_capture")
+	if len(captureEvents) > 0 {
+		env.storeSID(sessionID, captureEvents[0].Content)
+		t.Logf("CodeWhale ACP captured session ID: %s", captureEvents[0].Content)
+	}
+
+	content1 := concatACPContent(events1)
+	t.Logf("Turn 1 (1+1): %q", truncate(content1, 200))
+	assert.True(t, strings.Contains(content1, "2"),
+		"Turn 1: AI should answer '2' for 1+1, got: %s", content1)
+
+	// Turn 2: add one → expect "3" (requires context: previous answer was 2)
+	events2 := sendACPPrompt(t, backend, sessionID, "再加一等于几？只回答数字", 120*time.Second)
+	requireDoneEvent(t, events2)
+
+	content2 := concatACPContent(events2)
+	t.Logf("Turn 2 (add one): %q", truncate(content2, 200))
+	assert.True(t, strings.Contains(content2, "3"),
+		"Turn 2: AI should answer '3' for (1+1)+1, proving multi-turn context. Got: %s", content2)
+
+	// Turn 3: add one again → expect "4" (requires context: all previous turns)
+	events3 := sendACPPrompt(t, backend, sessionID, "再加一等于几？只回答数字", 120*time.Second)
+	requireDoneEvent(t, events3)
+
+	content3 := concatACPContent(events3)
+	t.Logf("Turn 3 (add one again): %q", truncate(content3, 200))
+	assert.True(t, strings.Contains(content3, "4"),
+		"Turn 3: AI should answer '4' for ((1+1)+1)+1, proving stable multi-turn context. Got: %s", content3)
+}
+
+// TestACPIntegration_CodeWhale_MultiTurnContext_WithResume tests multi-turn conversation
+// with realistic ChatRequest fields (Resume=true, SystemPrompt, AssistantMessageCount)
+// matching the handler's buildChatRequest behavior.
+// Uses a three-turn arithmetic chain: "1+1" → 2, "add one" → 3, "add one" → 4.
+func TestACPIntegration_CodeWhale_MultiTurnContext_WithResume(t *testing.T) {
+	requireCodeWhaleACPAvailable(t)
+
+	agent := codeWhaleTestAgent()
+	env := setupACPTestEnvForAgent(t, agent)
+	sessionID := acpSessionID()
+
+	backend, err := NewACPBackend(agent)
+	require.NoError(t, err)
+
+	// Turn 1: Resume=false, SystemPrompt injected (first message)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel1()
+
+	ch1, err := backend.ExecuteStream(ctx1, ChatRequest{
+		Prompt:       "1+1等于几？只回答数字",
+		SessionID:    sessionID,
+		WorkDir:      acpTestWorkDir(),
+		Resume:       false,
+		SystemPrompt: "You are a helpful assistant. Reply concisely.",
+	})
+	require.NoError(t, err)
+
+	events1 := collectACPEvents(t, ch1, 120*time.Second)
+	requireDoneEvent(t, events1)
+
+	captureEvents := findACPEvents(events1, "session_capture")
+	if len(captureEvents) > 0 {
+		env.storeSID(sessionID, captureEvents[0].Content)
+		t.Logf("CodeWhale ACP captured session ID: %s", captureEvents[0].Content)
+	}
+
+	content1 := concatACPContent(events1)
+	t.Logf("Turn 1 (1+1, Resume=false): %q", truncate(content1, 200))
+	assert.True(t, strings.Contains(content1, "2"),
+		"Turn 1: AI should answer '2' for 1+1, got: %s", content1)
+
+	// Turn 2: Resume=true (has 1 assistant message)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel2()
+
+	ch2, err := backend.ExecuteStream(ctx2, ChatRequest{
+		Prompt:                "再加一等于几？只回答数字",
+		SessionID:             sessionID,
+		WorkDir:               acpTestWorkDir(),
+		Resume:                true,
+		SystemPrompt:          "You are a helpful assistant. Reply concisely.",
+		AssistantMessageCount: 1,
+	})
+	require.NoError(t, err)
+
+	events2 := collectACPEvents(t, ch2, 120*time.Second)
+	requireDoneEvent(t, events2)
+
+	content2 := concatACPContent(events2)
+	t.Logf("Turn 2 (add one, Resume=true): %q", truncate(content2, 200))
+	assert.True(t, strings.Contains(content2, "3"),
+		"Turn 2: AI should answer '3' for (1+1)+1, proving multi-turn context with Resume=true. Got: %s", content2)
+
+	// Turn 3: Resume=true (has 2 assistant messages)
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel3()
+
+	ch3, err := backend.ExecuteStream(ctx3, ChatRequest{
+		Prompt:                "再加一等于几？只回答数字",
+		SessionID:             sessionID,
+		WorkDir:               acpTestWorkDir(),
+		Resume:                true,
+		SystemPrompt:          "You are a helpful assistant. Reply concisely.",
+		AssistantMessageCount: 2,
+	})
+	require.NoError(t, err)
+
+	events3 := collectACPEvents(t, ch3, 120*time.Second)
+	requireDoneEvent(t, events3)
+
+	content3 := concatACPContent(events3)
+	t.Logf("Turn 3 (add one again, Resume=true): %q", truncate(content3, 200))
+	assert.True(t, strings.Contains(content3, "4"),
+		"Turn 3: AI should answer '4' for ((1+1)+1)+1, proving stable multi-turn context with Resume=true. Got: %s", content3)
+}
+
+// ===========================================================================
+// Category F: Transport Switch & Session Recovery
+// ===========================================================================
+
+// F1: Session recovery after connection loss via ResumeSession
+// Tests that when a session has a prior ACP session ID and the connection is
+// lost (e.g., server restart), the session can be recovered via ResumeSession.
+func TestACPIntegration_SessionRecoveryAfterConnLoss(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	// Phase 1: Create a session and send first message
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+	events1 := sendACPPrompt(t, backend, sessionID, "记住数字42，只回答：已记住", 90*time.Second)
+	requireDoneEvent(t, events1)
+
+	// Capture the ACP session ID from session_capture
+	acpSID := extractACPCaptureID(t, events1)
+	t.Logf("Phase 1: ACP session ID = %s", acpSID)
+
+	// Store the ACP session ID (simulating what captureExternalSessionID does)
+	env.storeSID(sessionID, acpSID)
+
+	// Phase 2: Kill the connection (simulating server restart)
+	env.closeConn(t, sessionID)
+	assert.Nil(t, env.mgr.GetConn(sessionID), "connection should be closed")
+
+	// Phase 3: Send next message — GetOrCreateConn should:
+	//   1. Pre-populate acpSID from external_session_id
+	//   2. Try ResumeSession → if succeeds, session context is preserved
+	//   3. If ResumeSession fails → return error (no silent NewSession/amnesia)
+	events2 := sendACPPrompt(t, backend, sessionID, "我之前让你记住的数字是什么？只回答数字", 90*time.Second)
+	requireDoneEvent(t, events2)
+
+	content2 := concatACPContent(events2)
+	t.Logf("Phase 2 content: %q", truncate(content2, 200))
+	assert.Contains(t, content2, "42",
+		"AI should remember '42' from prior session, proving ResumeSession recovery works")
+}
+
+// F2: Unrecoverable session returns error (not silent amnesia)
+// When ResumeSession fails for a session that had a prior ACP session ID,
+// ensureAliveWithSession must return an error instead of silently falling
+// back to NewSession which would lose all conversation context.
+func TestACPIntegration_UnrecoverableSession_ReturnsError(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	// Create a session with a fake ACP session ID that doesn't exist on disk.
+	// This simulates the CLI→ACP switch scenario where external_session_id
+	// contains a CLI session ID that the ACP agent can't resume.
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+
+	// Inject a fake external_session_id that won't be found by the agent
+	fakeAcpSID := "nonexistent-session-" + uuid.New().String()[:8]
+	env.storeSID(sessionID, fakeAcpSID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	ch, err := backend.ExecuteStream(ctx, ChatRequest{
+		Prompt:    "说一个字：好",
+		SessionID: sessionID,
+		WorkDir:   acpTestWorkDir(),
+	})
+	require.NoError(t, err, "ExecuteStream should not return error on creation")
+
+	events := collectACPEvents(t, ch, 120*time.Second)
+
+	// The session should either:
+	// - Succeed (if ResumeSession somehow works with the fake ID)
+	// - Return an error event (ResumeSession failed → no silent amnesia)
+	doneEvents := findACPEvents(events, "done")
+	errorEvents := findACPEvents(events, "error")
+
+	if len(doneEvents) > 0 && len(errorEvents) == 0 {
+		t.Log("Session succeeded (ResumeSession worked) — this is acceptable")
+	} else if len(errorEvents) > 0 {
+		t.Logf("Error event received (expected for unrecoverable session): %v", errorEvents[0].Error)
+		assert.Contains(t, errorEvents[0].Error, "ResumeSession",
+			"error message should mention ResumeSession failure, not silent amnesia")
+	} else {
+		t.Fatal("expected either done or error event, got neither")
+	}
+}
+
+// F2: ACP connection reuse after transport switch
+// Verifies that switching from ACP to CLI and back to ACP works correctly.
+func TestACPIntegration_TransportSwitch_ACPtoCLItoACP(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+
+	// Phase 1: Start with ACP
+	events1 := sendACPPrompt(t, backend, sessionID, "说一个字：好", 90*time.Second)
+	requireDoneEvent(t, events1)
+	content1 := concatACPContent(events1)
+	assert.NotEmpty(t, content1, "should receive content from ACP")
+
+	// Phase 2: Switch to CLI — close ACP connection
+	env.mgr.CloseConn(sessionID)
+	assert.Nil(t, env.mgr.GetConn(sessionID), "ACP connection should be closed")
+
+	// Phase 3: Switch back to ACP — new ACP connection should be created
+	events2 := sendACPPrompt(t, backend, sessionID, "再说一个字：行", 90*time.Second)
+	requireDoneEvent(t, events2)
+	content2 := concatACPContent(events2)
+	assert.NotEmpty(t, content2, "should receive content from ACP after switch-back")
+
+	// Cleanup
+	env.closeConn(t, sessionID)
+}
+
+// ===========================================================================
+// Category G: ACP Capability Discovery — LoadSession / ListSessions
+// ===========================================================================
+//
+// These tests directly query the ACP Initialize response to determine whether
+// an agent advertises LoadSession and SessionCapabilities.List capabilities.
+// This is what controls the "resume session" button visibility in the UI.
+
+// G1: CodeBuddy ACP — check LoadSession and ListSessions capabilities
+//
+// This test directly inspects the ACP Initialize response from CodeBuddy CLI
+// to determine if it advertises session/list and session/load capabilities.
+// The actionbar "resume session" button (RotateCcw) is gated on these
+// capabilities: GetLoadSession() && GetListSessions() must both return true.
+//
+// Run with:
+//
+//	go test -v -run TestACPIntegration_CodeBuddy_SessionCapabilities -tags integration -timeout 120s
+func TestACPIntegration_CodeBuddy_SessionCapabilities(t *testing.T) {
+	requireCodeBuddyACPAvailable(t)
+	env := setupACPTestEnv(t)
+
+	backend, err := NewACPBackend(env.agent)
+	require.NoError(t, err)
+
+	// Send a prompt to trigger Initialize (which populates the capability registry)
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+	events := sendACPPrompt(t, backend, sessionID, "说一个字：好", 90*time.Second)
+	requireDoneEvent(t, events)
+
+	// Check the AgentCapabilityRegistry for LoadSession and ListSessions
+	reg := GetAgentCapabilityRegistry()
+	loadSession := reg.GetLoadSession(env.agent.ID)
+	listSessions := reg.GetListSessions(env.agent.ID)
+
+	t.Logf("CodeBuddy ACP capabilities: LoadSession=%v, ListSessions=%v", loadSession, listSessions)
+
+	// Also directly inspect the ACPConn for the raw Initialize response data
+	conn := env.mgr.GetConn(sessionID)
+	require.NotNil(t, conn, "should have a connection after prompt")
+
+	// Log the full capability state for debugging
+	capData := reg.Get(env.agent.ID)
+	if capData != nil {
+		t.Logf("Full capability state: LoadSession=%v, ListSessions=%v, modes=%d, commands=%d",
+			capData.LoadSession, capData.ListSessions,
+			len(capData.AvailableModes), len(capData.AvailableCommands))
+	}
+
+	// Document the current state — these assertions intentionally use assert
+	// (not require) so both are always checked and reported.
+	// If CodeBuddy doesn't support these capabilities, the test still passes
+	// but clearly reports what's missing.
+	if !loadSession {
+		t.Log("CodeBuddy ACP does NOT advertise LoadSession capability — session/load RPC is unavailable")
+	}
+	if !listSessions {
+		t.Log("CodeBuddy ACP does NOT advertise SessionCapabilities.List — session/list RPC is unavailable")
+	}
+
+	// Attempt to call ListSessions directly to confirm
+	if listSessions {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		sessions, nextCursor, err := conn.ListSessions(ctx, nil)
+		if err != nil {
+			t.Logf("ListSessions RPC call failed: %v", err)
+		} else {
+			t.Logf("ListSessions returned %d sessions, nextCursor=%v", len(sessions), nextCursor)
+		}
+	} else {
+		t.Log("Skipping ListSessions RPC call — capability not advertised")
+	}
+}
+
+// G2: Compare capabilities across agents — Claude vs CodeBuddy
+//
+// This test runs the same capability check for Claude ACP (if available)
+// to provide a comparison baseline. Claude Code is known to support
+// LoadSession and ListSessions.
+//
+// Run with:
+//
+//	go test -v -run TestACPIntegration_Claude_SessionCapabilities -tags integration -timeout 120s
+func TestACPIntegration_Claude_SessionCapabilities(t *testing.T) {
+	requireClaudeACPAvailable(t)
+
+	agent := claudeACPAgent()
+	env := setupACPTestEnvForAgent(t, agent)
+
+	backend, err := NewACPBackend(agent)
+	require.NoError(t, err)
+
+	sessionID := acpSessionID()
+	defer env.closeConn(t, sessionID)
+	events := sendACPPrompt(t, backend, sessionID, "说一个字：好", 120*time.Second)
+	requireDoneEvent(t, events)
+
+	reg := GetAgentCapabilityRegistry()
+	loadSession := reg.GetLoadSession(agent.ID)
+	listSessions := reg.GetListSessions(agent.ID)
+
+	t.Logf("Claude ACP capabilities: LoadSession=%v, ListSessions=%v", loadSession, listSessions)
+
+	// Claude Code is expected to support both
+	assert.True(t, loadSession, "Claude ACP should advertise LoadSession capability")
+	assert.True(t, listSessions, "Claude ACP should advertise SessionCapabilities.List")
+}

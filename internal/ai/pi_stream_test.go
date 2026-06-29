@@ -298,6 +298,33 @@ func TestPiStreamParser_ToolcallEndWithEdit(t *testing.T) {
 	}
 }
 
+func TestPiStreamParser_ThinkingEndEmitsThinkingDone(t *testing.T) {
+	parser := &PiStreamParser{}
+	ch := make(chan StreamEvent, 10)
+	parser.ParseLine(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0},"message":{"role":"assistant"}}`, ch)
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "thinking_done" {
+			t.Errorf("expected thinking_done event, got %s", evt.Type)
+		}
+	default:
+		t.Error("expected thinking_done event on channel")
+	}
+}
+
+func TestPiStreamParser_ThinkingStartNoEvent(t *testing.T) {
+	parser := &PiStreamParser{}
+	ch := make(chan StreamEvent, 10)
+	parser.ParseLine(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0},"message":{"role":"assistant"}}`, ch)
+
+	select {
+	case evt := <-ch:
+		t.Errorf("expected no event from thinking_start, got %+v", evt)
+	default:
+	}
+}
+
 func TestPiStreamParser_UnparseableLine(t *testing.T) {
 	parser := &PiStreamParser{}
 	ch := make(chan StreamEvent, 10)
@@ -323,6 +350,7 @@ func TestPiStreamParser_FullStreamWithToolUse(t *testing.T) {
 		`{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"read /etc/hostname"}],"timestamp":1}}`,
 		`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"stop"}}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"I'll read the file."},"message":{"role":"assistant"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0},"message":{"role":"assistant"}}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":1,"toolCall":{"id":"call_1","name":"read","arguments":{"path":"/etc/hostname"}}},"message":{"role":"assistant"}}`,
 		`{"type":"message_end","message":{"role":"assistant","stopReason":"toolUse"}}`,
 		`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"read","args":{"path":"/etc/hostname"}}`,
@@ -354,7 +382,7 @@ verify:
 	// Expected event types in order
 	// Note: session_capture is NOT emitted by the parser directly;
 	// CLIBackend.ExecuteStream() handles that via GetCapturedSessionID().
-	expected := []string{"thinking", "tool_use", "tool_result", "content", "metadata", "done"}
+	expected := []string{"thinking", "thinking_done", "tool_use", "tool_result", "content", "metadata", "done"}
 	if len(events) < len(expected) {
 		t.Fatalf("expected at least %d events, got %d", len(expected), len(events))
 	}

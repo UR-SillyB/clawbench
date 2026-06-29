@@ -24,12 +24,11 @@ Long texts are automatically summarized before reading aloud, controlled by `sum
 | `mmx-cli` | mmx text chat (lightweight and fast) | Requires mmx CLI |
 | `claude` | Claude CLI (high summarization quality) | Requires claude CLI |
 | `codebuddy` | CodeBuddy CLI | Requires codebuddy CLI |
-| `gemini` | Gemini CLI | Requires gemini CLI |
 | `opencode` | OpenCode CLI | Requires opencode CLI |
 | `codex` | Codex CLI | Requires codex CLI |
 | `qoder` | Qoder CLI (Alibaba coding agent) | Requires qoder CLI |
 | `vecli` | VeCLI (Volcengine Doubao) | Requires vecli CLI |
-| `deepseek` | DeepSeek TUI (requires v0.8.33+) | Requires deepseek CLI |
+| `deepseek` | CodeWhale (requires v0.8.33+) | Requires deepseek CLI |
 | `pi` | Pi (minimalist coding agent) | Requires pi CLI |
 | `api` | Remote AI API (OpenAI/Anthropic format) | Requires URL and API Key configuration |
 | `ollama` | ~~Deprecated, use `api` + `format: "openai"` instead~~ | — |

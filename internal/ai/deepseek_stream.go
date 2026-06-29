@@ -6,7 +6,7 @@ import (
 )
 
 // DeepSeekStreamMessage represents a single JSON line from
-// `deepseek exec --output-format stream-json`.
+// `codewhale exec --output-format stream-json`.
 // Fields are shared across event types — only relevant fields are populated per type.
 type DeepSeekStreamMessage struct {
 	Type    string `json:"type"`    // "content", "thinking", "tool_use", "tool_result", "metadata", "session_capture", "done", "error"
@@ -29,7 +29,7 @@ type DeepSeekStreamMessage struct {
 	Error string `json:"error"` // error message
 }
 
-// DeepSeekStreamMeta represents the meta field in a metadata event from DeepSeek TUI.
+// DeepSeekStreamMeta represents the meta field in a metadata event from CodeWhale.
 type DeepSeekStreamMeta struct {
 	Model        string `json:"model"`
 	InputTokens  int    `json:"input_tokens"`
@@ -38,10 +38,14 @@ type DeepSeekStreamMeta struct {
 }
 
 // DeepSeekStreamParser parses JSON Lines output from
-// `deepseek exec --output-format stream-json`.
+// `codewhale exec --output-format stream-json`.
 type DeepSeekStreamParser struct {
 	sessionID string // captured from session_capture event
 	model     string // captured from metadata event
+
+	// InputRemaps maps input field names for tool input normalization.
+	// When set, parseDeepSeekToolUse uses this as the base remap table.
+	InputRemaps map[string]string
 }
 
 // GetCapturedSessionID returns the session ID captured from session_capture events.
@@ -50,7 +54,7 @@ func (p *DeepSeekStreamParser) GetCapturedSessionID() string {
 	return p.sessionID
 }
 
-// ParseLine parses a single JSON line from DeepSeek TUI's stream-json output and sends
+// ParseLine parses a single JSON line from CodeWhale's stream-json output and sends
 // StreamEvent(s) to the provided channel.
 //
 //nolint:gocyclo // complex stream parsing logic
@@ -73,20 +77,13 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		}
 
 	case "tool_use":
-		ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
-			Name:  normalizeToolName(msg.Name),
-			ID:    msg.ID,
-			Input: normalizeDeepSeekInput(msg.Name, msg.Input),
-			Done:  msg.Done,
-		}}
+		if tc := parseDeepSeekToolUse(&msg, p.InputRemaps); tc != nil {
+			ch <- StreamEvent{Type: "tool_use", Tool: tc}
+		}
 
 	case "tool_result":
-		if msg.ID != "" {
-			ch <- StreamEvent{Type: "tool_result", Tool: &ToolCall{
-				ID:     msg.ID,
-				Output: truncateToolOutput(msg.Output),
-				Status: msg.Status,
-			}}
+		if tc := parseDeepSeekToolResult(&msg); tc != nil {
+			ch <- StreamEvent{Type: "tool_result", Tool: tc}
 		}
 
 	case "session_capture":
@@ -118,40 +115,4 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 	default:
 		slog.Debug("deepseek stream: skipping unknown message type", "type", msg.Type)
 	}
-}
-
-// normalizeDeepSeekInput normalizes tool input field names from DeepSeek TUI's
-// native names to the canonical names expected by the frontend renderers.
-//
-// DeepSeek TUI uses concise snake_case names that differ from the canonical
-// Claude-style names: path→file_path, search→old_string, replace→new_string,
-// command→command (no change), content→content (no change).
-func normalizeDeepSeekInput(toolName string, rawInput json.RawMessage) string {
-	// Per-tool field renames: DeepSeek native → canonical frontend names
-	remaps := map[string]string{
-		"filePaths": "file_paths", // camelCase fallback
-		"oldString": "old_string", // camelCase fallback
-		"newString": "new_string", // camelCase fallback
-		"dirPath":   "path",       // camelCase fallback
-	}
-
-	switch toolName {
-	case "edit_file":
-		// DeepSeek: {path, search, replace} → canonical: {file_path, old_string, new_string}
-		remaps["path"] = "file_path"
-		remaps["search"] = "old_string"
-		remaps["replace"] = "new_string"
-	case "read_file", "write_file", "list_dir":
-		// DeepSeek: {path, ...} → canonical: {file_path, ...}
-		remaps["path"] = "file_path"
-	case "grep_files", "file_search":
-		// DeepSeek: {path, ...} → canonical: {path, ...} (grep uses 'path', not 'file_path')
-		// No remap needed — 'path' is already canonical for Grep/Glob
-	}
-
-	normalized, err := normalizeToolInput(rawInput, remaps)
-	if err != nil {
-		return string(rawInput)
-	}
-	return string(normalized)
 }

@@ -211,163 +211,6 @@ func TestDeepSeekStreamParserSkipUnknownType(t *testing.T) {
 	}
 }
 
-func TestBuildDeepSeekStreamArgsBasic(t *testing.T) {
-	req := ChatRequest{
-		Prompt: "what is 1+1?",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	expected := []string{"exec", "--auto", "--output-format", "stream-json", "what is 1+1?"}
-	if len(args) != len(expected) {
-		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
-	}
-	for i, arg := range args {
-		if arg != expected[i] {
-			t.Errorf("arg[%d]: expected '%s', got '%s'", i, expected[i], arg)
-		}
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithModel(t *testing.T) {
-	req := ChatRequest{
-		Prompt: "hello",
-		Model:  "deepseek-v4-pro",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) && args[i+1] == "deepseek-v4-pro" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --model deepseek-v4-pro in args: %v", args)
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithProviderModel(t *testing.T) {
-	// When model ID includes provider prefix (e.g. "deepseek/deepseek-v4-pro"),
-	// the provider prefix should be stripped before passing to the CLI.
-	req := ChatRequest{
-		Prompt: "hello",
-		Model:  "deepseek/deepseek-v4-pro",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) && args[i+1] == "deepseek-v4-pro" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --model deepseek-v4-pro (stripped provider) in args: %v", args)
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithProviderModel_NestedSlashes(t *testing.T) {
-	// Edge case: model ID with multiple slashes — should strip up to the last slash
-	req := ChatRequest{
-		Prompt: "hello",
-		Model:  "a/b/deepseek-v4-flash",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) && args[i+1] == "deepseek-v4-flash" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --model deepseek-v4-flash (stripped all provider prefixes) in args: %v", args)
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithNoModel(t *testing.T) {
-	// When no model is specified, --model flag should not appear
-	req := ChatRequest{
-		Prompt: "hello",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	for i, arg := range args {
-		if arg == "--model" {
-			t.Errorf("unexpected --model flag in args when no model specified: %v", args[i:])
-		}
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithResume(t *testing.T) {
-	req := ChatRequest{
-		Prompt:    "continue",
-		SessionID: "4bf83f0f-a9b6-47b4",
-		Resume:    true,
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for i, arg := range args {
-		if arg == "--resume" && i+1 < len(args) && args[i+1] == "4bf83f0f-a9b6-47b4" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --resume 4bf83f0f-a9b6-47b4 in args: %v", args)
-	}
-}
-
-func TestBuildDeepSeekStreamArgsWithSystemPrompt(t *testing.T) {
-	req := ChatRequest{
-		Prompt:       "review code",
-		SystemPrompt: "You are a code reviewer.",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for i, arg := range args {
-		if arg == "--system-prompt" && i+1 < len(args) && args[i+1] == "You are a code reviewer." {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --system-prompt in args: %v", args)
-	}
-}
-
-func TestBuildDeepSeekStreamArgsFull(t *testing.T) {
-	req := ChatRequest{
-		Prompt:       "explain this",
-		Model:        "deepseek-v4-flash",
-		SessionID:    "session-abc",
-		Resume:       true,
-		SystemPrompt: "Respond in Chinese",
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	argsStr := strings.Join(args, " ")
-	checks := []string{
-		"exec",
-		"--auto",
-		"--output-format stream-json",
-		"--resume session-abc",
-		"--system-prompt Respond in Chinese",
-		"--model deepseek-v4-flash",
-		"explain this",
-	}
-	for _, check := range checks {
-		if !strings.Contains(argsStr, check) {
-			t.Errorf("expected '%s' in args: %s", check, argsStr)
-		}
-	}
-}
-
 func TestDeepSeekToolNameNormalization(t *testing.T) {
 	parser := &DeepSeekStreamParser{}
 	ch := make(chan StreamEvent, 10)
@@ -519,33 +362,6 @@ func TestDeepSeekStreamParser_ErrorEmptyMessageSkipped(t *testing.T) {
 	}
 }
 
-func TestBuildDeepSeekStreamArgs_ContinueFallback(t *testing.T) {
-	// Resume without SessionID → --continue fallback
-	req := ChatRequest{
-		Prompt: "keep going",
-		Resume: true,
-	}
-	args := buildDeepSeekStreamArgs(req)
-
-	found := false
-	for _, arg := range args {
-		if arg == "--continue" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected --continue in args when Resume=true but SessionID is empty, got %v", args)
-	}
-
-	// Should NOT have --resume
-	for _, arg := range args {
-		if arg == "--resume" {
-			t.Error("--resume should NOT appear when SessionID is empty")
-		}
-	}
-}
-
 func TestDeepSeekInputFieldNormalization_GrepFilesPathNotRemapped(t *testing.T) {
 	// grep_files: 'path' field should NOT be remapped to 'file_path'
 	// because Grep's canonical field is 'path', not 'file_path'
@@ -563,23 +379,22 @@ func TestDeepSeekInputFieldNormalization_GrepFilesPathNotRemapped(t *testing.T) 
 }
 
 func TestDeepSeekInputFieldNormalization_InvalidJSON(t *testing.T) {
-	// When tool input is invalid JSON, normalizeDeepSeekInput returns the raw string.
-	// We can't test this through ParseLine because the outer line itself must be valid JSON
-	// (the input field is parsed from json.RawMessage which just captures the raw bytes).
-	// Instead, test normalizeDeepSeekInput directly.
-	result := normalizeDeepSeekInput("read_file", json.RawMessage(`{invalid}`))
-	if result == "" {
+	// When tool input is invalid JSON, parseDeepSeekToolUse returns the raw string.
+	msg := DeepSeekStreamMessage{Name: "read_file", Input: json.RawMessage(`{invalid}`)}
+	tc := parseDeepSeekToolUse(&msg, nil)
+	if tc.Input == "" {
 		t.Error("expected non-empty result for invalid JSON input")
 	}
-	if result != "{invalid}" {
-		t.Errorf("expected raw input returned on parse error, got '%s'", result)
+	if tc.Input != "{invalid}" {
+		t.Errorf("expected raw input returned on parse error, got '%s'", tc.Input)
 	}
 }
 
 func TestDeepSeekInputFieldNormalization_EmptyInput(t *testing.T) {
 	// Empty raw input should produce empty result
-	result := normalizeDeepSeekInput("read_file", json.RawMessage(``))
-	if result != "" {
-		t.Errorf("expected empty string for empty input, got '%s'", result)
+	msg := DeepSeekStreamMessage{Name: "read_file", Input: json.RawMessage(``)}
+	tc := parseDeepSeekToolUse(&msg, nil)
+	if tc.Input != "" {
+		t.Errorf("expected empty string for empty input, got '%s'", tc.Input)
 	}
 }

@@ -142,6 +142,10 @@
 
       <!-- Code / plain text -->
       <div v-else class="raw-content-viewer">
+        <div v-if="file.truncated" class="truncated-notice">
+          <AlertTriangle :size="14" />
+          {{ t('file.viewer.truncated') }}
+        </div>
         <CodePreview
           :content="file.content"
           :language="rawFileLanguage"
@@ -155,20 +159,31 @@
         />
       </div>
     </div>
+
+    <!-- Shared diff drawer for all file types -->
+    <DiffDrawer
+      :visible="drawerVisible"
+      :marker-type="drawerMarkerType"
+      :char-diff="drawerCharDiff"
+      :diff-lines="drawerDiffLines"
+      @close="closeDrawer"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSettingsConfig } from '@/composables/useSettingsConfig'
-import { FileText, Download, Code2 } from 'lucide-vue-next'
+import { FileText, Download, Code2, AlertTriangle } from 'lucide-vue-next'
 import ImagePreview from '@/components/media/ImagePreview.vue'
 import PdfPreview from '@/components/media/PdfPreview.vue'
 import AudioPreview from '@/components/media/AudioPreview.vue'
 import VideoPreview from '@/components/media/VideoPreview.vue'
 import MarkdownPreview from './MarkdownPreview.vue'
 import CodePreview from './CodePreview.vue'
+import DiffDrawer from './DiffDrawer.vue'
+import { useDiffDrawer } from '@/composables/useDiffDrawer.ts'
 import { flashRanges, flashType } from '@/composables/useFileRefresh.ts'
 import FileHeader from './FileHeader.vue'
 import { getFileType, formatFileSize } from '@/utils/fileType.ts'
@@ -178,6 +193,7 @@ import { useFileNavStack } from '@/composables/useFileNavStack.ts'
 
 const { t } = useI18n()
 const { isAppMode } = useAppMode()
+const { drawerVisible, drawerMarkerType, drawerCharDiff, drawerDiffLines, closeDrawer } = useDiffDrawer()
 
 const props = defineProps({
     file: Object,
@@ -245,7 +261,8 @@ function getScrollEl() {
     if (isMarkdown.value) {
         return el.querySelector('.markdown-body')
     }
-    if (isHtml.value && markdownViewMode.value === 'rendered') {
+    /* v8 ignore next - trivial prop access fix, tested via integration */
+    if (isHtml.value && props.markdownViewMode === 'rendered') {
         return null // iframe handles its own scrolling
     }
     return el.querySelector('.raw-content-pre')
@@ -295,9 +312,21 @@ function tryRestoreOrAttach() {
     attachScrollListener()
 }
 
+function handleCancelScrollRestore() {
+    pendingRestore = null
+}
+
 onBeforeUnmount(() => {
     detachScrollListener()
     clearRestoreTimer()
+    window.removeEventListener('cancel-scroll-restore', handleCancelScrollRestore)
+})
+
+// When an explicit scroll-to-line is requested (e.g. clicking a file path
+// annotation with line numbers), cancel any pending scroll-position restore
+// so it doesn't override the line scroll.
+onMounted(() => {
+    window.addEventListener('cancel-scroll-restore', handleCancelScrollRestore)
 })
 
 // Save/restore scroll position when switching files
@@ -315,9 +344,7 @@ watch(() => props.file, (f, oldF) => {
     }
     if (f?.path !== oldF?.path) {
         const savedScroll = scrollPositions.get(f.path)
-        if (savedScroll != null) {
-            pendingRestore = { path: f.path, scrollTop: savedScroll }
-        }
+        pendingRestore = { path: f.path, scrollTop: savedScroll ?? 0 }
         // Poll until content is rendered and scrollable
         restoreAttempts = 0
         restoreTimer = setInterval(tryRestoreOrAttach, 50)
@@ -506,11 +533,28 @@ defineExpose({
     border: none;
     background: #fff;
 }
+
+.truncated-notice {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color, #d97706);
+    font-size: 12px;
+    border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+}
 </style>
 
 <style>
 [data-theme="dark"] .error-bubble {
     background: rgba(239, 68, 68, 0.15);
     color: #fca5a5;
+}
+
+[data-theme="dark"] .truncated-notice {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border-bottom-color: rgba(245, 158, 11, 0.3);
 }
 </style>

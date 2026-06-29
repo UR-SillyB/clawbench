@@ -21,9 +21,11 @@ func okHandler(w http.ResponseWriter, r *http.Request) {
 func withSavedToken(f func()) {
 	origSession := model.SessionToken
 	origCookie := model.CookieToken
+	origRequireAuth := model.RequireAuthForLocalhost
 	defer func() {
 		model.SessionToken = origSession
 		model.CookieToken = origCookie
+		model.RequireAuthForLocalhost = origRequireAuth
 	}()
 	f()
 }
@@ -147,12 +149,78 @@ func TestAuth_LocalhostWithBadCookie_StillPasses(t *testing.T) {
 	})
 }
 
+// --- Auth: RequireAuthForLocalhost ---
+
+func TestAuth_RequireAuthForLocalhost_LocalhostIPv4_Returns401(t *testing.T) {
+	withSavedToken(func() {
+		model.SessionToken = "valid-token"
+		model.RequireAuthForLocalhost = true
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.RemoteAddr = "127.0.0.1:12345"
+
+		middleware.Auth(okHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+}
+
+func TestAuth_RequireAuthForLocalhost_LocalhostIPv6_Returns401(t *testing.T) {
+	withSavedToken(func() {
+		model.SessionToken = "valid-token"
+		model.RequireAuthForLocalhost = true
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.RemoteAddr = "[::1]:12345"
+
+		middleware.Auth(okHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+}
+
+func TestAuth_RequireAuthForLocalhost_WithValidCookie_PassThrough(t *testing.T) {
+	withSavedToken(func() {
+		model.SessionToken = "valid-token"
+		model.RequireAuthForLocalhost = true
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.AddCookie(&http.Cookie{
+			Name:  model.SessionCookie,
+			Value: "valid-token",
+		})
+
+		middleware.Auth(okHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+func TestAuth_RequireAuthForLocalhost_False_LocalhostStillBypasses(t *testing.T) {
+	withSavedToken(func() {
+		model.SessionToken = "valid-token"
+		model.RequireAuthForLocalhost = false
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.RemoteAddr = "127.0.0.1:12345"
+
+		middleware.Auth(okHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
 // --- GetProjectFromCookie ---
 
 func TestGetProjectFromCookie_NormalExtraction(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(&http.Cookie{
-		Name:  "clawbench_project",
+		Name:  model.ScopedCookieName("clawbench_project"),
 		Value: "/home/user/myproject",
 	})
 
@@ -164,7 +232,7 @@ func TestGetProjectFromCookie_URLEncodedValueDecoded(t *testing.T) {
 	encoded := url.QueryEscape("/home/user/my project")
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(&http.Cookie{
-		Name:  "clawbench_project",
+		Name:  model.ScopedCookieName("clawbench_project"),
 		Value: encoded,
 	})
 
@@ -182,7 +250,7 @@ func TestGetProjectFromCookie_NoCookie_ReturnsEmpty(t *testing.T) {
 func TestGetProjectFromCookie_EmptyValue_ReturnsEmpty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(&http.Cookie{
-		Name:  "clawbench_project",
+		Name:  model.ScopedCookieName("clawbench_project"),
 		Value: "",
 	})
 

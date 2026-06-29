@@ -1,6 +1,9 @@
 import { ref, computed } from 'vue'
-import { useAgents } from '@/composables/useAgents'
+import { useAgents, registerIdentityUpdaters } from '@/composables/useAgents'
 import { gt } from '@/composables/useLocale'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'SessionIdentity'
 
 // ───────────────────────────────────────────────────────────
 // Module-level singleton state — shared across the whole app.
@@ -25,6 +28,10 @@ const autoApprove = ref(false)
 const availableModes = ref<Array<{ id: string; name: string }>>([])
 const availableCommands = ref<Array<{ name: string; description: string; inputHint?: string }>>([])
 const availableThinkingEfforts = ref<Array<{ id: string; name: string }>>([])
+const contextUsed = ref(0)
+const contextSize = ref(0)
+const contextCost = ref(0)
+const contextCurrency = ref('')
 export const runningSessions = ref(new Set<string>())
 // Bumped on every mutation to runningSessions so computed properties
 // that depend on the set's contents re-evaluate correctly.
@@ -34,6 +41,16 @@ const runningSessionsVersion = ref(0)
 // to useSessionIdentity so App.vue can render a single SessionDrawer
 // instance that's accessible from any tab (chat, viewer, QuoteQuestionBar).
 const sessionDrawerOpen = ref(false)
+
+// Register identity updaters in useAgents to break the circular dependency.
+// This must run at module evaluation time so that useAgents can call the
+// updaters during loadAgents() without importing useSessionIdentity.
+registerIdentityUpdaters({
+  updateAvailableModes,
+  updateAvailableThinkingEfforts,
+  updateCommandState,
+  currentAgentId,
+})
 
 /** Reset all module-level singleton refs — used by SPA hot project switch. */
 /** Read-only accessor for the current session ID (no composable setup needed). */
@@ -57,6 +74,10 @@ export function resetIdentity(): void {
   availableModes.value = []
   availableCommands.value = []
   availableThinkingEfforts.value = []
+  contextUsed.value = 0
+  contextSize.value = 0
+  contextCost.value = 0
+  contextCurrency.value = ''
   runningSessions.value = new Set()
   runningSessionsVersion.value = 0
   sessionDrawerOpen.value = false
@@ -101,7 +122,7 @@ function loadModelPref(agentId: string): string | null {
   return agent?.preferredModel || null
 }
 
-async function saveThinkingPref(agentId: string, level: string) {
+async function saveThinkingPref(agentId: string, _level: string) {
   if (!agentId) return
   // No-op: thinking effort selection in chat is session-scoped and does NOT update
   // the agent's default. The agent's preferredThinkingEffort is configured exclusively
@@ -209,6 +230,22 @@ export function clearThinkingEffortState() {
   currentThinkingEffortName.value = ''
 }
 
+/** Update context usage state from SSE usage_update event. */
+export function updateUsageState(used: number, size: number, cost?: number, currency?: string) {
+  contextUsed.value = used
+  contextSize.value = size
+  contextCost.value = cost ?? 0
+  contextCurrency.value = currency ?? ''
+}
+
+/** Clear usage state (called on session switch or reset). */
+export function clearUsageState() {
+  contextUsed.value = 0
+  contextSize.value = 0
+  contextCost.value = 0
+  contextCurrency.value = ''
+}
+
 /** Toggle auto-approve mode and persist to server. */
 export function toggleAutoApprove(enabled: boolean) {
   autoApprove.value = enabled
@@ -219,7 +256,7 @@ export function toggleAutoApprove(enabled: boolean) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: sid, autoApprove: enabled }),
     }).catch(err => {
-      console.error('Failed to update autoApprove:', err)
+      appLog.e(TAG, 'Failed to update autoApprove:', err)
     })
   }
 }
@@ -251,6 +288,7 @@ export interface SessionActions {
   openChatPanel: () => void
   continueFromExecution: (taskId: number, execId: number, switchTabFn: (tab: string) => void) => Promise<boolean>
   checkContinueSession: (taskId: number, execId: number) => Promise<{ exists: boolean; sessionId: string }>
+  forkSession: (sessionId: string) => Promise<boolean>
 }
 
 /**
@@ -395,6 +433,10 @@ export async function initSessionFromAPI() {
             }
           }
         }
+        // Initialize usage state from server cached data
+        if (data.usageState && data.usageState.size > 0) {
+          updateUsageState(data.usageState.used ?? 0, data.usageState.size, data.usageState.cost, data.usageState.currency)
+        }
       }
     }
   } catch (_) {
@@ -473,7 +515,7 @@ export function useSessionIdentity() {
         currentThinkingEffort.value = loadThinkingPref(currentAgentId.value) || ''
       }
     } catch (err) {
-      console.error('Failed to create session:', err)
+      appLog.e(TAG, 'Failed to create session:', err)
     }
   }
 
@@ -514,7 +556,7 @@ export function useSessionIdentity() {
         ? `/api/ai/chat?session_id=${encodeURIComponent(sid)}`
         : null
       if (!url) {
-        console.error('sendMessage: no session ID available, cannot send')
+        appLog.e(TAG, 'sendMessage: no session ID available, cannot send')
         return
       }
       await fetch(url, {
@@ -523,7 +565,7 @@ export function useSessionIdentity() {
         body: JSON.stringify({ message: text, filePaths: filePaths || [], modelId: currentModelId.value || undefined, thinkingEffort: currentThinkingEffort.value || undefined, transport: currentTransport.value || undefined }),
       })
     } catch (err) {
-      console.error('Failed to send message:', err)
+      appLog.e(TAG, 'Failed to send message:', err)
     }
   }
 
@@ -588,6 +630,10 @@ export function useSessionIdentity() {
     availableThinkingEfforts,
     runningSessions,
     runningSessionsVersion,
+    contextUsed,
+    contextSize,
+    contextCost,
+    contextCurrency,
     agentHeaderTitle,
     // Global session drawer state
     sessionDrawerOpen,
@@ -619,5 +665,7 @@ export function useSessionIdentity() {
     clearCommandState,
     updateAvailableThinkingEfforts,
     clearThinkingEffortState,
+    updateUsageState,
+    clearUsageState,
   }
 }

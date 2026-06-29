@@ -55,6 +55,14 @@ type OpenCodeTokens struct {
 // fundamentally different (different top-level types, nesting in "part", multi-step lifecycle).
 type OpenCodeStreamParser struct {
 	sessionID string // captured from any message that has a sessionID
+
+	// ToolNameMap maps backend-specific tool names to canonical names.
+	// When set, ParseLine uses this map instead of the global normalizeToolName().
+	ToolNameMap map[string]string
+
+	// InputRemaps maps input field names for tool input normalization.
+	// When set, ParseLine uses this map for normalizing tool input fields.
+	InputRemaps map[string]string
 }
 
 // GetCapturedSessionID returns the OpenCode session ID (ses_xxx) captured from
@@ -64,7 +72,7 @@ func (p *OpenCodeStreamParser) GetCapturedSessionID() string { return p.sessionI
 // ParseLine parses a single JSON line from OpenCode's stream-json output and sends
 // StreamEvent(s) to the provided channel.
 //
-//nolint:gocognit,gocyclo // complex stream parsing logic
+//nolint:gocyclo // complex stream parsing logic
 func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 	var msg OpenCodeStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
@@ -108,42 +116,9 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		}
 
 	case "tool_use":
-		var part OpenCodeToolPart
-		if err := json.Unmarshal(msg.Part, &part); err != nil {
-			slog.Debug("opencode stream: skipping unparseable tool_use part", "error", err)
-			return
+		if tc := parseOpenCodeToolEvent(&msg, p.ToolNameMap, p.InputRemaps); tc != nil {
+			ch <- StreamEvent{Type: "tool_use", Tool: tc}
 		}
-		inputStr := "{}"
-		if part.State != nil && len(part.State.Input) > 0 {
-			// Normalize input field names from OpenCode's camelCase to canonical snake_case
-			inputStr = func() string {
-				normalized, err := normalizeToolInput(part.State.Input, map[string]string{
-					"oldString": "old_string",
-					"newString": "new_string",
-				})
-				if err != nil {
-					return string(part.State.Input)
-				}
-				return string(normalized)
-			}()
-		}
-		done := part.State != nil && part.State.Status == "completed"
-		output := ""
-		status := ""
-		if part.State != nil {
-			output = truncateToolOutput(part.State.Output)
-			if done && part.State.Output != "" {
-				status = "success"
-			}
-		}
-		ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
-			Name:   normalizeToolName(part.Tool),
-			ID:     part.CallID,
-			Input:  inputStr,
-			Done:   done,
-			Output: output,
-			Status: status,
-		}}
 
 	case "step_finish":
 		var part OpenCodeFinishPart
@@ -172,43 +147,4 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 	default:
 		slog.Debug("opencode stream: skipping unknown message type", "type", msg.Type)
 	}
-}
-
-// buildOpenCodeStreamArgs constructs the CLI arguments for OpenCode streaming
-func buildOpenCodeStreamArgs(req ChatRequest) []string {
-	// OpenCode CLI has no --system-prompt flag — inject into user prompt.
-	prompt := injectSystemPrompt(req)
-
-	args := []string{
-		"run",
-		prompt,
-		"--format", "json",
-		"--dangerously-skip-permissions",
-	}
-
-	// Pass OpenCode session ID for continuing conversations.
-	// Only pass --session when resuming an existing OpenCode session
-	// (indicated by Resume=true and a ses_ prefixed session ID).
-	// On first message, SessionID contains ClawBench's UUID which OpenCode
-	// doesn't recognize — let OpenCode create its own session.
-	if req.SessionID != "" && req.Resume {
-		args = append(args, "--session", req.SessionID)
-	}
-
-	// Working directory
-	if req.WorkDir != "" {
-		args = append(args, "--dir", req.WorkDir)
-	}
-
-	// Model override (format: provider/model, e.g., "minimax-cn-coding-plan/MiniMax-M2.7")
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-
-	// Thinking effort level (e.g., --variant high)
-	if req.ThinkingEffort != "" {
-		args = append(args, "--variant", req.ThinkingEffort)
-	}
-
-	return args
 }

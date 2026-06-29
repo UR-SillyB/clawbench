@@ -118,8 +118,8 @@ function onBreadcrumbNavigate(path) {
     // Windows path from breadcrumb — normalize forward slashes to backslashes
     browseNavigate(path.replace(/\//g, '\\'))
   } else {
-    // Unix: reconstruct absolute path by prepending "/"
-    browseNavigate('/' + path)
+    // Unix: reconstruct absolute path by prepending "/" (guard against double slash)
+    browseNavigate(path.startsWith('/') ? path : '/' + path)
   }
 }
 
@@ -264,7 +264,7 @@ async function confirm() {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px 4px;
+  padding: 3px 10px 3px;
 }
 
 .dialog-toolbar-row :deep(.search-pill) {
@@ -273,7 +273,7 @@ async function confirm() {
 }
 
 .dialog-nav :deep(.dir-breadcrumb) {
-  padding: 0 10px 4px;
+  padding: 0 10px 3px;
 }
 
 /* Toolbar buttons */
@@ -281,8 +281,8 @@ async function confirm() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 50%;

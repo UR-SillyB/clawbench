@@ -37,6 +37,12 @@
       <span v-else>{{ t('chat.messageList.startConversationAI') }}</span>
     </div>
 
+    <!-- Key strategy:
+      - DB messages: 'db-{numericId}' (stable, never changes)
+      - Drain messages: 'db-drain-{ts}-{suffix}' (stable, self-cleaning on loadHistory)
+      - Optimistic push: 'db-local-{ts}' (stable, replaced by DB ID on loadHistory)
+      - Pending messages (no id): 'local-{index}' (unstable, but temporary)
+    -->
     <ChatMessageItem
       v-for="(msg, i) in messages"
       :key="msg.id ? 'db-' + msg.id : 'local-' + i"
@@ -47,8 +53,6 @@
       :blockAskQuestions="blockAskQuestions"
       :blockRagResults="blockRagResults"
       :agents="agents"
-      :shouldCollapse="isCollapsed(i, msg)"
-      :isLastRound="lastRoundIndices.has(i)"
       :staticBlockCache="staticBlockCache"
       :active="active"
       @toggle-tool="$emit('toggle-tool', $event)"
@@ -58,8 +62,6 @@
       @file-tag-click="$emit('file-tag-click', $event)"
       @task-card-click="$emit('task-card-click', $event)"
       @send-message="$emit('send-message', $event)"
-      @expand="handleExpand"
-      @collapse="handleCollapse"
       @render-flush="emit('render-flush')"
       @toggle-summary="$emit('toggle-summary', $event)"
       @resume-session="$emit('resume-session', $event)"
@@ -70,27 +72,42 @@
   </div>
 
   <!-- Floating scroll buttons — outside scroll container, inside relative wrapper -->
-  <!-- Floating scroll buttons — always at bottom -->
   <Transition name="scroll-fab">
     <div v-if="scrolledUp || scrolledDown" ref="scrollFabRef" class="scroll-fab-group scroll-fab-bottom">
-      <template v-if="scrolledUp">
-        <button class="scroll-fab-btn" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
-          <ChevronsUp :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
-          <ArrowUp :size="18" />
-        </button>
-      </template>
-      <template v-if="scrolledDown">
-        <button class="scroll-fab-btn" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
-          <ChevronsDown :size="18" />
-        </button>
-        <button class="scroll-fab-btn" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
-          <ArrowDown :size="18" />
-        </button>
-      </template>
+      <Transition name="scroll-fab-swap" mode="out-in">
+        <div v-if="scrolledUp" key="up" class="scroll-fab-dir">
+          <button class="scroll-fab-round" @click="scrollToTop" :title="t('chat.messageList.scrollToTop')">
+            <ChevronsUp :size="18" />
+          </button>
+          <button class="scroll-fab-round" @click="scrollToPreviousMessage" :title="t('chat.messageList.scrollToPrev')">
+            <ArrowUp :size="18" />
+          </button>
+        </div>
+        <div v-else key="down" class="scroll-fab-dir">
+          <button class="scroll-fab-round" @click="scrollToBottomSmooth" :title="t('chat.messageList.scrollToBottom')">
+            <ChevronsDown :size="18" />
+          </button>
+          <button class="scroll-fab-round" @click="scrollToNextMessage" :title="t('chat.messageList.scrollToNext')">
+            <ArrowDown :size="18" />
+          </button>
+        </div>
+      </Transition>
+      <button v-if="hasUserMessages" class="scroll-fab-round" @click="toggleUserMsgIndex" :title="t('chat.messageList.userMsgIndex')">
+        <List :size="18" />
+      </button>
     </div>
   </Transition>
+
+  <!-- User message index drawer -->
+  <UserMsgIndexSheet
+    :open="showUserMsgIndex"
+    :messages="userMsgIndexList"
+    :active-id="nearestUserMsgId"
+    :loading="loadingIndex"
+    :jumping="loadingTarget"
+    @close="closeUserMsgIndex"
+    @select="jumpToUserMessage"
+  />
 
   </div>
 </template>
@@ -98,14 +115,16 @@
 <script setup>
 import { ref, nextTick, inject, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronUp, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown } from 'lucide-vue-next'
+import { ChevronUp, ChevronsUp, ArrowUp, ChevronsDown, ArrowDown, List } from 'lucide-vue-next'
 import ChatMessageItem from './ChatMessageItem.vue'
+import UserMsgIndexSheet from './UserMsgIndexSheet.vue'
 import { useDoubleClickCopy } from '@/composables/useDoubleClickCopy.ts'
 import { useFilePathAnnotation } from '@/composables/useFilePathAnnotation.ts'
 import { useLocalhostUrlClickHandler } from '@/composables/useLocalhostAnnotation.ts'
 import { useDialog } from '@/composables/useDialog'
+import { useUserMsgIndex } from '@/composables/useUserMsgIndex.ts'
 import { store } from '@/stores/app.ts'
-import { computeRemainingCount, computeLastRoundIndices, isCollapsed as isCollapsedUtil } from '@/utils/messageListUtils.ts'
+import { computeRemainingCount } from '@/utils/messageListUtils.ts'
 
 const { t } = useI18n()
 
@@ -151,53 +170,18 @@ watch(() => props.hasMore, (hasMore, prevHasMore) => {
   }
 })
 
-// Track manually expanded/collapsed message indices
-// expandedSet: indices that user manually expanded (should not auto-collapse)
-// collapsedSet: indices that user manually collapsed after expanding (should auto-collapse even if last round)
-const expandedSet = ref(new Set())
-const collapsedSet = ref(new Set())
-
-// Reset expanded/collapsed state when messages change identity (session switch / reload)
-// Also reset isAtBottom so auto-scroll re-engages for the new session
+// Reset isAtBottom so auto-scroll re-engages for the new session
 watch(() => props.messages, () => {
-  expandedSet.value = new Set()
-  collapsedSet.value = new Set()
   isAtBottom.value = true
   scrolledUp.value = false
   scrolledDown.value = false
   lastScrollTop = 0
+  programmaticScrolling = false
   clearTimeout(scrollUpTimer)
   clearTimeout(scrollDownTimer)
 })
 
-// Compute the last round: last assistant message + its preceding user message
-const lastRoundIndices = computed(() => {
-  return computeLastRoundIndices(props.messages)
-})
-
-function isCollapsed(index, msg) {
-  return isCollapsedUtil(index, msg, collapsedSet.value, lastRoundIndices.value, expandedSet.value)
-}
-
-function handleExpand(index) {
-  expandedSet.value = new Set([...expandedSet.value, index])
-  // Remove from collapsedSet if it was there
-  if (collapsedSet.value.has(index)) {
-    const newSet = new Set(collapsedSet.value)
-    newSet.delete(index)
-    collapsedSet.value = newSet
-  }
-}
-
-function handleCollapse(index) {
-  collapsedSet.value = new Set([...collapsedSet.value, index])
-  // Remove from expandedSet if it was there
-  if (expandedSet.value.has(index)) {
-    const newSet = new Set(expandedSet.value)
-    newSet.delete(index)
-    expandedSet.value = newSet
-  }
-}
+// Clear user message index on session switch — handled by useUserMsgIndex
 
 // Inject bottomSheetRef from parent for closing
 const chatUI = inject('chatUI', {})
@@ -265,8 +249,9 @@ async function handleChatClick(event) {
     event.stopPropagation()
     const filePath = btn.getAttribute('data-file-path')
     const lineStart = btn.getAttribute('data-line-start')
+    const lineEnd = btn.getAttribute('data-line-end')
     if (filePath) {
-      const ok = await openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined)
+      const ok = await openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined, lineEnd ? parseInt(lineEnd, 10) : undefined)
       if (ok) chatUI.navigateToFileViewer?.()
     }
     return
@@ -299,7 +284,16 @@ const NEAR_EDGE_THRESHOLD = 100
 const SCROLL_BUTTON_TRIGGER = 200
 const SCROLL_DELTA_THRESHOLD = 10
 
+// Flag to suppress handleScroll button logic during programmatic smooth scroll
+let programmaticScrolling = false
+
+// Throttle scrollTick for nearestUserMsgId recomputation
+let scrollTickTimer = null
+
 function handleScroll() {
+  if (!scrollTickTimer) {
+    scrollTickTimer = setTimeout(() => { scrollTick.value++; scrollTickTimer = null }, 100)
+  }
   if (!messagesRef.value) return
   const el = messagesRef.value
 
@@ -307,6 +301,19 @@ function handleScroll() {
   const nearBottom = distFromBottom < NEAR_EDGE_THRESHOLD
   const nearTop = el.scrollTop < NEAR_EDGE_THRESHOLD
   isAtBottom.value = nearBottom
+
+  // When near edges during programmatic scroll, hide buttons immediately
+  if (programmaticScrolling) {
+    if (nearTop && scrolledUp.value) {
+      scrolledUp.value = false
+      clearTimeout(scrollUpTimer)
+    }
+    if (nearBottom && scrolledDown.value) {
+      scrolledDown.value = false
+      clearTimeout(scrollDownTimer)
+    }
+    return
+  }
 
   // Hide scroll buttons when near the edges
   if (nearTop && scrolledUp.value) {
@@ -325,9 +332,9 @@ function handleScroll() {
   // Ignore tiny scroll movements (e.g. finger tremor on mobile) to prevent accidental FAB appearance
   if (Math.abs(scrollDelta) < SCROLL_DELTA_THRESHOLD) return
 
-  // Scrolled up (toward top): show top buttons, hide bottom — but not if already near top
+  // Scrolled up (toward top): show up buttons, hide down — but not if already near top
   const shouldShowUp = scrollDelta < 0 && distFromBottom > SCROLL_BUTTON_TRIGGER && !nearTop
-  // Scrolled down (toward bottom): show bottom buttons, hide top — but not if already near bottom
+  // Scrolled down (toward bottom): show down buttons, hide up — but not if already near bottom
   const shouldShowDown = scrollDelta > 0 && !nearBottom && distFromBottom > SCROLL_BUTTON_TRIGGER
 
   if (shouldShowUp) {
@@ -369,7 +376,10 @@ function onDocumentClick(e) {
 }
 
 onMounted(() => document.addEventListener('click', onDocumentClick, true))
-onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick, true))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick, true)
+  clearTimeout(scrollTickTimer)
+})
 
 function scrollToBottom(force = false) {
   nextTick(() => {
@@ -408,54 +418,136 @@ function scrollToBottom(force = false) {
 
 function scrollToTop() {
   if (!messagesRef.value) return
-  scrolledUp.value = false
   clearTimeout(scrollUpTimer)
+  scrollUpTimer = setTimeout(() => { scrolledUp.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  programmaticScrolling = true
   messagesRef.value.scrollTo({ top: 0, behavior: 'smooth' })
+  // Smooth scroll takes ~300-500ms; clear flag after settling
+  setTimeout(() => { programmaticScrolling = false }, 600)
+}
+
+function highlightMessage(el) {
+  el.classList.add('chat-message-highlight')
+  setTimeout(() => el.classList.remove('chat-message-highlight'), 1500)
+}
+
+/** Scroll a message element into view at the top of the viewport, with highlight animation. */
+function scrollAndHighlight(itemEl) {
+  programmaticScrolling = true
+  highlightMessage(itemEl)
+  itemEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  setTimeout(() => { programmaticScrolling = false }, 600)
 }
 
 function scrollToPreviousMessage() {
   if (!messagesRef.value) return
+  clearTimeout(scrollUpTimer)
+  scrollUpTimer = setTimeout(() => { scrolledUp.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  programmaticScrolling = true
   const el = messagesRef.value
   const items = el.querySelectorAll('.chat-messages-list > .chat-message')
-  if (items.length === 0) return
+  if (items.length === 0) { programmaticScrolling = false; return }
   // Find the first message whose bottom is above the viewport top
   for (let i = items.length - 1; i >= 0; i--) {
     const rect = items[i].getBoundingClientRect()
     const containerRect = el.getBoundingClientRect()
     if (rect.bottom < containerRect.top + 8) {
-      items[i].scrollIntoView({ behavior: 'smooth', block: 'start' })
+      scrollAndHighlight(items[i])
       return
     }
   }
   // If no message is above, scroll to top
   el.scrollTo({ top: 0, behavior: 'smooth' })
+  setTimeout(() => { programmaticScrolling = false }, 600)
 }
 
 function scrollToNextMessage() {
   if (!messagesRef.value) return
+  clearTimeout(scrollDownTimer)
+  scrollDownTimer = setTimeout(() => { scrolledDown.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  programmaticScrolling = true
   const el = messagesRef.value
   const items = el.querySelectorAll('.chat-messages-list > .chat-message')
-  if (items.length === 0) return
+  if (items.length === 0) { programmaticScrolling = false; return }
   // Find the first message whose top is below the viewport bottom
   for (let i = 0; i < items.length; i++) {
     const rect = items[i].getBoundingClientRect()
     const containerRect = el.getBoundingClientRect()
     if (rect.top > containerRect.bottom - 8) {
-      items[i].scrollIntoView({ behavior: 'smooth', block: 'start' })
+      scrollAndHighlight(items[i])
       return
     }
   }
   // If no message is below, scroll to bottom
+  programmaticScrolling = false
   scrollToBottomSmooth()
 }
 
 function scrollToBottomSmooth() {
   if (!messagesRef.value) return
-  scrolledDown.value = false
   clearTimeout(scrollDownTimer)
+  scrollDownTimer = setTimeout(() => { scrolledDown.value = false }, SCROLL_BUTTON_HIDE_DELAY)
+  programmaticScrolling = true
   const el = messagesRef.value
   el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  setTimeout(() => { programmaticScrolling = false }, 600)
 }
+
+// ── User message index ──
+const {
+  hasUserMessages,
+  userMsgIndexList,
+  showUserMsgIndex,
+  loadingTarget,
+  loadingIndex,
+  toggleUserMsgIndex,
+  closeUserMsgIndex,
+  jumpToUserMessage,
+  scrollToMessage: scrollToMessageUserMsg,
+} = useUserMsgIndex({
+  getMessages: () => props.messages,
+  getCurrentSessionId: () => props.currentSessionId || '',
+  getHasMore: () => props.hasMore,
+  getLoadingMore: () => props.loadingMore,
+  emitLoadMore: () => emit('load-more'),
+  getMessagesRef: () => messagesRef.value,
+  hideScrollFab,
+  setProgrammaticScrolling: (val) => { programmaticScrolling = val },
+})
+
+// Nearest user message to viewport center — used for activeId highlight in index
+const scrollTick = ref(0)
+const nearestUserMsgId = computed(() => {
+  void scrollTick.value // dependency trigger
+  const el = messagesRef.value
+  if (!el) return null
+  const items = el.querySelectorAll('.chat-messages-list > .chat-message')
+  const containerRect = el.getBoundingClientRect()
+  const center = containerRect.top + containerRect.height / 2
+  let nearestUserIdx = null
+  let minDist = Infinity
+  for (let i = 0; i < items.length; i++) {
+    const msg = props.messages[i]
+    if (!msg || msg.role !== 'user') continue
+    const rect = items[i].getBoundingClientRect()
+    const dist = Math.abs(rect.top + rect.height / 2 - center)
+    if (dist < minDist) {
+      minDist = dist
+      nearestUserIdx = i
+    }
+  }
+  if (nearestUserIdx === null) return null
+  return props.messages[nearestUserIdx].id
+})
+
+// Watch session switch to reset user msg index
+watch(() => props.currentSessionId, () => {
+  clearTimeout(scrollTickTimer)
+  scrollTickTimer = null
+  scrollTick.value = 0
+  showUserMsgIndex.value = false
+  userMsgIndexList.value = []
+})
 
 defineExpose({
   scrollToBottom,
@@ -463,10 +555,12 @@ defineExpose({
   scrollToPreviousMessage,
   scrollToNextMessage,
   scrollToBottomSmooth,
+  scrollToMessage: scrollToMessageUserMsg,
   messagesRef,
   isAtBottom: () => isAtBottom.value,
   scrolledUp,
   scrolledDown,
+  closeUserMsgIndex,
 })
 </script>
 
@@ -656,13 +750,15 @@ defineExpose({
 }
 
 
-/* ── Floating scroll buttons (capsule) ── */
+/* ── Floating scroll buttons ── */
 .scroll-fab-group {
   position: absolute;
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 6px;
   z-index: 3;
   pointer-events: none;
   padding: 6px 0;
@@ -672,56 +768,83 @@ defineExpose({
   bottom: 0;
 }
 
-.scroll-fab-btn {
+.scroll-fab-dir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Direction swap transition (out-in) */
+.scroll-fab-swap-enter-active {
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+
+.scroll-fab-swap-leave-active {
+  transition: opacity 0.1s ease-in, transform 0.1s ease-in;
+}
+
+.scroll-fab-swap-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.scroll-fab-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.scroll-fab-round {
   pointer-events: auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
+  width: 28px;
   height: 28px;
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   color: var(--text-secondary);
-  box-shadow: var(--shadow-md);
-  border: 1px solid var(--border-color);
+  border: 1.5px solid var(--border-color);
+  border-radius: 14px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.15s, border-color 0.15s;
   -webkit-tap-highlight-color: transparent;
-  margin: 0 -0.5px;
 }
 
-/* Left button: rounded on left, flat on right */
-.scroll-fab-btn:first-child {
-  border-radius: 14px 0 0 14px;
-}
-
-/* Right button: flat on left, rounded on right */
-.scroll-fab-btn:last-child {
-  border-radius: 0 14px 14px 0;
-}
-
-.scroll-fab-btn:active {
+.scroll-fab-round:active {
   transform: scale(0.93);
 }
 
 @media (hover: hover) {
-  .scroll-fab-btn:hover {
+  .scroll-fab-round:hover {
     background: var(--bg-tertiary);
     color: var(--accent-color);
+    border-color: var(--accent-color);
   }
 }
 
 .scroll-fab-enter-active {
-  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+  transition: opacity 0.25s ease-out, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .scroll-fab-leave-active {
-  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
+  transition: opacity 0.2s ease-in, transform 0.2s ease-in;
 }
 .scroll-fab-bottom.scroll-fab-enter-from {
   opacity: 0;
-  transform: translateY(12px);
+  transform: translateY(16px) scale(0.9);
 }
 .scroll-fab-bottom.scroll-fab-leave-to {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(10px) scale(0.9);
+}
+
+/* ── Message highlight flash ── */
+:deep(.chat-message-highlight) {
+  animation: msg-highlight-flash 1.5s ease-out;
+}
+
+@keyframes msg-highlight-flash {
+  0%, 15% { box-shadow: inset 0 0 0 2px var(--accent-color); }
+  30%, 45% { box-shadow: inset 0 0 0 2px transparent; }
+  60%, 75% { box-shadow: inset 0 0 0 2px var(--accent-color); }
+  90%, 100% { box-shadow: inset 0 0 0 2px transparent; }
 }
 </style>

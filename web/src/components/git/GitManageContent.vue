@@ -84,6 +84,7 @@ import { GitBranch, FolderTree, Tag } from 'lucide-vue-next'
 import { store } from '@/stores/app.ts'
 import { apiGet, apiPost, apiDelete } from '@/utils/api'
 import { useDialog } from '@/composables/useDialog.ts'
+import { refreshCurrentFile } from '@/composables/useFileRefresh.ts'
 import GitWorktreeList from './GitWorktreeList.vue'
 import GitBranchList from './GitBranchList.vue'
 import GitTagList from './GitTagList.vue'
@@ -218,6 +219,8 @@ async function doDirtyCheckout(mode: 'stash' | 'force') {
       force: mode === 'force',
     })
     await store.loadGitBranch()
+    await store.loadFiles(store.state.currentDir)
+    refreshCurrentFile()
     if (pendingReload.value) await pendingReload.value()
   } finally {
     checkoutInProgress.value = false
@@ -232,6 +235,8 @@ async function onSwitchBranch(branch: any) {
     const result = await apiPost<{ success: boolean; error?: string; untrackedCount?: number; errorDetail?: string }>('/api/git/checkout', { branch: branch.name })
     if (result.success) {
       await store.loadGitBranch()
+      await store.loadFiles(store.state.currentDir)
+      refreshCurrentFile()
       await Promise.all([loadBranches(), loadWorktrees()])
     } else if (result.error === 'dirty_worktree') {
       checkoutInProgress.value = false
@@ -260,6 +265,8 @@ async function onSwitchTag(tag: any) {
     const result = await apiPost<{ success: boolean; error?: string; untrackedCount?: number; errorDetail?: string }>('/api/git/checkout', { branch: tag.name })
     if (result.success) {
       await store.loadGitBranch()
+      await store.loadFiles(store.state.currentDir)
+      refreshCurrentFile()
       await Promise.all([loadBranches(), loadWorktrees(), loadTags()])
     } else if (result.error === 'dirty_worktree') {
       checkoutInProgress.value = false
@@ -316,6 +323,27 @@ async function onDeleteWorktree(wt: any) {
     const result = await apiDelete<{ success: boolean; error?: string; errorDetail?: string }>('/api/git/worktrees', { body: { path: wt.path } })
     if (result.success) {
       await Promise.all([loadWorktrees(), loadBranches()])
+    } else if (result.error === 'dirty_worktree') {
+      const forceConfirmed = await dialog.confirm(
+        t('git.manage.deleteWorktreeDirty'),
+        {
+          title: t('git.manage.deleteWorktree'),
+          confirmText: t('git.manage.deleteWorktreeForce'),
+          cancelText: t('common.cancel'),
+          dangerous: true,
+        },
+      )
+      if (!forceConfirmed) return
+      const forceResult = await apiDelete<{ success: boolean; error?: string; errorDetail?: string }>('/api/git/worktrees', { body: { path: wt.path, force: true } })
+      if (forceResult.success) {
+        await Promise.all([loadWorktrees(), loadBranches()])
+      } else if (forceResult.error) {
+        const errorMessages: Record<string, string> = {
+          cannot_delete_current: t('git.manage.cannotDeleteCurrentWorktree'),
+        }
+        await dialog.alert(errorMessages[forceResult.error] || forceResult.errorDetail || t('git.manage.deleteFailed'))
+        await loadWorktrees()
+      }
     } else if (result.error) {
       const errorMessages: Record<string, string> = {
         cannot_delete_current: t('git.manage.cannotDeleteCurrentWorktree'),
@@ -346,6 +374,22 @@ async function onDeleteTag(tag: any) {
     await dialog.alert(t('git.manage.deleteFailed'))
   }
 }
+
+defineExpose({
+  activeTab,
+  showDirtyModal,
+  dirtyCount,
+  checkoutInProgress,
+  worktrees,
+  branches,
+  tags,
+  doDirtyCheckout,
+  _setActiveTab(val: 'branches' | 'worktrees' | 'tags') { activeTab.value = val },
+  _setShowDirtyModal(val: boolean) { showDirtyModal.value = val },
+  _setDirtyCount(val: number) { dirtyCount.value = val },
+  _getActiveTab() { return activeTab.value },
+  _getShowDirtyModal() { return showDirtyModal.value },
+})
 </script>
 
 <style scoped>
@@ -456,6 +500,11 @@ async function onDeleteTag(tag: any) {
   color: var(--text-secondary, #666);
   margin: 0 0 16px;
   line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .modal-actions {

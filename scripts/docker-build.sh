@@ -31,18 +31,25 @@ if [ "$1" = "--clean" ]; then
 fi
 
 # Build binary (always rebuild to pick up latest code)
-echo "Building binary..."
-./build.sh --with-pi
+EMBEDDED_AGENT_ID="${EMBEDDED_AGENT_ID:-opencode}"
+echo "Building binary with embedded agent: $EMBEDDED_AGENT_ID"
+./build.sh --embed-agent="$EMBEDDED_AGENT_ID"
 
-# Prepare staging directory for Pi binary
+# Source download helper to read agent config
+# shellcheck source=scripts/download-embedded-agent.sh
+. ./scripts/download-embedded-agent.sh
+
+# Prepare staging directory for embedded binary
 rm -rf docker-staging
-mkdir -p docker-staging/pi
-if [ -d ".clawbench/pi" ] && [ -f ".clawbench/pi/pi" ]; then
-    cp -r .clawbench/pi/* docker-staging/pi/
-    echo "Pi binary included in image (with dependencies)"
+AGENT_SUBDIR=$(parse_embedded_agent_config "$EMBEDDED_AGENT_ID" subdir)
+AGENT_CMD=$(parse_embedded_agent_config "$EMBEDDED_AGENT_ID" cmd)
+mkdir -p "docker-staging/$AGENT_SUBDIR"
+if [ -d ".clawbench/$AGENT_SUBDIR" ] && [ -f ".clawbench/$AGENT_SUBDIR/$AGENT_CMD" ]; then
+    cp -r ".clawbench/$AGENT_SUBDIR/"* "docker-staging/$AGENT_SUBDIR/"
+    echo "$EMBEDDED_AGENT_ID binary included in image (with dependencies)"
 else
-    echo "Pi binary not found — setup wizard will not be available"
-    echo "  (Run ./build.sh --with-pi to download it)"
+    echo "$EMBEDDED_AGENT_ID binary not found"
+    echo "  (Run ./build.sh --embed-agent=$EMBEDDED_AGENT_ID to download it)"
 fi
 
 # Build and run via docker compose (staging dir must exist during build)

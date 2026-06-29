@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"clawbench/internal/ai"
@@ -36,12 +37,13 @@ type RunConfig struct {
 	Mode ExecutionMode
 
 	// --- Common fields ---
-	ProjectPath string
-	BackendName string
-	SessionID   string
-	AgentID     string
-	ChatRequest ai.ChatRequest
-	FileDir     string
+	ProjectPath        string
+	BackendName        string
+	SessionID          string
+	AgentID            string
+	ChatRequest        ai.ChatRequest
+	FileDir            string
+	StreamingMessageID int64 // ID of the streaming assistant message placeholder (for tool call DB upsert)
 
 	// --- ModeInteractive only ---
 	// StreamCh is the SSE channel for forwarding events to the frontend.
@@ -141,14 +143,16 @@ func (e *SessionExecutor) handleNonTerminalEvent(event ai.StreamEvent) bool {
 
 	// SSE forwarding (interactive mode only)
 	if e.cfg.Mode == ModeInteractive && e.cfg.StreamCh != nil {
-		if !ai.SendStreamEvent(e.ctx, e.cfg.StreamCh, event) {
-			// Context cancelled or stream channel closed
+		if e.forwardSSEEvent(event) {
 			return true
 		}
 	}
 
 	// Accumulate block
 	ai.AccumulateBlock(&e.blocks, event)
+
+	// Upsert tool call metadata to DB (best-effort)
+	e.upsertToolCallToDB(event)
 
 	// resume_split: finalize current message, start new one
 	if event.Type == "resume_split" {
@@ -159,7 +163,6 @@ func (e *SessionExecutor) handleNonTerminalEvent(event ai.StreamEvent) bool {
 	// metadata capture
 	if event.Type == "metadata" && event.Meta != nil {
 		e.responseMetadata = event.Meta
-		// Capture external session ID from metadata
 		if event.Meta.SessionID != "" {
 			e.captureExternalSessionID(event.Meta.SessionID)
 		}
@@ -172,6 +175,17 @@ func (e *SessionExecutor) handleNonTerminalEvent(event ai.StreamEvent) bool {
 	}
 
 	return false
+}
+
+// forwardSSEEvent forwards an event to the SSE stream channel.
+// Returns true if the event loop should return (send failure).
+func (e *SessionExecutor) forwardSSEEvent(event ai.StreamEvent) bool {
+	forwardEvent := event
+	if (event.Type == "tool_use" || event.Type == "tool_result") && event.Tool != nil { //nolint:goconst // event type strings
+		meta := ai.ExtractToolCallMeta(event)
+		forwardEvent.ToolMeta = &meta
+	}
+	return !ai.SendStreamEvent(e.ctx, e.cfg.StreamCh, forwardEvent)
 }
 
 // RunWithChannel executes the event loop against a pre-built event channel.
@@ -197,6 +211,7 @@ func (e *SessionExecutor) RunWithChannel(eventCh <-chan ai.StreamEvent) RunResul
 				// We process the error event but still finalize.
 				if event.Type == "error" {
 					ai.AccumulateBlock(&e.blocks, event)
+					e.upsertToolCallToDB(event)
 				}
 				return e.buildResult(true, wallStart)
 			}
@@ -234,6 +249,27 @@ func (e *SessionExecutor) buildResult(receivedTerminal bool, wallStart time.Time
 	blocks = ai.RemoveRejectedToolBlocks(blocks)
 	blocks = ai.MergeConsecutiveThinkingBlocks(blocks)
 
+	// Persist interactive tool blocks created by ConvertAskQuestionBlocks
+	// to chat_tool_calls table (they were created post-SSE and missed
+	// the normal upsertToolCallToDB path during the event loop).
+	if e.cfg.StreamingMessageID > 0 && e.cfg.SessionID != "" {
+		for i := range blocks {
+			b := &blocks[i]
+			if b.Type == "tool_use" && strings.HasPrefix(b.ID, "ask-") && b.Name == "AskUserQuestion" {
+				inputJSON, _ := json.Marshal(b.Input)
+				if err := UpsertToolCall(
+					e.cfg.StreamingMessageID, e.cfg.SessionID,
+					b.ID, b.Name, inputJSON,
+					b.Output, b.Status, b.Summary, b.Done,
+				); err != nil {
+					slog.Warn("upsert converted AskUserQuestion tool call failed",
+						slog.String("toolID", b.ID),
+						slog.String("err", err.Error()))
+				}
+			}
+		}
+	}
+
 	// Inject WallMs into metadata
 	if e.responseMetadata == nil {
 		e.responseMetadata = &ai.Metadata{}
@@ -266,12 +302,37 @@ func (e *SessionExecutor) captureExternalSessionID(externalID string) {
 		return
 	}
 	existingExtID := GetExternalSessionID(e.cfg.SessionID)
-	if existingExtID == "" || existingExtID == e.cfg.SessionID {
+	if existingExtID == "" {
 		if err := UpdateExternalSessionID(e.cfg.SessionID, externalID); err != nil {
 			slog.Error("failed to save external session ID",
 				slog.String("session", e.cfg.SessionID),
 				slog.String("external_id", externalID),
 				slog.String("err", err.Error()))
+		}
+	}
+}
+
+// upsertToolCallToDB persists tool call data to the chat_tool_calls table.
+// Only runs for tool_use and tool_result events when StreamingMessageID is set.
+func (e *SessionExecutor) upsertToolCallToDB(event ai.StreamEvent) {
+	if event.Tool == nil || e.cfg.StreamingMessageID == 0 || e.cfg.SessionID == "" {
+		return
+	}
+	// Find the matching block in accumulated blocks
+	for i := len(e.blocks) - 1; i >= 0; i-- {
+		if e.blocks[i].Type == "tool_use" && e.blocks[i].ID == event.Tool.ID {
+			block := &e.blocks[i]
+			inputJSON, _ := json.Marshal(block.Input)
+			if err := UpsertToolCall(
+				e.cfg.StreamingMessageID, e.cfg.SessionID,
+				block.ID, block.Name, inputJSON,
+				block.Output, block.Status, block.Summary, block.Done,
+			); err != nil {
+				slog.Warn("upsert tool call failed",
+					slog.String("toolID", block.ID),
+					slog.String("err", err.Error()))
+			}
+			return
 		}
 	}
 }
@@ -337,10 +398,12 @@ func (e *SessionExecutor) handleResumeSplit() {
 
 	// Create new streaming assistant placeholder
 	emptyContent, _ := json.Marshal(map[string]any{contentKeyBlocks: []any{}})
-	if _, err := AddChatMessage(e.cfg.ProjectPath, e.cfg.BackendName, e.cfg.SessionID, "assistant", string(emptyContent), nil, true, ""); err != nil {
+	if newMsgID, err := AddChatMessage(e.cfg.ProjectPath, e.cfg.BackendName, e.cfg.SessionID, "assistant", string(emptyContent), nil, true, ""); err != nil {
 		slog.Error("failed to create resume streaming message",
 			slog.String("session", e.cfg.SessionID),
 			slog.String("err", err.Error()))
+	} else if newMsgID > 0 {
+		e.cfg.StreamingMessageID = newMsgID
 	}
 }
 

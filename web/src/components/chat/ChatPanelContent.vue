@@ -3,7 +3,7 @@
     <!-- Messages -->
     <ChatMessageList
       ref="messageListRef"
-      :messages="messages"
+      :messages="renderedMessages"
       :expandedTools="render.expandedTools.value"
       :blockTasks="render.blockTasks"
       :blockAskQuestions="render.blockAskQuestions"
@@ -25,7 +25,7 @@
       @load-more="handleLoadMore"
       @task-card-click="(taskId) => $emit('task-card-click', taskId)"
       @send-message="handleToolSendMessage"
-      @remove-pending="manager.handleRemovePending"
+      @remove-pending="handleRemovePending"
       @render-flush="scrollBottom()"
       @toggle-summary="handleToggleSummary"
       @resume-session="handleResumeSession"
@@ -78,7 +78,7 @@
       :pendingFiles="pendingFiles"
       :attachedFiles="attachedFiles"
       :quoteData="quoteData"
-      :messages="messages"
+      :messages="renderedMessages"
       :autoSpeechEnabled="autoSpeech.enabled.value"
       :currentSessionId="identity.currentSessionId.value"
       :chatUnreadCount="store.state.chatUnreadCount"
@@ -105,6 +105,7 @@
       @create-session="() => manager.createSession()"
       @show-agent-selector="handleShowAgentSelector"
       @delete-session="() => manager.deleteCurrentSession((draftId) => inputBarRef.value?.deleteDraft(draftId))"
+      @fork-session="handleForkSession"
       @switch-model="handleSwitchModel"
       @switch-thinking-effort="handleSwitchThinkingEffort"
       @switch-mode="handleSwitchMode"
@@ -141,31 +142,19 @@
     @close="toolDetailOverlay.show = false"
     @file-open="handleFileOpenInOverlay"
     @send-message="handleToolSendMessage"
+    @click="handleOverlayRetryClick"
   />
   <!-- RAG search result detail drawer -->
-  <BottomSheet :open="!!ragDetailItem" handleOnly auto @close="ragDetailItem = null">
-    <template v-if="ragDetailItem">
-      <div class="rag-detail-content">
-        <div class="rag-detail-title">{{ ragDetailItem.sessionTitle || t('chat.contentBlocks.ragUntitled') }}</div>
-        <div v-if="ragDetailItem.createdAt" class="rag-detail-time">{{ render.formatDetailTime(ragDetailItem.createdAt) }}</div>
-        <div v-if="ragDetailItem.summary" class="rag-detail-summary">{{ ragDetailItem.summary }}</div>
-      </div>
-      <div class="rag-detail-footer">
-        <button class="rag-detail-resume-btn" @click="handleResumeFromDetail">
-          {{ t('chat.contentBlocks.ragResume') }}
-          <ChevronRight :size="14" />
-        </button>
-      </div>
-    </template>
-  </BottomSheet>
+  <RagDetailSheet :item="ragDetailItem" @close="ragDetailItem = null" @resume="handleResumeFromDetail" />
 </template>
 
 <script setup>
 import { ref, computed, watch, onUnmounted, onMounted, inject, provide, toRef, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { appLog } from '@/utils/appLog'
 import { gt } from '@/composables/useLocale'
 import HeaderMarquee from '@/components/common/HeaderMarquee.vue'
-import BottomSheet from '@/components/common/BottomSheet.vue'
+import RagDetailSheet from './RagDetailSheet.vue'
 import ChatMetadataModal from './ChatMetadataModal.vue'
 import ToolDetailOverlay from './ToolDetailOverlay.vue'
 import ChatInputBar from './ChatInputBar.vue'
@@ -178,6 +167,7 @@ import { useChatStream } from '@/composables/useChatStream.ts'
 import { useChatSession, loadSessionsOnce } from '@/composables/useChatSession.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
 import { useSessionManager } from '@/composables/useSessionManager.ts'
+import { usePendingStore, createPendingMessage } from '@/composables/usePendingStore.ts'
 import { useAgents, populateACPStateFromCache } from '@/composables/useAgents'
 import { useToast } from '@/composables/useToast.ts'
 import { useFilePathAnnotation } from '@/composables/useFilePathAnnotation.ts'
@@ -193,11 +183,12 @@ import { useGlobalEvents } from '@/composables/useGlobalEvents'
 import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import { useDialog } from '@/composables/useDialog'
-import { ChevronRight } from 'lucide-vue-next'
+
 import '@/assets/loading-mask.css'
-import { syncPendingFromBackend } from '@/utils/chatStreamUtils.ts'
+import { useToolDetailOverlay } from '@/composables/useToolDetailOverlay.ts'
 
 const { t } = useI18n()
+const TAG = 'ChatPanel'
 
 const props = defineProps({
     active: Boolean,
@@ -214,6 +205,12 @@ const { agents: agentsList, getAgent, getAgentIcon, getAgentName, getAgentModels
 const agents = agentsComposable
 
 const messages = ref([])
+const pendingStore = usePendingStore()
+/** Rendered messages = persisted messages + pending messages for current session */
+const renderedMessages = computed(() => [
+  ...messages.value,
+  ...pendingStore.getPending(identity.currentSessionId.value),
+])
 const inputDisabled = ref(false)
 const loading = ref(false)
 // Incremented when the panel reopens, so ChatMessageItem can re-check
@@ -232,21 +229,6 @@ const metadataModal = ref({
   sessionId: '',
   indexed: false
 })
-const toolDetailOverlay = ref({
-  show: false,
-  name: '',
-  subagentType: '',
-  summary: '',
-  inputHtml: '',
-  outputHtml: '',
-  status: '',
-  done: true,
-})
-// Active thinking overlay: tracks which block is being shown so we can reactively update
-const activeThinkingOverlay = ref(null) // { msgId, blockIdx } or null
-// Active tool overlay: tracks which tool block is being shown so we can reactively update
-const activeToolOverlay = ref(null) // { msgId, blockIdx } or null
-let thinkingRenderTimer = null
 const toast = useToast()
 const dialog = useDialog()
 const notification = useNotification()
@@ -274,6 +256,43 @@ function handleQuoteClick() {
 const { planEntries, planCollapsed, planHasUpdate, hasPlan, togglePlanCollapse, clearPlanState } = usePlanProgress()
 
 const render = useChatRender({ messages, theme, currentSessionId: identity.currentSessionId })
+
+/** Look up the thinking block from the live messages array by msgId + blockIdx */
+function findThinkingBlock({ msgId, blockIdx }) {
+  const msg = messages.value.find(m => String(m.id) === msgId)
+  if (!msg || !msg.blocks) return null
+  const block = msg.blocks[blockIdx]
+  return (block && block.type === 'thinking') ? block : null
+}
+
+/** Look up the tool_use block from the live messages array by msgId + blockIdx */
+function findToolBlock({ msgId, blockIdx }) {
+  const msg = messages.value.find(m => String(m.id) === msgId)
+  if (!msg || !msg.blocks) return null
+  const block = msg.blocks[blockIdx]
+  return (block && block.type === 'tool_use') ? block : null
+}
+
+const {
+  toolDetailOverlay,
+  activeToolOverlay,
+  handleShowToolDetail,
+  handleOverlayRetryClick,
+  fetchToolCallDetail,
+  handleFileOpenInOverlay,
+  closeOverlay,
+} = useToolDetailOverlay({
+  chatRender: render,
+  onFileOpen: async (path, lineStart, lineEnd) => {
+    const ok = await openFilePath(path, lineStart, lineEnd)
+    if (ok) switchTab('browse')
+  },
+  findLiveBlock: (ids) => findToolBlock(ids),
+})
+
+// Active thinking overlay: tracks which block is being shown so we can reactively update
+const activeThinkingOverlay = ref(null) // { msgId, blockIdx } or null
+let thinkingRenderTimer = null
 
 const session = useChatSession({
   currentSessionId: identity.currentSessionId,
@@ -320,12 +339,7 @@ function onStreamEnd(reason) {
     store.loadGitBranch().catch(() => {})
   } else if (reason === 'cancelled') {
     // Backend already cleared queue; clear locally for immediate UI response
-    // Remove pending messages from messages.value
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].pending) {
-        messages.value.splice(i, 1)
-      }
-    }
+    pendingStore.clearPending(identity.currentSessionId.value)
   }
   // 'error': don't touch pending messages — backend preserves queue
 }
@@ -335,6 +349,7 @@ const stream = useChatStream({
   currentSessionId: identity.currentSessionId,
   currentBackend: identity.currentBackend,
   loading,
+  pendingStore,
   onRenderNeeded: (forceFull) => render.updateRenderedContents(forceFull),
   onScrollBottom: (force) => scrollBottom(force),
   onLoadHistory: () => session.loadHistory(),
@@ -379,10 +394,12 @@ const { quoteData, setQuoteData, clearAll } = useChatContext()
 const manager = useSessionManager({
   messages,
   loading,
+  pendingStore,
   switchSessionCore: session.switchSession,
   createSessionCore: session.createSession,
   deleteSessionCore: session.deleteSession,
   continueFromExecutionCore: session.continueFromExecution,
+  forkSessionCore: session.forkSession,
   checkContinueSessionCore: session.checkContinueSession,
   disconnectStream: stream.disconnectStream,
   stopPolling: stream.stopPolling,
@@ -393,6 +410,7 @@ const manager = useSessionManager({
     clearPendingFiles()
   },
   scrollBottom: (force) => scrollBottom(force),
+  sendMessageNow: (text, filePaths, files) => sendMessageNow(text, filePaths, files),
 })
 
 // Register identity actions — all paths now go through manager
@@ -445,6 +463,9 @@ watch(() => props.active, async (val) => {
   if (!val) {
     identity.sessionDrawerOpen.value = false
     toolDetailOverlay.value.show = false
+    messageListRef.value?.closeUserMsgIndex()
+    inputBarRef.value?.closeAcpSessionDrawer()
+    ragDetailItem.value = null
   } else {
     // Open/Re-open: load history (with overlay) and fix stale layout state from v-show display:none
     await session.loadHistory(false, true)
@@ -483,18 +504,20 @@ watch(
     if (!activeToolOverlay.value) return null
     const block = findToolBlock(activeToolOverlay.value)
     if (!block) return null
-    return { output: block.output, done: block.done, status: block.status, input: block.input, name: block.name }
+    return { output: block.output, done: block.done, status: block.status, input: block.input, name: block.name, summary: block.summary, display_name: block.display_name }
   },
   (data) => {
     if (data === null || !toolDetailOverlay.value.show) return
     const { formatToolInput } = render
+    const hasInput = data.input && Object.keys(data.input).length > 0
     toolDetailOverlay.value = {
       ...toolDetailOverlay.value,
-      outputHtml: data.output ? formatToolOutput(data.output, data.name) : '',
+      outputHtml: data.output ? formatToolOutput(data.output, data.name) : toolDetailOverlay.value.outputHtml,
       status: data.status || '',
       done: !!data.done,
-      // Update input in case it was enriched by a later tool_use/tool_result event
-      inputHtml: formatToolInput(data.input, data.name, { done: data.done, status: data.status, output: data.output }),
+      // Only update input if it's available (slim format may not have it)
+      inputHtml: hasInput ? formatToolInput(data.input, data.name, { done: data.done, status: data.status, output: data.output }) : toolDetailOverlay.value.inputHtml,
+      summary: data.summary || toolDetailOverlay.value.summary,
     }
   }
 )
@@ -559,6 +582,14 @@ async function handleAcpSessionLoaded(sessionId) {
   await manager.switchSession(sessionId)
 }
 
+async function handleForkSession() {
+  const sid = identity.currentSessionId.value
+  if (!sid) return
+  if (await dialog.confirm(t('chat.session.forkConfirm'))) {
+    await manager.forkSession(sid)
+  }
+}
+
 /** Persist session-scoped settings (mode, thinkingEffort, model, transport)
  *  immediately via PATCH so they survive page reload without sending a message. */
 function persistSessionUpdate(fields) {
@@ -590,19 +621,24 @@ async function sendMessage(text, extraFilePaths) {
       clearAll()
       inputBarRef.value?.clearInput()
       clearPendingFiles()
-      // Push a pending user message into messages.value — single source of truth
-      messages.value.push({
-        role: 'user',
-        content: inputText || '',
-        blocks: inputText ? [{ type: 'text', text: inputText }] : [],
-        files: allFiles.map(p => ({ path: p })),
-        createdAt: new Date().toISOString(),
-        pending: true,
-      })
+      // Push a pending user message into pendingStore (per-session)
+      pendingStore.addPending(identity.currentSessionId.value, createPendingMessage(inputText || '', allFiles))
       render.updateRenderedContents()
       scrollBottom(true)
       // Enqueue to backend (POST /api/ai/queue)
-      manager.enqueueMessage(inputText, extraFilePaths, capturedAttached, capturedPending)
+      const result = await manager.enqueueMessage(inputText, extraFilePaths, capturedAttached, capturedPending)
+      // Race condition: if AI finished right as we enqueued, the backend
+      // dequeued the message and wants us to resubmit as a new chat.
+      if (result.needsStart) {
+        // The pending flag was already removed by enqueueMessage.
+        // The user message is in messages.value without pending flag —
+        // remove it since sendMessageNow will push its own copy.
+        const idx = messages.value.findLastIndex(
+          m => m.role === 'user' && m.content === (result.message || inputText) && !m.pending && typeof m.id === 'string' && m.id.startsWith('local-')
+        )
+        if (idx !== -1) messages.value.splice(idx, 1)
+        await sendMessageNow(result.message || inputText, result.filePaths || mergedPaths, result.files || allFiles)
+      }
       return
     }
 
@@ -625,6 +661,7 @@ async function sendMessage(text, extraFilePaths) {
 async function sendMessageNow(text, filePaths, files) {
     messages.value.push({
         role: 'user',
+        id: `local-${Date.now()}`,
         content: text || '',
         blocks: text ? [{ type: 'text', text: text || '' }] : [],
         filePath: filePaths.length > 0 ? filePaths[0] : '',
@@ -666,17 +703,18 @@ async function sendMessageNow(text, filePaths, files) {
         }
         // Session already running — another request is in progress
         if (data.running) {
-            // Mark the optimistically pushed local user message as pending
-            // instead of removing it — the single-array architecture keeps
-            // pending messages in messages.value with a `pending: true` flag.
+            // Session already running — the message was enqueued.
+            // Move the optimistically pushed user message from messages.value
+            // to pendingStore, since it's now a queued/pending message.
             const localIdx = messages.value.findLastIndex(
-                (m) => m.role === 'user' && m.content === (text || '') && !m.id
+                (m) => m.role === 'user' && m.content === (text || '') && typeof m.id === 'string' && m.id.startsWith('local-')
             )
             if (localIdx !== -1) {
-                messages.value[localIdx].pending = true
+                messages.value.splice(localIdx, 1)
             }
+            pendingStore.addPending(identity.currentSessionId.value, createPendingMessage(text || '', files || []))
             if (data.queued && data.queue) {
-                syncPendingFromBackend(messages.value, data.queue)
+                pendingStore.syncFromBackendQueue(identity.currentSessionId.value, data.queue)
             }
             stream.connectStream(identity.currentSessionId.value)
             // Proactively sync ACP state for the running session
@@ -697,7 +735,7 @@ async function sendMessageNow(text, filePaths, files) {
     } catch (err) {
         // Remove the optimistically pushed local user message on failure
         const localIdx = messages.value.findLastIndex(
-            (m) => m.role === 'user' && m.content === (text || '') && !m.id
+            (m) => m.role === 'user' && m.content === (text || '') && typeof m.id === 'string' && m.id.startsWith('local-')
         )
         if (localIdx !== -1) {
             messages.value.splice(localIdx, 1)
@@ -718,6 +756,10 @@ async function sendMessageNow(text, filePaths, files) {
 async function handleToolSendMessage(text) {
     if (!text) return
     if (loading.value) {
+      // Push a pending user message into pendingStore (per-session)
+      pendingStore.addPending(identity.currentSessionId.value, createPendingMessage(text))
+      render.updateRenderedContents()
+      scrollBottom(true)
       manager.enqueueMessage(text)
     } else {
       await sendMessage(text)
@@ -740,6 +782,18 @@ async function handleLoadMore() {
     el.scrollTop = newScrollHeight - oldScrollHeight
 }
 
+/** Handle remove-pending event from ChatMessageItem.
+ *  The event passes the pending message's content text (not index).
+ *  We look up the pendingIndex by content in the pendingStore for the
+ *  backend API, and also remove from pendingStore optimistically. */
+function handleRemovePending(content) {
+    const sessionId = identity.currentSessionId.value
+    const pending = pendingStore.getPending(sessionId)
+    const pendingIndex = pending.findIndex(m => m.content === content)
+    if (pendingIndex < 0) return
+    manager.handleRemovePending(pendingIndex)
+}
+
 function showMetadata(msg) {
     metadataModal.value.data = msg.metadata || {}
     metadataModal.value.backend = msg.backend || ''
@@ -749,23 +803,6 @@ function showMetadata(msg) {
     metadataModal.value.sessionId = msg.sessionId || ''
     metadataModal.value.indexed = !!msg.indexed
     metadataModal.value.show = true
-}
-
-function handleShowToolDetail(block) {
-  const { formatToolInput } = render
-  // Store identifiers for reactive lookup (survives messages array replacement on loadHistory)
-  activeToolOverlay.value = { msgId: String(block.msgId), blockIdx: block.blockIdx }
-
-  toolDetailOverlay.value = {
-    show: true,
-    name: block.name || '',
-    subagentType: block.input?.subagent_type || '',
-    summary: render.toolCallSummary(block),
-    inputHtml: formatToolInput(block.input, block.name, { done: block.done, status: block.status, output: block.output }),
-    outputHtml: block.output ? formatToolOutput(block.output, block.name) : '',
-    status: block.status || '',
-    done: !!block.done,
-  }
 }
 
 function handleShowThinkingDetail({ text, msgId, blockIdx }) {
@@ -785,28 +822,6 @@ function handleShowThinkingDetail({ text, msgId, blockIdx }) {
     status: '',
     done: !loading.value, // Will update to true when streaming ends
   }
-}
-
-/** Look up the thinking block from the live messages array by msgId + blockIdx */
-function findThinkingBlock({ msgId, blockIdx }) {
-  const msg = messages.value.find(m => String(m.id) === msgId)
-  if (!msg || !msg.blocks) return null
-  const block = msg.blocks[blockIdx]
-  return (block && block.type === 'thinking') ? block : null
-}
-
-/** Look up the tool_use block from the live messages array by msgId + blockIdx */
-function findToolBlock({ msgId, blockIdx }) {
-  const msg = messages.value.find(m => String(m.id) === msgId)
-  if (!msg || !msg.blocks) return null
-  const block = msg.blocks[blockIdx]
-  return (block && block.type === 'tool_use') ? block : null
-}
-
-async function handleFileOpenInOverlay(filePath, lineStart) {
-  toolDetailOverlay.value.show = false
-  const ok = await openFilePath(filePath, lineStart)
-  if (ok) switchTab('browse')
 }
 
 // Wire up WS event handler for session_update
@@ -842,8 +857,7 @@ function handleRagDetail(ragItem) {
     ragDetailItem.value = ragItem
 }
 
-async function handleResumeFromDetail() {
-    const item = ragDetailItem.value
+async function handleResumeFromDetail(item) {
     ragDetailItem.value = null
     if (!item?.sessionId) return
     const confirmed = await dialog.confirm(
@@ -897,7 +911,7 @@ async function handleResumeSession({ sessionId, sessionTitle }) {
 onMounted(() => {
     // Request notification permission on mount
     notification.requestPermission().catch(err => {
-        console.warn('Failed to request notification permission:', err)
+        appLog.w(TAG, 'Failed to request notification permission:', err)
     })
 
     session.loadSessionsOnce()
@@ -1082,66 +1096,51 @@ onUnmounted(() => {
   opacity: 0;
   transform: scale(0.95);
 }
+</style>
 
-/* RAG detail drawer */
-.rag-detail-content {
-  padding: 8px 16px 16px;
-}
-
-.rag-detail-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.4;
-  margin-bottom: 8px;
-  word-break: break-word;
-}
-
-.rag-detail-time {
-  font-size: 12px;
-  color: var(--text-muted, #999);
-  margin-bottom: 12px;
-}
-
-.rag-detail-summary {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-secondary, #495057);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.rag-detail-footer {
-  padding: 12px 16px;
-  border-top: 1px solid var(--border-color, #e5e5e5);
-}
-
-.rag-detail-resume-btn {
+<style>
+/* Tool call empty state — unscoped so it works inside v-html */
+.tool-call-loading {
   display: flex;
-  align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 10px 0;
-  border: none;
-  border-radius: 8px;
-  background: #8b5cf6;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 500;
+  padding: 24px;
+}
+.tool-call-loading::after {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-color, #e5e7eb);
+  border-top-color: var(--primary, #6366f1);
+  border-radius: 50%;
+  animation: tool-call-spin 0.6s linear infinite;
+}
+@keyframes tool-call-spin {
+  to { transform: rotate(360deg); }
+}
+.tool-call-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 12px;
+  color: var(--text-muted, #9ca3af);
+}
+.tool-call-empty-msg {
+  font-size: 13px;
+  font-style: italic;
+}
+.tool-call-retry-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  background: var(--bg-secondary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: all 0.15s;
 }
-
-:root[data-theme="dark"] .rag-detail-resume-btn {
-  background: #7c3aed;
-}
-
-.rag-detail-resume-btn:hover {
-  opacity: 0.85;
-}
-
-.rag-detail-resume-btn:active {
-  opacity: 0.7;
+.tool-call-retry-btn:hover {
+  background: var(--bg-tertiary, #e5e7eb);
+  color: var(--text-primary, #111827);
 }
 </style>

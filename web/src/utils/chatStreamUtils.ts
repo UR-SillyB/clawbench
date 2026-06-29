@@ -1,6 +1,10 @@
 /**
  * Pure functions and constants extracted from useChatStream composable.
  * These have no Vue reactivity dependencies and can be tested in isolation.
+ *
+ * NOTE: Pending messages are NO LONGER stored in the messages array.
+ * They live in a separate per-session pendingStore (usePendingStore).
+ * The messages array only contains persisted (DB) messages.
  */
 
 /**
@@ -14,7 +18,7 @@ function isGarbageOutput(output: string | undefined): boolean {
   // Single character or just braces/brackets — not meaningful output
   if (trimmed.length <= 1) return true
   // Very short strings that are just JSON delimiters
-  if (/^[{}\[\],:]+$/.test(trimmed)) return true
+  if (/^[{}[\],:]+$/.test(trimmed)) return true
   return false
 }
 
@@ -52,6 +56,7 @@ export function forceCleanupStreamingState(
 ): any | undefined {
   const streamingMsg = messages.find((m: any) => m.role === 'assistant' && m.streaming)
   if (streamingMsg) {
+    const hasContent = streamingMsg.content || (streamingMsg.blocks && streamingMsg.blocks.length > 0)
     delete streamingMsg.streaming
     // Mark all unfinished tool_use blocks as done so spinner stops.
     // Exception: PermissionApproval blocks require user interaction —
@@ -77,7 +82,6 @@ export function forceCleanupStreamingState(
     // If the streaming message received no content at all (e.g. network lost
     // before any SSE event arrived), remove it entirely so the user doesn't
     // see an empty AI reply bubble.
-    const hasContent = streamingMsg.content || (streamingMsg.blocks && streamingMsg.blocks.length > 0)
     if (!hasContent) {
       const idx = messages.indexOf(streamingMsg)
       if (idx !== -1) messages.splice(idx, 1)
@@ -86,8 +90,6 @@ export function forceCleanupStreamingState(
   callbacks.onRenderNeeded(true)
   return streamingMsg
 }
-
-// ── New architecture: single source of truth in messages.value ──
 
 /**
  * Find the current streaming assistant message in the messages array.
@@ -99,33 +101,37 @@ export function findStreamingMsg(messages: any[]): any | undefined {
 }
 
 /**
- * Create a pending user message object.
- * Pending messages live in messages.value with a `pending: true` flag.
- * They are rendered with special styling (dashed border, spinner).
- * When queue_consume fires, the pending flag is removed.
+ * Generate a unique temporary ID for a drain-pushed user message.
+ * Format: `drain-{timestamp}-{randomSuffix}`
+ *
+ * These IDs are:
+ * - Stable: never change after creation
+ * - Unique: never collide (timestamp + random suffix)
+ * - Distinguishable: `drain-` prefix separates them from DB IDs (integers)
+ *   and optimistic push IDs (`local-` prefix)
+ * - Self-cleaning: loadHistory replaces messages.value with DB-loaded
+ *   messages (numeric IDs), automatically removing drain IDs
  */
-export function createPendingUserMessage(text: string, files: string[] = []): any {
-  return {
-    role: 'user',
-    content: text || '',
-    blocks: text ? [{ type: 'text', text }] : [],
-    files: files.map(p => ({ path: p })),
-    createdAt: new Date().toISOString(),
-    pending: true,
-  }
+export function generateDrainId(): string {
+  return `drain-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 /**
- * Process a queue_consume event using the single-array architecture.
+ * Atomically process a queue_drain event on the messages array.
  *
- * 1. Finalize any stale streaming assistant message
- * 2. Find the pending user message matching the consumed content and un-mark it
- *    (if not found — e.g. page was hidden during enqueue — create it)
- * 3. Push a new streaming assistant placeholder
+ * 1. Finalizes the current streaming assistant message (removes streaming flag,
+ *    marks unfinished tool_use blocks as done) — WITHOUT deleting it, even if
+ *    it appears empty. This prevents v-for key shifts from index-based keys.
+ * 2. Pushes the drained user message into messages (it was persisted to DB by
+ *    the backend via AddChatMessage before the queue_drain SSE event, but
+ *    loadHistory hasn't run yet so it's not in messages). This makes the user
+ *    message immediately visible instead of waiting until the stream ends.
+ *    The message gets a stable drain ID for Vue v-for key stability.
+ * 3. Pushes a new streaming assistant placeholder for the next message.
  *
  * Returns the new streaming assistant message.
  */
-export function consumePendingMessage(
+export function drainQueueMessage(
   messages: any[],
   userContent: string,
   userFiles: string[],
@@ -133,39 +139,48 @@ export function consumePendingMessage(
   callbacks: {
     onRenderNeeded: (forceFull?: boolean) => void
     onExtractScheduledTasks?: (msgs: any[]) => void
-  }
+  },
+  drainId?: string
 ): any {
-  // 1. Finalize any stale streaming message
-  forceCleanupStreamingState(messages, callbacks)
-
-  // 2. Find and un-mark the pending user message
-  const pendingMsg = messages.find(
-    (m: any) => m.role === 'user' && m.pending && m.content === userContent
-  )
-  if (pendingMsg) {
-    delete pendingMsg.pending
-    // Update files in case they differ (backend may have normalized paths)
-    if (userFiles.length > 0) {
-      pendingMsg.files = userFiles.map(p => ({ path: p }))
+  // 1. Finalize any streaming assistant message — never delete to avoid key shifts
+  const streamingMsg = messages.find((m: any) => m.role === 'assistant' && m.streaming)
+  if (streamingMsg) {
+    delete streamingMsg.streaming
+    // Mark unfinished tool_use blocks as done (except PermissionApproval)
+    if (streamingMsg.blocks) {
+      for (const block of streamingMsg.blocks) {
+        if (block.type === 'tool_use' && !block.done && block.name !== 'PermissionApproval') {
+          block.done = true
+          if (isGarbageOutput(block.output)) {
+            block.output = ''
+          }
+        }
+      }
     }
-  } else {
-    // Pending message not found (page was hidden during enqueue, or
-    // sendMessageNow created it without pending flag). Push it now.
-    const existingUserMsg = messages.find(
-      (m: any) => m.role === 'user' && m.content === userContent && !m.id
-    )
-    if (!existingUserMsg) {
-      messages.push({
-        role: 'user',
-        content: userContent,
-        blocks: userContent ? [{ type: 'text', text: userContent }] : [],
-        files: userFiles.map(p => ({ path: p })),
-        createdAt: new Date().toISOString(),
-      })
-    }
+    callbacks.onExtractScheduledTasks?.(messages)
   }
 
-  // 3. Push new streaming assistant placeholder
+  // 2. Push the drained user message with a stable drain ID.
+  //    It's already in DB but not yet in messages.value (loadHistory hasn't run).
+  //    Without this, the user message is invisible between drain and stream-end.
+  //    Deduplicate by drain ID (not content text) to avoid race with loadHistory.
+  const effectiveDrainId = drainId || generateDrainId()
+  const alreadyExists = messages.some(
+    (m: any) => m.id === effectiveDrainId
+  )
+  if (!alreadyExists && userContent) {
+    messages.push({
+      role: 'user',
+      id: effectiveDrainId,
+      _drain: true,
+      content: userContent,
+      blocks: userContent ? [{ type: 'text', text: userContent }] : [],
+      files: userFiles.map((p: string) => ({ path: p })),
+      createdAt: new Date().toISOString(),
+    })
+  }
+
+  // 3. Push new streaming assistant placeholder for the next message
   const newStreamingMsg = {
     role: 'assistant' as const,
     content: '',
@@ -175,45 +190,41 @@ export function consumePendingMessage(
     backend: currentBackend,
   }
   messages.push(newStreamingMsg)
+
   return newStreamingMsg
 }
 
 /**
- * Sync pending messages in messages.value with the authoritative backend queue.
- * Called on queue_update SSE event and on visibility change.
+ * Determine whether a failed tool call detail fetch should be retried.
  *
- * The backend queue contains items like { text, files, filePaths }.
- * We compare by text content and add/remove pending messages as needed.
+ * During streaming, tool call data may not yet be persisted to the DB (404),
+ * or the msgId may point to a stale message. Instead of showing an error
+ * immediately, we retry up to maxRetries times with a short delay.
+ *
+ * Pure function — no Vue reactivity dependencies.
  */
-export function syncPendingFromBackend(
-  messages: any[],
-  backendQueue: any[]
-): void {
-  const currentPending = messages.filter((m: any) => m.role === 'user' && m.pending)
-
-  // Add pending messages that are in the backend queue but not locally
-  for (const item of backendQueue) {
-    const text = item.text || ''
-    const exists = currentPending.some((m: any) => m.content === text)
-    if (!exists) {
-      messages.push(createPendingUserMessage(text, [
-        ...(item.files || []),
-        ...(item.filePaths || []),
-      ]))
-    }
-  }
-
-  // Remove pending messages that are no longer in the backend queue
-  // (iterate in reverse to avoid index shifting during splice)
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role === 'user' && m.pending) {
-      const inBackend = backendQueue.some((item: any) => (item.text || '') === m.content)
-      if (!inBackend) {
-        messages.splice(i, 1)
-      }
-    }
-  }
+export function shouldRetryToolFetch(
+  httpStatus: number,
+  retryCount: number,
+  overlayOpen: boolean,
+  maxRetries: number = 3,
+): boolean {
+  return httpStatus === 404 && retryCount < maxRetries && overlayOpen
 }
 
-
+/**
+ * Resolve the effective message ID for a tool detail fetch retry.
+ *
+ * After loadHistory replaces the messages array, the live block may have
+ * a different (correct) msgId. If the live block is found, use the overlay's
+ * current msgId; otherwise fall back to the original msgId.
+ *
+ * Pure function — no Vue reactivity dependencies.
+ */
+export function resolveEffectiveMsgId(
+  liveBlock: any | undefined,
+  overlayMsgId: number | string | undefined,
+  originalMsgId: number | string,
+): number | string {
+  return liveBlock ? (overlayMsgId ?? originalMsgId) : originalMsgId
+}

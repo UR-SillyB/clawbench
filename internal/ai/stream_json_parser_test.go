@@ -5,11 +5,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// kimiInputRemaps mirrors backends/kimiInputRemaps for testing.
+var kimiInputRemaps = map[string]string{
+	"dirPath": "path", "dir_path": "path",
+	"allow_multiple": "replace_all", "is_background": "run_in_background",
+	"include_pattern": "glob", "name": "skill",
+}
 
 func parseStreamJSONLine(line string) []StreamEvent {
 	ch := make(chan StreamEvent, 64)
-	parser := &StreamJSONParser{}
+	parser := &StreamJSONParser{InputRemaps: kimiInputRemaps}
 	parser.ParseLine(line, ch)
 	close(ch)
 	var events []StreamEvent
@@ -408,7 +416,7 @@ func TestNormalizeStreamJSONToolName(t *testing.T) {
 func TestNormalizeStreamJSONInput_FieldRemapping(t *testing.T) {
 	// filePath → file_path
 	input1 := json.RawMessage(`{"filePath":"/tmp/test.go"}`)
-	norm1, err := normalizeToolInput(input1, getRemaps("kimi_cli"))
+	norm1, err := normalizeToolInput(input1, kimiInputRemaps)
 	if err != nil {
 		t.Fatalf("normalizeToolInput failed: %v", err)
 		return
@@ -428,7 +436,7 @@ func TestNormalizeStreamJSONInput_FieldRemapping(t *testing.T) {
 
 	// dirPath → path
 	input2 := json.RawMessage(`{"dirPath":"./src"}`)
-	norm2, err := normalizeToolInput(input2, getRemaps("kimi_cli"))
+	norm2, err := normalizeToolInput(input2, kimiInputRemaps)
 	if err != nil {
 		t.Fatalf("normalizeToolInput failed: %v", err)
 		return
@@ -448,7 +456,7 @@ func TestNormalizeStreamJSONInput_FieldRemapping(t *testing.T) {
 
 	// Combined: filePath + dirPath
 	input3 := json.RawMessage(`{"filePath":"main.go","dirPath":"./src"}`)
-	norm3, err := normalizeToolInput(input3, getRemaps("kimi_cli"))
+	norm3, err := normalizeToolInput(input3, kimiInputRemaps)
 	if err != nil {
 		t.Fatalf("normalizeToolInput failed: %v", err)
 		return
@@ -469,7 +477,7 @@ func TestNormalizeStreamJSONInput_FieldRemapping(t *testing.T) {
 
 func TestNormalizeStreamJSONInput_UnparseableJSON(t *testing.T) {
 	bad := json.RawMessage(`not valid json`)
-	_, err := normalizeToolInput(bad, getRemaps("kimi_cli"))
+	_, err := normalizeToolInput(bad, kimiInputRemaps)
 	if err == nil {
 		t.Error("expected error for unparseable JSON")
 	}
@@ -477,7 +485,7 @@ func TestNormalizeStreamJSONInput_UnparseableJSON(t *testing.T) {
 
 func TestNormalizeStreamJSONInput_AlreadyCanonical(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"/tmp/test.go"}`)
-	norm, err := normalizeToolInput(input, getRemaps("kimi_cli"))
+	norm, err := normalizeToolInput(input, kimiInputRemaps)
 	if err != nil {
 		t.Fatalf("normalizeToolInput failed: %v", err)
 		return
@@ -645,4 +653,79 @@ func TestStreamJSON_ToolResultEmptyToolID(t *testing.T) {
 	default:
 		// expected
 	}
+}
+
+func TestStreamJSON_GetCapturedSessionID_AlwaysEmpty(t *testing.T) {
+	parser := &StreamJSONParser{InputRemaps: kimiInputRemaps}
+	// Parse an init event that sets session ID
+	parser.ParseLine(`{"type":"init","session_id":"ses_123","model":"test"}`, make(chan StreamEvent, 1))
+	// GetCapturedSessionID should still return ""
+	assert.Equal(t, "", parser.GetCapturedSessionID())
+}
+
+func TestStreamJSON_ParseLine_ToolUse_ToolNameMap(t *testing.T) {
+	ch := make(chan StreamEvent, 64)
+	parser := &StreamJSONParser{
+		ToolNameMap: map[string]string{"custom_read": "Read"},
+		InputRemaps: kimiInputRemaps,
+	}
+	parser.ParseLine(`{"type":"tool_use","tool_name":"custom_read","tool_id":"call_1","parameters":{"filePath":"/tmp/test.go"}}`, ch)
+	close(ch)
+
+	var events []StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+	require.Len(t, events, 1)
+	assert.Equal(t, "Read", events[0].Tool.Name, "ToolNameMap should map custom_read to Read")
+}
+
+func TestStreamJSON_ParseLine_ToolUse_ToolNameMapFallback(t *testing.T) {
+	ch := make(chan StreamEvent, 64)
+	parser := &StreamJSONParser{
+		ToolNameMap: map[string]string{"other_tool": "Skill"},
+		InputRemaps: kimiInputRemaps,
+	}
+	parser.ParseLine(`{"type":"tool_use","tool_name":"read_file","tool_id":"call_1","parameters":{}}`, ch)
+	close(ch)
+
+	var events []StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+	require.Len(t, events, 1)
+	assert.Equal(t, "Read", events[0].Tool.Name, "fallback to normalizeToolName when ToolNameMap has no entry")
+}
+
+func TestStreamJSON_ParseLine_ResultNoStats(t *testing.T) {
+	ch := make(chan StreamEvent, 64)
+	parser := &StreamJSONParser{InputRemaps: kimiInputRemaps}
+	parser.ParseLine(`{"type":"result","status":"success"}`, ch)
+	close(ch)
+
+	var events []StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+	require.Len(t, events, 2)
+	assert.Equal(t, "metadata", events[0].Type)
+	assert.Equal(t, 0, events[0].Meta.InputTokens)
+	assert.Equal(t, 0, events[0].Meta.OutputTokens)
+	assert.Equal(t, "done", events[1].Type)
+}
+
+func TestStreamJSON_ParseLine_ResultErrorNoErrorObj(t *testing.T) {
+	ch := make(chan StreamEvent, 64)
+	parser := &StreamJSONParser{InputRemaps: kimiInputRemaps}
+	parser.ParseLine(`{"type":"result","status":"error"}`, ch)
+	close(ch)
+
+	var events []StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+	require.Len(t, events, 2)
+	assert.Equal(t, "metadata", events[0].Type)
+	assert.True(t, events[0].Meta.IsError)
+	assert.Empty(t, events[0].Meta.ErrorMessage)
 }

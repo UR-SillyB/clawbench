@@ -16,6 +16,12 @@ import (
 // If conn is non-nil, mode/config/thinking cache updates are applied to the connection
 // so that re-emitted SSE events reflect the latest state.
 func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx context.Context, conn *ACPConn, deb *toolCallDebouncer) { //nolint:gocognit,gocyclo,revive,unparam // ACP protocol has many event types, each branch is simple; ctx position follows ACP SDK convention; ctx reserved for future use
+	// Extract backendID once for all downstream ACP event mapping.
+	// conn.agent.Backend provides the backend identifier (e.g. "kimi", "claude").
+	backendID := ""
+	if conn != nil {
+		backendID = conn.BackendID()
+	}
 	// Emit raw_output event for each ACP notification so the handler can
 	// persist the original protocol data to ai_raw_responses for debugging.
 	// This mirrors how CLIBackend collects raw stdout lines.
@@ -48,7 +54,7 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 		if deb != nil {
 			deb.handleToolCall(*tc)
 		}
-		event := mapACPToolCall(*tc)
+		event := mapACPToolCall(*tc, backendID)
 		forwardACPEvent(ch, event)
 
 	case update.ToolCallUpdate != nil:
@@ -83,7 +89,7 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 		}
 
 		// Fallback: no debouncer, forward directly (original behavior).
-		event := mapACPToolCallUpdate(*tcu)
+		event := mapACPToolCallUpdate(*tcu, backendID)
 		forwardACPEvent(ch, event)
 
 		// When a think tool completes, also emit thinking_done so the frontend
@@ -260,68 +266,19 @@ func mapACPSessionUpdate(update acp.SessionUpdate, ch chan<- StreamEvent, ctx co
 		slog.Debug("acp: session info update")
 
 	case update.UsageUpdate != nil:
-		slog.Debug("acp: usage update", "size", update.UsageUpdate.Size, "used", update.UsageUpdate.Used)
-	}
-}
-
-// mapACPToolCall converts an ACP ToolCall start event to a StreamEvent.
-func mapACPToolCall(tc acp.SessionUpdateToolCall) StreamEvent {
-	tool := &ToolCall{
-		Name: extractToolName(tc.Title, tc.Kind, string(tc.ToolCallId)),
-		ID:   string(tc.ToolCallId),
-		Done: false,
-	}
-
-	// Extract raw input as JSON string, normalizing camelCase → snake_case
-	if tc.RawInput != nil {
-		if inputBytes, err := json.Marshal(tc.RawInput); err == nil {
-			normalized, normErr := normalizeToolInput(inputBytes, map[string]string{
-				"oldString": "old_string",
-				"newString": "new_string",
-				"dirPath":   "path",
-				"filePath":  "file_path",
-				"cellIndex": "cell_index",
-				"cellType":  "cell_type",
-			})
-			if normErr == nil {
-				tool.Input = string(normalized)
-			} else {
-				tool.Input = string(inputBytes)
-			}
+		usageState := &UsageState{
+			Used: update.UsageUpdate.Used,
+			Size: update.UsageUpdate.Size,
 		}
-	} else if len(tc.Content) > 0 {
-		// Some ACP agents (e.g., Claude) use Content blocks instead of RawInput
-		// for tool calls like Terminal/Bash. Extract input from Content fields.
-		input := extractInputFromContent(tc)
-		if input != nil {
-			if inputBytes, err := json.Marshal(input); err == nil {
-				tool.Input = string(inputBytes)
-			}
+		if update.UsageUpdate.Cost != nil {
+			usageState.Cost = update.UsageUpdate.Cost.Amount
+			usageState.Currency = update.UsageUpdate.Cost.Currency
+		}
+		forwardACPEvent(ch, StreamEvent{Type: "usage_update", Usage: usageState})
+		if conn != nil {
+			conn.SetCachedUsageState(usageState)
 		}
 	}
-
-	// Fallback: for execute-kind tools with no input from RawInput or Content,
-	// use the title as the command. Kimi CLI sends only title (e.g. "echo hello")
-	// with no rawInput or content at all.
-	if tool.Input == "" && tc.Kind == acp.ToolKindExecute && tc.Title != "" {
-		input := map[string]any{"command": tc.Title}
-		if inputBytes, err := json.Marshal(input); err == nil {
-			tool.Input = string(inputBytes)
-		}
-	}
-
-	// Kimi ACP: extract input from locations and title for read/search tools.
-	// Kimi sends file paths in `locations` and search targets in `title`
-	// instead of `rawInput`. Without this, the frontend shows empty tool bars.
-	if tool.Input == "" {
-		if input := extractInputFromLocationsAndTitle(tc.Locations, tc.Title, tc.Kind, string(tc.ToolCallId)); input != nil {
-			if inputBytes, err := json.Marshal(input); err == nil {
-				tool.Input = string(inputBytes)
-			}
-		}
-	}
-
-	return StreamEvent{Type: "tool_use", Tool: tool}
 }
 
 // extractInputFromContent extracts tool input parameters from ACP Content blocks.
@@ -433,37 +390,6 @@ func extractInputFromLocationsAndTitle(locations []acp.ToolCallLocation, title s
 	return input
 }
 
-// mapACPToolCallUpdate converts an ACP ToolCallUpdate to a StreamEvent.
-func mapACPToolCallUpdate(tcu acp.SessionToolCallUpdate) StreamEvent {
-	tool := &ToolCall{
-		ID: string(tcu.ToolCallId),
-	}
-
-	mapToolCallStatus(tcu.Status, tool)
-	mapToolCallInput(tcu, tool)
-	mapToolCallName(tcu, tool)
-	// Only extract output for completed/failed tools.
-	// Intermediate updates (in_progress/pending) may carry partial RawOutput
-	// (e.g., a lone "}" from a streaming JSON object) that is not meaningful
-	// and would be persisted to the DB as garbage output if the session is
-	// cancelled before the tool finishes.
-	if tool.Done {
-		mapToolCallOutput(tcu, tool)
-	}
-
-	// Determine event type: if tool is done, emit tool_result; otherwise update tool_use
-	eventType := "tool_use"
-	if tool.Done {
-		eventType = "tool_result"
-	}
-
-	slog.Debug("acp: tool_call_update", "tool_call_id", tool.ID, "done", tool.Done, "event_type", eventType, "has_output", tool.Output != "",
-		"status", fmt.Sprintf("%v", tcu.Status), "content_count", len(tcu.Content), "title", tcu.Title,
-		"raw_input", fmt.Sprintf("%v", tcu.RawInput))
-
-	return StreamEvent{Type: eventType, Tool: tool}
-}
-
 // mapToolCallStatus sets the tool's Done and Status fields based on ACP status.
 func mapToolCallStatus(status *acp.ToolCallStatus, tool *ToolCall) {
 	if status == nil {
@@ -482,17 +408,11 @@ func mapToolCallStatus(status *acp.ToolCallStatus, tool *ToolCall) {
 }
 
 // mapToolCallInput extracts tool input from RawInput, Content, or Locations/Title.
-func mapToolCallInput(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
+func mapToolCallInput(tcu acp.SessionToolCallUpdate, tool *ToolCall, backendID string) {
 	if tcu.RawInput != nil {
 		if inputBytes, err := json.Marshal(tcu.RawInput); err == nil && string(inputBytes) != "{}" {
-			normalized, normErr := normalizeToolInput(inputBytes, map[string]string{
-				"oldString": "old_string",
-				"newString": "new_string",
-				"dirPath":   "path",
-				"filePath":  "file_path",
-				"cellIndex": "cell_index",
-				"cellType":  "cell_type",
-			})
+			remaps := acpRemapsForBackend(backendID)
+			normalized, normErr := normalizeToolInput(inputBytes, remaps)
 			if normErr == nil {
 				tool.Input = string(normalized)
 			} else {
@@ -559,7 +479,7 @@ func mapToolCallInputFromLocations(tcu acp.SessionToolCallUpdate, tool *ToolCall
 }
 
 // mapToolCallName sets the tool name from title when the tool is not yet done.
-func mapToolCallName(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
+func mapToolCallName(tcu acp.SessionToolCallUpdate, tool *ToolCall, backendID string) {
 	if tcu.Title == nil || *tcu.Title == "" || tool.Done {
 		return
 	}
@@ -577,7 +497,7 @@ func mapToolCallName(tcu acp.SessionToolCallUpdate, tool *ToolCall) {
 	if tcu.Kind != nil {
 		kind = *tcu.Kind
 	}
-	tool.Name = extractToolName(*tcu.Title, kind, string(tcu.ToolCallId))
+	tool.Name = extractToolName(*tcu.Title, kind, backendID, string(tcu.ToolCallId))
 }
 
 // mapToolCallOutput extracts human-readable output from RawOutput or Content blocks.

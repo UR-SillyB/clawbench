@@ -1,10 +1,9 @@
 chat:
-    collapsed_height: 200
     initial_messages: 0
     page_size: 0
     session_page_size: 0
     system_prompt_interval: 0
-default_agent: claude
+default_agent: opencode
 dev_port: 0
 host: ""
 log_dir: ""
@@ -36,6 +35,7 @@ rag:
     search_pool_size: 0
 recent_projects:
     max_count: 25
+require_auth_for_localhost: true
 session:
     max_count: 20
 summarize:

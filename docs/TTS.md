@@ -24,12 +24,11 @@ ClawBench 支持 TTS 语音合成，自动将 AI 回复总结后朗读。需要�
 | `mmx-cli` | mmx text chat（轻量快速） | 需要 mmx CLI |
 | `claude` | Claude CLI（总结质量高） | 需要 claude CLI |
 | `codebuddy` | CodeBuddy CLI | 需要 codebuddy CLI |
-| `gemini` | Gemini CLI | 需要 gemini CLI |
 | `opencode` | OpenCode CLI | 需要 opencode CLI |
 | `codex` | Codex CLI | 需要 codex CLI |
 | `qoder` | Qoder CLI（阿里编码智能体） | 需要 qoder CLI |
 | `vecli` | VeCLI（火山引擎 Doubao） | 需要 vecli CLI |
-| `deepseek` | DeepSeek TUI（需 v0.8.33+） | 需要 deepseek CLI |
+| `deepseek` | CodeWhale（需 v0.8.33+） | 需要 deepseek CLI |
 | `pi` | Pi（极简编程智能体） | 需要 pi CLI |
 | `api` | 远程 AI API（OpenAI/Anthropic 格式） | 需配置 URL 和 API Key |
 | `ollama` | ~~已废弃，请用 `api` + `format: "openai"`~~ | — |

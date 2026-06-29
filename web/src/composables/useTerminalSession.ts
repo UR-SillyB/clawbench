@@ -1,14 +1,15 @@
 import { ref, computed, type Ref } from 'vue'
 import { useReconnect } from './useReconnect'
 import {
-  NO_RECONNECT_CODES,
-  WS_CLOSE_REPLACED,
   processTerminalMessage,
   processWSClose,
   buildWsUrl,
   type TerminalCallbacks,
   type TerminalMessage,
 } from '@/utils/terminalSessionUtils'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'TerminalSession'
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -70,7 +71,7 @@ export function useTerminalSession(
           const msg = JSON.parse(event.data)
           handleMessage(msg)
         } catch {
-          console.warn('terminal: invalid message', event.data)
+          appLog.w(TAG, 'invalid message', event.data)
         }
       }
 

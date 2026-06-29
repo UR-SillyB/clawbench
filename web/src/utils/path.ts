@@ -1,5 +1,16 @@
 // Cross-platform path utilities
 
+/**
+ * Join a directory path with a file/directory name.
+ * Strips leading slashes from dir to ensure the result is a project-relative
+ * path. The Go backend treats paths starting with "/" as absolute filesystem
+ * paths, which causes 500 errors when they're not under configured root paths.
+ */
+export function joinPath(dir: string, name: string): string {
+    const normalizedDir = dir.replace(/^\/+/, '').replace(/\/+$/, '')
+    return normalizedDir ? normalizedDir + '/' + name : name
+}
+
 // Split a path into segments, handling both / and \ separators
 export function splitPath(path: string): string[] {
     return path.split(/[/\\]/)

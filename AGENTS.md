@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-ClawBench is a mobile-first AI workstation wrapping AI CLI tools (CodeBuddy, Claude Code, OpenCode, Codex, Qoder CLI, VeCLI, DeepSeek TUI, MiMo-Code, Pi, Cline, Copilot, Kimi) into a web-accessible platform. Go backend shells out to CLI tools and streams JSON output via SSE; Vue 3 frontend renders the streamed events in real time. Supports ACP (Agent Client Protocol) stdio transport for agents with native or bridge-adapter support, providing structured mode switching, slash commands, and permission management. Also supports SSH tunnel-based port forwarding for remote/mobile access and a scheduled task (cron) system for recurring AI execution.
+ClawBench is a mobile-first AI workstation wrapping AI CLI tools (CodeBuddy, Claude Code, OpenCode, Codex, Qoder CLI, VeCLI, CodeWhale, MiMo-Code, Pi, Cline, Copilot, Kimi) into a web-accessible platform. Go backend shells out to CLI tools and streams JSON output via SSE; Vue 3 frontend renders the streamed events in real time. Supports ACP (Agent Client Protocol) stdio transport for agents with native or bridge-adapter support, providing structured mode switching, slash commands, and permission management. Also supports SSH tunnel-based port forwarding for remote/mobile access and a scheduled task (cron) system for recurring AI execution.
 
 ## Build & Run Commands
 
@@ -52,7 +52,7 @@ cd android && JAVA_HOME=/usr/lib/jvm/jdk-17.0.12 ./gradlew assembleRelease  # Re
 - `internal/service/` — Business logic: chat persistence, auto-summary, scheduler, SQLite, versioned schema migration, agent store (DB-backed), API key encryption (AES-256-GCM), default project persistence (`is_default` column in `recent_projects`). `SessionExecutor` unifies AI session execution for both chat and scheduled tasks.
 - `internal/ai/` — AI backend abstraction: `AIBackend` interface → `CLIBackend` (CLI args + LineParser) → `AutoResumeBackend` (ExitPlanMode → cancel → resume) → `ACPBackend` (JSON-RPC over stdio, connection pool). Factory: `factory.go`. 12 backends extracted to `internal/ai/backends/` sub-packages (claude, cline, codebuddy, copilot, codex, qoder, vecli, deepseek, kimi, mimo, opencode, pi), each registering via `ai.RegisterBackend()` in `init()`. Plugin framework: `plugin.go`, `registry.go`. ACP mapping wired by `backends/acp_wire.go`. `acpStdoutFilter` for agents with JSON-RPC protocol violations (string-number ID mismatch, non-JSON stdout lines). `BackendSpec.AltCmd` for fallback CLI detection (e.g., `codewhale` primary, `deepseek` legacy).
 - `internal/ai/backends/` — Backend plugin sub-packages. Each backend is a separate package with its own CLI args builder, line parser, model discovery, and optional ACP remaps. Registered via `init()` on import. `all.go` aggregates all imports for `cmd/server/main.go`. CodeWhale (registered as `"deepseek"`, CLI: `codewhale`) has ACP support with `acp.go` remaps and stdout filter. Pi has ACP bridge support via `@touchtechclub/pi-acp`.
-- `internal/model/` — Data models, `BackendRegistry` (backend specs + model discovery), `ProviderRegistry` (28 LLM providers). Known models from runtime `provider_models.json`.
+- `internal/model/` — Data models, `BackendRegistry` (backend specs + model discovery), `ProviderRegistry` (28 LLM providers).
 - `internal/cli/` — AI agent self-service: `task`, `rag`, `migrate`.
 - `internal/middleware/` — Auth, request logging, panic recovery, request ID.
 - `internal/platform/` — Cross-platform path resolution, shell detection, Windows CLI utilities.
@@ -98,11 +98,12 @@ cd android && JAVA_HOME=/usr/lib/jvm/jdk-17.0.12 ./gradlew assembleRelease  # Re
 - **Android integration:** HTML login + `AndroidNative` JS bridge. `BackgroundService` for SSH + WS. Push-aware: JPush when available, keep WS alive otherwise.
 - **SPA hot project switch:** In-place state reset + Vue `:key` rebuild, no `window.location.reload()`.
 - **Worktree annotation:** `useWorktreeAnnotation` annotates worktree paths in chat messages. Runs before file path annotation to prevent partial matches.
-- **Provider models auto-generation:** `scripts/fetch-provider-models.sh` fetches from models.dev API (curl+jq, no Python), writes `provider_models.json` to `<BinDir>/.clawbench/`. Read at runtime by `LoadProviderModelsFromFile()`. `build.sh` and CI generate automatically.
+
 - **Terminal multi-tab:** `useTerminalTabs` manages tab lifecycle (create/close/switch). `useTerminalKeys` processes virtual key input with modifier lock. `useKeyConfig` persists custom key/symbol layouts to DB via `/api/terminal/key-config`.
 - **Chat summary modes:** `simple` mode extracts last answer text from blocks (no AI call); `ai` mode uses `AsyncSummarize`; empty string disables summarization. Mode set via `SetChatSummaryMode()`. All summaries stored as `target_type='chat_message'` keyed by assistant message ID; legacy `task_execution` summaries auto-migrated on startup via `MigrateTaskExecutionSummaries()`.
 - **File path annotation in code preview:** `useFilePathAnnotation` detects file paths in code blocks and renders them as clickable links. Supports import path resolution (e.g., `@/composables/useFoo` resolves to `web/src/composables/useFoo.ts`) and external file paths. `useWorktreeAnnotation` runs first to prevent partial matches.
 - **Permission pending push:** ACP `permission_pending` events trigger JPush notifications with tool name, allowing mobile users to approve from notification.
+- **Auto-approve indicator:** Mode chip turns green when auto-approve is enabled, providing visual feedback for ACP permission mode.
 - **File overlay navigation:** `useFileNavStack` manages a stack-based file overlay on the browse tab. Clicking a file pushes it onto the stack (overlay on top of file list); back button pops; close clears the stack. Replaces the separate viewer tab with a unified browse+overlay experience.
 - **Default project persistence:** Server-side `is_default` column in `recent_projects` table. `GetDefaultProject()` fallback chain: `is_default=1` row → most recently accessed project → home dir → first root path. `SetDefaultProject()` called on user-initiated project switch. Replaces cookie-based default project.
 - **Line range navigation:** File path annotations support line ranges (e.g., `file.go:42-50`). `scrollToLine()` flash-highlights a range of lines (200-line cap for performance). `openFile`/`file-open` events emit `{ path, lineStart, lineEnd }` structured objects.
@@ -111,13 +112,26 @@ cd android && JAVA_HOME=/usr/lib/jvm/jdk-17.0.12 ./gradlew assembleRelease  # Re
 
 ## Development Rules
 
+- **Mandatory appLog for all frontend logging:** All frontend code MUST use `appLog.d/i/w/e()` from `@/utils/appLog` instead of raw `console.log/debug/warn/error/info`. `appLog` prints to browser console AND relays to Android `AppLog` via the `AndroidNative.log()` JS bridge, ensuring logs are visible in Android WebView and persisted to `.clawbench/logs/android.log` through the server's `/api/android-log` endpoint. Raw `console.*` calls are only allowed in test files (`*.test.ts`). Tag convention: short PascalCase module name (e.g., `'ClawBench'`, `'ChatStream'`, `'Store'`, `'FileManager'`).
+- **Mandatory AppLog for all Android logging:** All Android Java/Kotlin code MUST use `AppLog.d/i/w/e()` instead of raw `android.util.Log`. `AppLog` writes to logcat AND posts to the backend `/api/android-log` endpoint for centralized log persistence. Raw `android.util.Log` calls are only allowed in `AppLog.java` itself (to avoid recursion) and test code.
 - **Mandatory unit tests for features and bug fixes:** Every new feature and bug fix MUST include targeted unit tests. Go: `*_test.go` next to the code; Frontend: `.test.ts` next to the composable/component. Tests must verify the specific behavior/fix, not just generic happy paths.
-- **Local CI validation before push/PR:** Before pushing code or creating a PR to remote, MUST run and pass the coverage gate locally:
+- **Local pre-push validation (mandatory before push/PR):** Before pushing or creating a PR, MUST run the local pre-check script that replicates all CI checks:
   ```bash
-  ./scripts/check-go-coverage.sh       # Go coverage gate
-  ./scripts/check-frontend-coverage.sh # Frontend coverage gate
+  ./scripts/pre-push-checks.sh              # 全量检查（lint + test + build + typecheck + 覆盖率）
+  ./scripts/pre-push-checks.sh --skip-coverage  # 跳过覆盖率门槛
+  ./scripts/pre-push-checks.sh --skip-android   # 跳过 Android 覆盖率
+  ./scripts/pre-push-checks.sh --fix            # golangci-lint 自动修复
   ```
-  Ensure all tests pass and coverage meets CI requirements (Tier 1: per-package >= baseline-1.5%; Tier 2: changed lines >= 80%).
+  This script runs all CI checks locally in sequence:
+  1. `lint-go.sh` — golangci-lint (v2.12.2, 5m timeout)
+  2. `go test ./...` — Go unit tests
+  3. `go build ./cmd/server` — Go binary build
+  4. `npm run typecheck` — Vue TypeScript type check
+  5. `check-go-coverage.sh` — Go coverage gate (Tier 1: per-pkg >= baseline-1.5%; Tier 2: changed lines >= 80%)
+  6. `check-frontend-coverage.sh` — Frontend coverage gate
+  7. `check-android-coverage.sh` — Android coverage gate (auto-skipped if no JDK)
+  8. `npm run build` — Frontend production build
+  All checks must pass. Fix failures before pushing — this avoids round-trips on remote CI errors.
 
 ## Configuration
 

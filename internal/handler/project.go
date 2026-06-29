@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"clawbench/internal/middleware"
 	"clawbench/internal/model"
 	"clawbench/internal/platform"
 	"clawbench/internal/service"
@@ -64,37 +65,34 @@ func ServeRecentProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // ServeProjectSet handles GET (current project) and POST (set project).
-func ServeProjectSet(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo // multi-method project handler
+func ServeProjectSet(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo,gocognit // multi-method project handler
 	switch r.Method {
 	case http.MethodGet:
-		cookie, err := r.Cookie("clawbench_project")
-		projectPath := ""
-		if err == nil && cookie.Value != "" {
-			decoded, decErr := url.QueryUnescape(cookie.Value)
-			if decErr == nil {
-				projectPath = decoded
-			} else {
-				projectPath = cookie.Value
-			}
-		} else {
-			recents, _ := service.GetRecentProjects()
-			if len(recents) > 0 {
-				projectPath = recents[0]
-			} else if homeDir := platform.UserHomeDir(); homeDir != "" {
+		// Prefer the existing cookie over the DB default — the cookie is set
+		// by POST /api/project (user-initiated switch) and is the per-session
+		// source of truth.  Only fall back to the DB default when no cookie
+		// exists (first visit or cookie expired).
+		projectPath := middleware.GetProjectFromCookie(r)
+		if projectPath == "" {
+			projectPath, _ = service.GetDefaultProject()
+		}
+		if projectPath == "" {
+			if homeDir := platform.UserHomeDir(); homeDir != "" {
 				projectPath = homeDir
 			} else if len(model.RootPaths) > 0 {
 				projectPath = model.RootPaths[0]
 			}
-			http.SetCookie(w, &http.Cookie{
-				Name:     "clawbench_project",
-				Value:    url.QueryEscape(projectPath),
-				Path:     "/",
-				MaxAge:   7 * 24 * 3600,
-				HttpOnly: true,
-				Secure:   r.TLS != nil,
-				SameSite: http.SameSiteLaxMode,
-			})
 		}
+		// Refresh the cookie to extend its lifetime, using the resolved path.
+		http.SetCookie(w, &http.Cookie{
+			Name:     model.ScopedCookieName("clawbench_project"),
+			Value:    url.QueryEscape(projectPath),
+			Path:     "/",
+			MaxAge:   7 * 24 * 3600,
+			HttpOnly: true,
+			Secure:   r.TLS != nil,
+			SameSite: http.SameSiteLaxMode,
+		})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"path": projectPath, "homeDir": platform.UserHomeDir()})
 
@@ -138,18 +136,24 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) { //nolint:gocognit
 			return
 		}
 
+		// Persist as default project in DB (user-initiated switch)
+		if err := service.SetDefaultProject(absPath); err != nil {
+			slog.Warn("failed to set default project", "path", absPath, "err", err)
+		}
+
 		// Clear chat session cookie when switching project
 		http.SetCookie(w, &http.Cookie{
-			Name:     "chat_session_id",
+			Name:     model.ScopedCookieName("chat_session_id"),
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: false,
+			HttpOnly: true,
+			Secure:   r.TLS != nil,
 			SameSite: http.SameSiteLaxMode,
 		})
 
 		http.SetCookie(w, &http.Cookie{
-			Name:     "clawbench_project",
+			Name:     model.ScopedCookieName("clawbench_project"),
 			Value:    url.QueryEscape(absPath),
 			Path:     "/",
 			MaxAge:   7 * 24 * 3600,
@@ -158,30 +162,46 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) { //nolint:gocognit
 			SameSite: http.SameSiteLaxMode,
 		})
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"ok": "true", "path": absPath})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":                     "true",
+			"path":                   absPath,
+			"homeDir":                platform.UserHomeDir(),
+			"roots":                  rootPaths(),
+			"uploadMaxSizeMB":        model.UploadMaxSizeMB,
+			"uploadMaxFiles":         model.UploadMaxFiles,
+			"chatInitialMessages":    model.ChatInitialMessages,
+			"chatPageSize":           model.ChatPageSize,
+			"chatSessionPageSize":    model.ChatSessionPageSize,
+			"sessionMaxCount":        model.SessionMaxCount,
+			"recentProjectsMaxCount": model.RecentProjectsMaxCount,
+		})
 
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 	}
 }
 
-// ServeRoots returns the filesystem root paths and configuration limits as JSON.
+// rootPaths returns the configured filesystem root paths.
 // On Linux/macOS, roots is ["/"]. On Windows, roots is the list of available drives.
-func ServeRoots(w http.ResponseWriter, r *http.Request) {
+func rootPaths() []string {
 	roots := model.RootPaths
 	if len(roots) == 0 {
 		slog.Warn("no root paths configured")
 		roots = []string{platform.UserHomeDir()}
 	}
+	return roots
+}
+
+// ServeRoots returns the filesystem root paths and configuration limits as JSON.
+func ServeRoots(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"roots":                  roots,
+		"roots":                  rootPaths(),
 		"uploadMaxSizeMB":        model.UploadMaxSizeMB,
 		"uploadMaxFiles":         model.UploadMaxFiles,
 		"chatInitialMessages":    model.ChatInitialMessages,
 		"chatPageSize":           model.ChatPageSize,
 		"chatSessionPageSize":    model.ChatSessionPageSize,
-		"chatCollapsedHeight":    model.ChatCollapsedHeight,
 		"sessionMaxCount":        model.SessionMaxCount,
 		"recentProjectsMaxCount": model.RecentProjectsMaxCount,
 	})

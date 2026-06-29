@@ -175,7 +175,7 @@ cd clawbench
 # 默认智能体（可选）
 default_agent: "assistant"      # 默认使用的智能体 ID，留空则使用第一个智能体
                                  # 可用智能体：assistant（全能助手）、coder（编码专家）、
-                                 # gemini（Gemini CLI）、handyman（勤杂工）、codebuddy2（Gemini）、gpt54（GPT）
+                                 # gemini（Gemini ACP）、handyman（勤杂工）、codebuddy2（Gemini）、gpt54（GPT）
 
 # 上传限制（默认 max_size_mb: 100, max_files: 20）
 upload:
@@ -216,7 +216,7 @@ ClawBench 通过调用本地 CLI 实现与 AI 编程工具的交互，无需额�
 
 **OpenCode 后端**：安装 OpenCode CLI 并完成认证，确保 `opencode` 命令在 PATH 中可用。
 
-**Gemini CLI 后端**：安装 Gemini CLI 并完成认证，确保 `gemini` 命令在 PATH 中可用。支持 API 方式自动发现可用模型。
+**Gemini 后端**：仅支持 ACP 模式（通过 `gemini acp` 启动 stdio 子进程），无需单独安装 CLI。
 
 **Codex 后端**：安装 OpenAI Codex CLI 并完成认证，确保 `codex` 命令在 PATH 中可用。模型自动发现通过二进制字符串/状态数据库扫描实现。
 
@@ -224,7 +224,7 @@ ClawBench 通过调用本地 CLI 实现与 AI 编程工具的交互，无需额�
 
 **VeCLI 后端**：安装 VeCLI（火山引擎 Doubao）并完成认证，确保 `vecli` 命令在 PATH 中可用。VeCLI 输出纯文本（非 JSON Lines），不支持会话恢复，元数据通过 `--session-summary` 文件在进程退出后提取。模型自动发现通过解析 `MODEL_REGISTRY` 实现。
 
-**DeepSeek TUI 后端**：安装 DeepSeek TUI（需 v0.8.33+）并完成认证，确保 `deepseek` 命令在 PATH 中可用。使用 `deepseek exec --auto --output-format stream-json` 模式，原生支持 `--system-prompt`、`--model`、`--resume` 参数。
+**CodeWhale 后端**：安装 CodeWhale（需 v0.8.33+）并完成认证，确保 `codewhale` 命令在 PATH 中可用。使用 `codewhale exec --auto --output-format stream-json` 模式，原生支持 `--system-prompt`、`--model`、`--resume` 参数。
 
 **MiMo-Code 后端**：安装 MiMo-Code CLI 并完成认证，确保 `mimo` 命令在 PATH 中可用。MiMo-Code 是 OpenCode 的分支，复用 OpenCode 的 JSON 流格式和流解析器，支持 CLI + ACP 双模式。使用 `mimo run --format json` 模式，支持 `--session`、`--model`、`--variant`（思考档位）参数。ACP 模式通过 `mimo acp` 命令启用。
 
@@ -357,6 +357,12 @@ GitHub Release 中的 Linux 二进制使用动态链接（CGO_ENABLED=1），依
 ./dev-server.sh --restart    # 重启
 ```
 
+开发环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VITE_BACKEND_PROTO` | `https` | Vite 开发代理的后端协议（开发环境设为 `http` 可跳过 HTTPS） |
+
 ---
 
 ## 架构设计
@@ -366,14 +372,14 @@ GitHub Release 中的 Linux 二进制使用动态链接（CGO_ENABLED=1），依
 ClawBench 不只是一个"聊天壳"——它是一个完整的智能体运行平台：
 
 - **Agent 数据库存储**：每个智能体存储在数据库中，包含专属 system prompt、模型、后端、思考档位，通过设置向导或自动发现创建
-- **自动发现**：首次启动时若数据库中无智能体，自动扫描已安装的 AI CLI（claude、codebuddy、opencode、gemini、codex、qodercli、vecli、deepseek、mimo、pi），为每个检测到的后端在数据库中创建智能体记录。仅执行一次
+- **自动发现**：首次启动时若数据库中无智能体，自动扫描已安装的 AI CLI（claude、codebuddy、opencode、codex、qodercli、vecli、deepseek、mimo、pi），为每个检测到的后端在数据库中创建智能体记录。仅执行一次
 - **共享规则**：规则模板内嵌于 Go 二进制（`commonRulesTemplate` in `agent.go`），定义所有智能体的公共行为和强制规则（RAG 搜索、媒体处理），避免重复配置。`@chatsearch`/`@task` 命令按需注入，取代旧的 `SCHEDULED_BEGIN/END` 标记
 - **模板占位符**：`{{AVAILABLE_AGENTS}}` 自动替换为可用智能体列表，方便智能体间互相调度
 - **多 Agent 调度**：不同任务匹配不同智能体，全能助手负责对话，专业 Agent 执行定时任务
 - **工具调用透传**：AI 的工具调用（文件读写、Bash 命令、代码编辑）实时可视化展示
 - **Cron 定时执行**：AI 通过 `clawbench task` CLI 子命令创建定时任务，确认后由 Cron 调度自动执行，聊天消息中内嵌任务卡片；`list` 和 `get` 子命令可查看已有任务，`--prompt` 支持 `@path` 语法从文件读取提示词
 - **Cron 管控**：定时任务执行时不注入 `@task` 命令模板，防止 AI 递归创建任务；CLI 层通过 `CLAWBENCH_SCHEDULED=1` 环境变量提供双重保护
-- **多后端可切换**：同一平台同时支持 CodeBuddy、Claude Code、OpenCode、Gemini CLI、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code、Pi 后端，会话数据隔离
+- **多后端可切换**：同一平台同时支持 CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code、Pi 后端（CLI 模式），以及 Gemini/Kimi（ACP 模式），会话数据隔离
 
 ### 项目结构
 
@@ -448,7 +454,7 @@ clawbench/
 │       ├── claude.go / claude_stream.go
 │       ├── codebuddy.go / codebuddy_stream.go
 │       ├── opencode.go / opencode_stream.go
-│       ├── gemini.go / gemini_stream.go
+│       ├── stream_json_parser.go # Gemini/Kimi 共享流解析器
 │       ├── codex.go / codex_stream.go
 │       ├── qoder.go / qoder_stream.go
 │       ├── vecli.go / vecli_stream.go
@@ -501,7 +507,7 @@ clawbench/
 | 图表渲染 | Mermaid.js |
 | 数学公式 | KaTeX |
 | HTML 净化 | DOMPurify |
-| AI 后端 | CodeBuddy CLI / Claude Code CLI / OpenCode CLI / Gemini CLI / Codex CLI / Qoder CLI / MiMo-Code CLI / VeCLI（流式输出 → SSE 推送） |
+| AI 后端 | CodeBuddy CLI / Claude Code CLI / OpenCode CLI / Codex CLI / Qoder CLI / MiMo-Code CLI / VeCLI（流式输出 → SSE 推送）+ Gemini/Kimi（ACP stdio） |
 | TTS 总结 | OpenAI/Anthropic 兼容 API（本地或云端，如 Ollama 使用 `format: "openai"`） |
 | SSH 隧道 | golang.org/x/crypto/ssh（内嵌 SSH 服务器，direct-tcpip 端口转发） |
 | 定时调度 | robfig/cron |

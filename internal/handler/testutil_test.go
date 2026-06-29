@@ -56,6 +56,7 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 	origDBRead := service.DBRead
 	origAgents := model.Agents
 	origAgentList := model.AgentList
+	origDefaultAgentID := model.DefaultAgentID
 
 	// Set test globals
 	model.SessionToken = ""
@@ -107,7 +108,8 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		CREATE TABLE IF NOT EXISTS recent_projects (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT UNIQUE NOT NULL,
-			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_default INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS scheduled_tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +214,22 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		);
 		CREATE INDEX IF NOT EXISTS idx_chat_metadata_model ON chat_metadata(model);
 		CREATE INDEX IF NOT EXISTS idx_chat_metadata_created ON chat_metadata(created_at);
+		CREATE TABLE IF NOT EXISTS chat_tool_calls (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL REFERENCES chat_history(id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL,
+			tool_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			input TEXT NOT NULL DEFAULT '{}',
+			output TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			done INTEGER NOT NULL DEFAULT 0,
+			summary TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(tool_id, message_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON chat_tool_calls(message_id);
+		CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON chat_tool_calls(session_id, created_at DESC);
 	`)
 	if err != nil {
 		t.Fatalf("failed to create tables: %v", err)
@@ -231,6 +249,7 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		"claude":    {ID: "claude", Name: "Claude", Backend: "claude", Models: []model.AgentModel{{ID: "claude-sonnet-4-6", Name: "Claude Sonnet", Default: true}}},
 	}
 	model.AgentList = []*model.Agent{model.Agents["codebuddy"], model.Agents["claude"]}
+	model.DefaultAgentID = ""
 
 	env := &testEnv{
 		ProjectDir:      projectDir,
@@ -247,6 +266,7 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		model.RootPaths = origRootPaths
 		model.Agents = origAgents
 		model.AgentList = origAgentList
+		model.DefaultAgentID = origDefaultAgentID
 		service.DB = origDB
 		service.DBRead = origDBRead
 		_ = db.Close()
@@ -276,7 +296,7 @@ func newRequest(t *testing.T, method, path string, body interface{}) *http.Reque
 // withProjectCookie adds the clawbench_project cookie to the request.
 func withProjectCookie(req *http.Request, projectPath string) *http.Request {
 	req.AddCookie(&http.Cookie{
-		Name:  "clawbench_project",
+		Name:  model.ScopedCookieName("clawbench_project"),
 		Value: url.QueryEscape(projectPath),
 	})
 	return req
@@ -285,7 +305,7 @@ func withProjectCookie(req *http.Request, projectPath string) *http.Request {
 // withAuthCookie adds the clawbench_session cookie to the request.
 func withAuthCookie(req *http.Request, token string) *http.Request { //nolint:unparam // test helper: return value unused but signature supports chaining
 	req.AddCookie(&http.Cookie{
-		Name:  model.SessionCookie,
+		Name:  model.ScopedCookieName(model.SessionCookie),
 		Value: token,
 	})
 	return req
@@ -294,7 +314,7 @@ func withAuthCookie(req *http.Request, token string) *http.Request { //nolint:un
 // withSessionCookie adds the chat_session_id cookie to the request.
 func withSessionCookie(req *http.Request, sessionID string) *http.Request {
 	req.AddCookie(&http.Cookie{
-		Name:  "chat_session_id",
+		Name:  model.ScopedCookieName("chat_session_id"),
 		Value: sessionID,
 	})
 	return req
@@ -371,73 +391,4 @@ func assertJSONField(t *testing.T, w *httptest.ResponseRecorder, field string, e
 	if fmt.Sprintf("%v", val) != fmt.Sprintf("%v", expected) {
 		t.Errorf("field %q: expected %v, got %v", field, expected, val)
 	}
-}
-
-// testProviderModelsJSON is a minimal fixture for handler tests that need KnownModels.
-const testProviderModelsJSON = `{
-  "_generated_at": "test",
-  "_source": "test",
-  "providers": {
-    "anthropic": {
-      "models": [
-        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "context_length": 200000, "max_output_tokens": 64000, "supports_thinking": true, "cost_tier": "expensive"},
-        {"id": "claude-3-5-haiku-20241022", "name": "Claude Haiku 3.5", "context_length": 200000, "max_output_tokens": 8192, "supports_thinking": false, "cost_tier": "moderate"}
-      ]
-    },
-    "fireworks": {
-      "models": [
-        {"id": "fw-model", "name": "FW Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    },
-    "minimax": {
-      "models": [
-        {"id": "mm-model", "name": "MM Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    },
-    "minimax-cn": {
-      "models": [
-        {"id": "mmc-model", "name": "MMC Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    },
-    "kimi-coding": {
-      "models": [
-        {"id": "kc-model", "name": "KC Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    },
-    "vercel-ai-gateway": {
-      "models": [
-        {"id": "va-model", "name": "VA Model", "context_length": 128000, "max_output_tokens": 4096, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    },
-    "openai": {
-      "models": [
-        {"id": "gpt-4o", "name": "GPT-4o", "context_length": 128000, "max_output_tokens": 16384, "supports_thinking": false, "cost_tier": "expensive"},
-        {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "context_length": 128000, "max_output_tokens": 16384, "supports_thinking": false, "cost_tier": "cheap"}
-      ]
-    }
-  }
-}`
-
-// setupTestProviderModels populates ProviderRegistry KnownModels from test fixture data.
-func setupTestProviderModels(t *testing.T) {
-	t.Helper()
-	tmpDir := t.TempDir()
-	dir := filepath.Join(tmpDir, ".clawbench")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "provider_models.json"), []byte(testProviderModelsJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Save original ProviderRegistry entries
-	origRegistry := make(map[string]model.ProviderSpec, len(model.ProviderRegistry))
-	for k, v := range model.ProviderRegistry {
-		origRegistry[k] = v
-	}
-	t.Cleanup(func() {
-		for k, v := range origRegistry {
-			model.ProviderRegistry[k] = v
-		}
-	})
-	model.LoadProviderModelsFromFile(dir)
 }

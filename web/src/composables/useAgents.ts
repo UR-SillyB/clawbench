@@ -1,8 +1,33 @@
 import { ref } from 'vue'
-import { apiGet, apiPatch } from '@/utils/api'
+import { apiGet, apiPatch, apiPost, apiDelete } from '@/utils/api'
 import { gt } from '@/composables/useLocale'
-import { updateAvailableModes, updateAvailableThinkingEfforts, updateCommandState, currentAgentId } from '@/composables/useSessionIdentity.ts'
 import { updatePlanEntries } from '@/composables/usePlanProgress'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'Agents'
+
+// ───────────────────────────────────────────────────────────
+// Break circular dependency with useSessionIdentity:
+// useSessionIdentity imports useAgents, so useAgents cannot
+// import useSessionIdentity directly. Instead, useSessionIdentity
+// registers its updater functions here at init time.
+// ───────────────────────────────────────────────────────────
+let _updateAvailableModes: ((modes: Array<{ id: string; name: string }>) => void) | null = null
+let _updateAvailableThinkingEfforts: ((levels: Array<{ id: string; name: string }>) => void) | null = null
+let _updateCommandState: ((commands: Array<{ name: string; description: string; inputHint?: string }>) => void) | null = null
+let _currentAgentId: { value: string } | null = null
+
+export function registerIdentityUpdaters(opts: {
+  updateAvailableModes: (modes: Array<{ id: string; name: string }>) => void
+  updateAvailableThinkingEfforts: (levels: Array<{ id: string; name: string }>) => void
+  updateCommandState: (commands: Array<{ name: string; description: string; inputHint?: string }>) => void
+  currentAgentId: { value: string }
+}) {
+  _updateAvailableModes = opts.updateAvailableModes
+  _updateAvailableThinkingEfforts = opts.updateAvailableThinkingEfforts
+  _updateCommandState = opts.updateCommandState
+  _currentAgentId = opts.currentAgentId
+}
 
 // Singleton state — shared across the whole app
 const agents = ref<any[]>([])
@@ -26,6 +51,10 @@ export function resetAgents(): void {
     defaultAgentId.value = ''
     acpStatesCache = {}
     loadPromise = null
+    _updateAvailableModes = null
+    _updateAvailableThinkingEfforts = null
+    _updateCommandState = null
+    _currentAgentId = null
 }
 
 async function loadAgents(force = false): Promise<void> {
@@ -51,7 +80,7 @@ async function loadAgents(force = false): Promise<void> {
             // when the user switches sessions (via /api/ai/chat REST response
             // or SSE events).
             if (data.acpStates) {
-                const activeAgentId = currentAgentId.value
+                const activeAgentId = _currentAgentId?.value || ''
                 const activeState = activeAgentId ? data.acpStates[activeAgentId] : null
                 if (activeState) {
                     // Only update available modes/levels — currentModeId and
@@ -59,19 +88,19 @@ async function loadAgents(force = false): Promise<void> {
                     // not by agent cache (which reflects the agent's runtime
                     // state, not the user's selection).
                     if (activeState.modeState?.availableModes?.length > 0) {
-                        updateAvailableModes(activeState.modeState.availableModes)
+                        _updateAvailableModes?.(activeState.modeState.availableModes)
                     }
                     if (activeState.thinkingEffortState?.availableLevels?.length > 0) {
-                        updateAvailableThinkingEfforts(activeState.thinkingEffortState.availableLevels)
+                        _updateAvailableThinkingEfforts?.(activeState.thinkingEffortState.availableLevels)
                     } else {
                         // Fallback: agent config (e.g. OpenCode/Kimi ACP don't expose thought_level)
                         const agentLevels = getAgentThinkingEffortLevels(activeAgentId)
                         if (agentLevels.length > 0) {
-                            updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+                            _updateAvailableThinkingEfforts?.(agentLevels.map((id: string) => ({ id, name: id })))
                         }
                     }
                     if (Array.isArray(activeState.commands) && activeState.commands.length > 0) {
-                        updateCommandState(activeState.commands)
+                        _updateCommandState?.(activeState.commands)
                     }
                     // When ACP provides a model list, override agent.models
                     // so the frontend SessionSettingModal shows ACP models.
@@ -84,7 +113,7 @@ async function loadAgents(force = false): Promise<void> {
                 }
             }
         } catch (err) {
-            console.error('Failed to load agents:', err)
+            appLog.e(TAG, 'Failed to load agents:', err)
         } finally {
             loadPromise = null
         }
@@ -283,19 +312,19 @@ export async function populateACPStateFromCache(agentId: string): Promise<void> 
     // are managed by user action + DB, not by agent cache (which reflects the
     // agent's runtime state, not the user's selection).
     if (state.modeState?.availableModes?.length > 0) {
-        updateAvailableModes(state.modeState.availableModes)
+        _updateAvailableModes?.(state.modeState.availableModes)
     }
     if (state.thinkingEffortState?.availableLevels?.length > 0) {
-        updateAvailableThinkingEfforts(state.thinkingEffortState.availableLevels)
+        _updateAvailableThinkingEfforts?.(state.thinkingEffortState.availableLevels)
     } else {
         // Fallback: agent config (e.g. OpenCode/Kimi ACP don't expose thought_level)
         const agentLevels = getAgentThinkingEffortLevels(agentId)
         if (agentLevels.length > 0) {
-            updateAvailableThinkingEfforts(agentLevels.map((id: string) => ({ id, name: id })))
+            _updateAvailableThinkingEfforts?.(agentLevels.map((id: string) => ({ id, name: id })))
         }
     }
     if (Array.isArray(state.commands) && state.commands.length > 0) {
-        updateCommandState(state.commands)
+        _updateCommandState?.(state.commands)
     }
     if (state.modelListState?.models?.length > 0) {
         updateACPModelList(agentId, state.modelListState.models, state.modelListState.currentModelId)
@@ -303,6 +332,24 @@ export async function populateACPStateFromCache(agentId: string): Promise<void> 
     if (state.planState?.entries?.length > 0) {
         updatePlanEntries(state.planState.entries)
     }
+}
+
+/** Duplicate an agent by cloning its configuration with a new name. */
+async function duplicateAgent(sourceId: string, newName: string): Promise<void> {
+    await apiPost('/api/agents', { source_id: sourceId, name: newName })
+    await loadAgents(true)
+}
+
+/** Delete an agent by ID. */
+async function deleteAgent(agentId: string): Promise<void> {
+    await apiDelete('/api/agents', { body: { id: agentId } })
+    await loadAgents(true)
+}
+
+/** Rescan all agents (re-run CLI discovery pipeline). */
+async function rescanAgents(): Promise<void> {
+    await apiPost('/api/agents/rescan', {})
+    await loadAgents(true)
 }
 
 export function useAgents() {
@@ -334,5 +381,8 @@ export function useAgents() {
         updateACPModelList,
         restoreOriginalModels,
         populateACPStateFromCache,
+        duplicateAgent,
+        deleteAgent,
+        rescanAgents,
     }
 }

@@ -2,9 +2,11 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -16,6 +18,10 @@ import (
 // ServeAgentSubRoutes handles /api/agents/* sub-routes (e.g. /api/agents/{id}/refresh-models).
 func ServeAgentSubRoutes(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	if strings.HasSuffix(path, "/common-prompt") && r.Method == http.MethodGet {
+		ServeAgentCommonPrompt(w, r)
+		return
+	}
 	if strings.HasSuffix(path, "/refresh-models") && r.Method == http.MethodPost {
 		ServeAgentRefreshModels(w, r)
 		return
@@ -24,7 +30,21 @@ func ServeAgentSubRoutes(w http.ResponseWriter, r *http.Request) {
 		ServeACPSessions(w, r)
 		return
 	}
+	if strings.HasSuffix(path, "/rescan") && r.Method == http.MethodPost {
+		serveAgentsRescan(w, r)
+		return
+	}
 	writeLocalizedErrorf(w, r, http.StatusNotFound, "NotFound")
+}
+
+// ServeAgentCommonPrompt handles GET /api/agents/common-prompt — returns the
+// built-in common prompt that is prepended to all agents' system prompts.
+// The frontend uses this to strip the common prefix when displaying the
+// user-editable custom system prompt in the settings panel.
+func ServeAgentCommonPrompt(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"commonPrompt": model.BuildCommonPrompt(),
+	})
 }
 
 // ServeAgents returns the list of configured AI agents.
@@ -35,6 +55,14 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPatch {
 		serveAgentsPatch(w, r)
+		return
+	}
+	if r.Method == http.MethodPost {
+		serveAgentsDuplicate(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		serveAgentsDelete(w, r)
 		return
 	}
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
@@ -115,10 +143,140 @@ func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// serveAgentsPatch handles PATCH /api/agents — updates an agent's preferred_model and/or preferred_thinking_effort.
-// Expects: {"id": "claude", "preferred_model": "claude-opus-4-5", "preferred_thinking_effort": "high"}
-// Only preferred_model and preferred_thinking_effort are patchable (whitelist).
-// The original thinking_effort (agent default) is never modified — scheduled tasks use it.
+// serveAgentsDuplicate handles POST /api/agents — duplicates an existing agent.
+// Expects: {"source_id": "claude", "name": "My Custom Claude"}
+// Returns the newly created agent.
+func serveAgentsDuplicate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceID string `json:"source_id"`
+		Name     string `json:"name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if req.SourceID == "" {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+	if req.Name == "" || utf8.RuneCountInString(req.Name) > 64 {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidAgentName")
+		return
+	}
+
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	clone, err := service.DuplicateAgent(service.DB, req.SourceID, req.Name)
+	if err != nil {
+		slog.Error("failed to duplicate agent", "source", req.SourceID, "error", err)
+		if strings.Contains(err.Error(), "not found") {
+			writeLocalizedErrorf(w, r, http.StatusNotFound, "AgentNotFound")
+			return
+		}
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+
+	// Add to in-memory maps for immediate reflection
+	model.Agents[clone.ID] = clone
+	model.AgentList = append(model.AgentList, clone)
+
+	// Populate runtime-only fields
+	if spec := model.FindSpecByBackend(clone.Backend); spec != nil {
+		if model.CanDiscoverModels(*spec) {
+			clone.CanRefreshModels = true
+		}
+		if len(clone.ThinkingEffortLevels) == 0 && len(spec.ThinkingEffortLevels) > 0 {
+			clone.ThinkingEffortLevels = spec.ThinkingEffortLevels
+		}
+	}
+
+	writeJSON(w, http.StatusOK, clone)
+}
+
+// serveAgentsRescan handles POST /api/agents/rescan — re-runs the full agent
+// discovery pipeline (detect CLIs → discover models → merge → reload memory).
+// This brings back any auto-detected agents that were accidentally deleted.
+func serveAgentsRescan(w http.ResponseWriter, _ *http.Request) {
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	present := model.SyncDiscoverAgentsDB(service.DB)
+	discoveredModels := model.SyncDiscoverModels()
+	model.MergeDiscoveredDataDB(service.DB, discoveredModels, present)
+
+	// Return the current agent list (same shape as GET /api/agents)
+	agents := make([]*model.Agent, len(model.AgentList))
+	copy(agents, model.AgentList)
+	defaultAgent := model.GetDefaultAgentID()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agents":       agents,
+		"defaultAgent": defaultAgent,
+	})
+}
+
+// serveAgentsDelete handles DELETE /api/agents — deletes a single agent.
+// Expects: {"id": "claude"}. Cannot delete the default agent.
+func serveAgentsDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if req.ID == "" {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	// Cannot delete the default agent
+	if req.ID == model.GetDefaultAgentID() {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "CannotDeleteDefaultAgent")
+		return
+	}
+
+	agent, ok := model.Agents[req.ID]
+	if !ok {
+		writeLocalizedErrorf(w, r, http.StatusNotFound, "AgentNotFound")
+		return
+	}
+
+	// Close ACP connections for this agent before deleting
+	if agent.SupportsACP() {
+		mgr := ai.GetACPConnManager()
+		mgr.CloseConnsByAgentID(req.ID)
+		slog.Info("closed ACP connections before agent delete", "agent", req.ID)
+	}
+
+	if err := service.DeleteAgent(service.DB, req.ID); err != nil {
+		slog.Error("failed to delete agent", "agent", req.ID, "error", err)
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+
+	// Remove from in-memory maps
+	delete(model.Agents, req.ID)
+	newAgentList := make([]*model.Agent, 0, len(model.AgentList)-1)
+	for _, a := range model.AgentList {
+		if a.ID != req.ID {
+			newAgentList = append(newAgentList, a)
+		}
+	}
+	model.AgentList = newAgentList
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": req.ID})
+}
+
+// serveAgentsPatch handles PATCH /api/agents — updates an agent's configurable fields.
+// Expects: {"id": "claude", "preferred_model": "claude-opus-4-5", "preferred_thinking_effort": "high", ...}
+// Patchable fields: preferred_model, preferred_thinking_effort, transport,
+// name, icon, specialty, custom_system_prompt, sort_order.
 func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocognit,gocyclo // multi-field agent patch logic
 	var patch map[string]any
 	if !decodeJSON(w, r, &patch) {
@@ -140,6 +298,8 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 		return
 	}
 
+	ap := service.AgentPatch{}
+
 	// Validate and apply preferred_model
 	if v, exists := patch["preferred_model"]; exists {
 		modelID, _ := v.(string)
@@ -156,7 +316,7 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 				return
 			}
 		}
-		agent.PreferredModel = modelID
+		ap.PreferredModel = &modelID
 	}
 
 	// Validate and apply preferred_thinking_effort
@@ -175,7 +335,7 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 				return
 			}
 		}
-		agent.PreferredThinkingEffort = level
+		ap.PreferredThinkingEffort = &level
 	}
 
 	// Validate and apply transport (only for agents that support ACP)
@@ -193,6 +353,7 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidTransport")
 			return
 		}
+		ap.Transport = &agent.Transport
 		// When switching from ACP to CLI, close all ACP connections for this agent
 		if oldTransport == "acp-stdio" && agent.Transport == "cli" {
 			mgr := ai.GetACPConnManager()
@@ -201,24 +362,145 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) { //nolint:gocogni
 		}
 	}
 
+	// Validate and apply name
+	if v, exists := patch["name"]; exists {
+		name, _ := v.(string)
+		if name == "" || utf8.RuneCountInString(name) > 64 {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidAgentName")
+			return
+		}
+		ap.Name = &name
+	}
+
+	// Validate and apply icon
+	if v, exists := patch["icon"]; exists {
+		icon, _ := v.(string)
+		if utf8.RuneCountInString(icon) > 8 {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidAgentIcon")
+			return
+		}
+		ap.Icon = &icon
+	}
+
+	// Validate and apply specialty
+	if v, exists := patch["specialty"]; exists {
+		specialty, _ := v.(string)
+		if utf8.RuneCountInString(specialty) > 128 {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidAgentSpecialty")
+			return
+		}
+		ap.Specialty = &specialty
+	}
+
+	// Validate and apply custom_system_prompt
+	if v, exists := patch["custom_system_prompt"]; exists {
+		customPrompt, _ := v.(string)
+		if len(customPrompt) > 32*1024 {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidSystemPrompt")
+			return
+		}
+		if containsPromptOverride(customPrompt) {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "SystemPromptOverride")
+			return
+		}
+		ap.CustomSystemPrompt = &customPrompt
+	}
+
+	// Validate and apply sort_order
+	if v, exists := patch["sort_order"]; exists {
+		switch n := v.(type) {
+		case float64:
+			order := int(n)
+			if order < 0 {
+				writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidSortOrder")
+				return
+			}
+			ap.SortOrder = &order
+		case int:
+			if n < 0 {
+				writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidSortOrder")
+				return
+			}
+			ap.SortOrder = &n
+		default:
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidSortOrder")
+			return
+		}
+	}
+
 	// Persist to database
-	if err := service.PatchAgent(service.DB, agentID, agent.PreferredModel, agent.PreferredThinkingEffort, agent.Transport); err != nil {
+	if err := service.PatchAgentFields(service.DB, agentID, ap); err != nil {
 		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 		return
 	}
 
+	// Update in-memory agent for immediate reflection
+	if ap.PreferredModel != nil {
+		agent.PreferredModel = *ap.PreferredModel
+	}
+	if ap.PreferredThinkingEffort != nil {
+		agent.PreferredThinkingEffort = *ap.PreferredThinkingEffort
+	}
+	if ap.Transport != nil {
+		agent.Transport = *ap.Transport
+	}
+	if ap.Name != nil {
+		agent.Name = *ap.Name
+	}
+	if ap.Icon != nil {
+		agent.Icon = *ap.Icon
+	}
+	if ap.Specialty != nil {
+		agent.Specialty = *ap.Specialty
+	}
+	if ap.CustomSystemPrompt != nil {
+		agent.CustomSystemPrompt = *ap.CustomSystemPrompt
+		// Recompose SystemPrompt
+		commonPrompt := model.BuildCommonPrompt()
+		if commonPrompt != "" && agent.CustomSystemPrompt != "" {
+			agent.SystemPrompt = commonPrompt + "\n\n" + agent.CustomSystemPrompt
+		} else if commonPrompt != "" {
+			agent.SystemPrompt = commonPrompt
+		} else {
+			agent.SystemPrompt = agent.CustomSystemPrompt
+		}
+	}
+	if ap.SortOrder != nil {
+		agent.SortOrder = *ap.SortOrder
+	}
+
 	writeJSON(w, http.StatusOK, agent)
+}
+
+// containsPromptOverride checks for common prompt injection patterns that attempt
+// to override built-in safety rules. This is a best-effort heuristic, not a
+// comprehensive security boundary — the actual safety boundary is enforced by
+// the AI model itself at inference time.
+func containsPromptOverride(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	overridePatterns := []string{
+		"ignore previous instructions",
+		"ignore all previous",
+		"ignore above instructions",
+		"disregard all previous",
+		"disregard all above",
+		"forget all previous instructions",
+	}
+	for _, pattern := range overridePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeAgentRefreshModels handles POST /api/agents/{id}/refresh-models — triggers model re-discovery
 // for the specified agent and returns the updated model list. The discovered models completely replace
 // the agent's current model list (both in memory and in the cache file).
 //
-// Refresh strategy (in priority order):
-// 1. CLI model discovery via BackendSpec (e.g., pi --list-models)
-// 2. Fallback: re-read models from ProviderSpec.KnownModels (runtime provider_models.json)
+// Refresh strategy: CLI model discovery via BackendSpec (e.g., pi --list-models)
 //
-//nolint:gocognit,gocyclo // refresh logic has multiple discovery paths, each with error handling
+//nolint:gocyclo // refresh logic has multiple discovery paths, each with error handling
 func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
@@ -251,8 +533,8 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 	var models []model.AgentModel
 	canDiscover := false // whether any discovery method is available
 
-	// Find provider spec early — used for filtering and fallback
-	providerSpec := findProviderSpecForAgent(agentID)
+	// Find provider spec early — used for filtering
+	providerSpec := findProviderSpecForAgent(r.Context(), agentID)
 
 	// Strategy 1: CLI model discovery via BackendSpec
 	// NOTE: DiscoverModels can be slow (e.g., ExtractStrings on 200MB+ binary).
@@ -280,14 +562,6 @@ func ServeAgentRefreshModels(w http.ResponseWriter, r *http.Request) {
 		} else {
 			models = discovered
 		}
-	}
-
-	// Strategy 2: Fallback to ProviderSpec.KnownModels from agent_api_keys
-	// Shows ALL models for that provider (not just the ones user configured)
-	if len(models) == 0 && providerSpec != nil && len(providerSpec.KnownModels) > 0 {
-		canDiscover = true
-		slog.Info("model refresh: CLI discovery failed, using KnownModels from provider", "agent", agentID, "provider", providerSpec.ID)
-		models = model.KnownModelsToAgentModels(providerSpec.KnownModels)
 	}
 
 	if len(models) == 0 {
@@ -345,9 +619,16 @@ func UpdateAgentModelsInMemory(backend string, models []model.AgentModel) {
 }
 
 // findProviderSpecForAgent looks up the provider for an agent from the agent_api_keys table
-// and returns the corresponding ProviderSpec.
-func findProviderSpecForAgent(agentID string) *model.ProviderSpec {
-	return service.FindProviderSpecForAgent(agentID)
+// and returns the corresponding ProviderSpec. Used for provider prefix filtering during model refresh.
+func findProviderSpecForAgent(ctx context.Context, agentID string) *model.ProviderSpec {
+	if service.DB == nil {
+		return nil
+	}
+	var providerID string
+	if err := service.DB.QueryRowContext(ctx, "SELECT provider FROM agent_api_keys WHERE agent_id = ?", agentID).Scan(&providerID); err != nil {
+		return nil
+	}
+	return model.FindProviderSpec(providerID)
 }
 
 // ServeACPSessions handles GET /api/agents/{id}/acp-sessions — lists ACP sessions
@@ -498,4 +779,41 @@ func findExistingACPSessions(acpSessionIDs []string) map[string]bool {
 		slog.Warn("handler: error iterating ACP session rows", "error", err)
 	}
 	return result
+}
+
+// ServeBackends returns the list of AI backends supported by ClawBench.
+// Used by the welcome overlay to show users what CLI agents can be auto-detected.
+func ServeBackends(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
+		return
+	}
+
+	type backendInfo struct {
+		ID                   string   `json:"id"`
+		Name                 string   `json:"name"`
+		Icon                 string   `json:"icon"`
+		Specialty            string   `json:"specialty"`
+		DefaultCmd           string   `json:"default_cmd"`
+		ThinkingEffortLevels []string `json:"thinking_effort_levels,omitempty"`
+	}
+
+	backends := make([]backendInfo, 0, len(model.GetBackendRegistry()))
+	for _, spec := range model.GetBackendRegistry() {
+		if spec.NoCLI {
+			continue // skip non-CLI backends (e.g. mock)
+		}
+		backends = append(backends, backendInfo{
+			ID:                   spec.ID,
+			Name:                 spec.Name,
+			Icon:                 spec.Icon,
+			Specialty:            spec.Specialty,
+			DefaultCmd:           spec.DefaultCmd,
+			ThinkingEffortLevels: spec.ThinkingEffortLevels,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backends": backends,
+	})
 }

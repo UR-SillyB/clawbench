@@ -334,6 +334,21 @@ describe('toolCallSummary', () => {
   it('returns empty when input is an array', () => {
     expect(toolCallSummary({ input: ['a', 'b'] })).toBe('')
   })
+
+  // Slim format: block.summary takes priority over computing from input
+  it('prefers block.summary over input-derived summary', () => {
+    expect(toolCallSummary({
+      summary: 'pre-extracted summary',
+      input: { description: 'input description', file_path: '/test.go' },
+    })).toBe('pre-extracted summary')
+  })
+
+  it('falls back to input when summary is empty string', () => {
+    expect(toolCallSummary({
+      summary: '',
+      input: { file_path: '/main.go' },
+    })).toBe('main.go')
+  })
 })
 
 // ── hasImagesInContent ──
@@ -447,7 +462,7 @@ describe('humanizeCron', () => {
 
 describe('repeatLabel', () => {
   it('renders "once" mode', () => {
-    const result = repeatLabel('once')
+    const result = repeatLabel('once', 1)
     expect(result).toContain('task.repeat.once')
   })
 
@@ -458,12 +473,12 @@ describe('repeatLabel', () => {
   })
 
   it('renders "unlimited" mode (default)', () => {
-    const result = repeatLabel('unlimited')
+    const result = repeatLabel('unlimited', 0)
     expect(result).toContain('task.repeat.unlimited')
   })
 
   it('renders unknown mode as unlimited fallback', () => {
-    const result = repeatLabel('unknown')
+    const result = repeatLabel('unknown', 0)
     expect(result).toContain('task.repeat.unlimited')
   })
 

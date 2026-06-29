@@ -3,7 +3,14 @@ import { splitPath } from '@/utils/path.ts'
 import { store } from '@/stores/app.ts'
 import { gt } from '@/composables/useLocale'
 import { clearCommitHashCache } from '@/composables/useCommitHashAnnotation.ts'
-import { clearWorktreeCache } from '@/composables/useWorktreeAnnotation.ts'
+// NOTE: do NOT import clearWorktreeCache from useWorktreeAnnotation here —
+// that creates a circular dependency (useFilePathAnnotation ↔ useWorktreeAnnotation).
+// Instead, we use a lazy indirection registered at init time.
+let _clearWorktreeCache: (() => void) | null = null
+
+export function registerWorktreeCacheClearter(fn: () => void) {
+  _clearWorktreeCache = fn
+}
 
 // ── Dual-candidate resolution types ─────────────────────────────────────────────
 
@@ -141,7 +148,7 @@ export function resolveFilePathDual(path: string, projectRoot: string, homeDir?:
 
     // ── Relative path without any root ──
     if (!projectRoot && !baseDir) {
-        let clean = path.replace(/^\.\//, '')
+        const clean = path.replace(/^\.\//, '')
         if (clean.startsWith('../')) return null
         return { primary: clean, fallback: clean }
     }
@@ -558,7 +565,7 @@ export function clearVerifiedCache(): void {
     pendingPaths = []
     batchInFlight = null
     clearCommitHashCache()
-    clearWorktreeCache()
+    _clearWorktreeCache?.()
 }
 
 // ── Composable ─────────────────────────────────────────────────────────────────
@@ -629,14 +636,14 @@ export function tryResolveCodeString(
  * If it's a file, selects it in the store.
  * If the file doesn't exist, shows a toast and does not navigate.
  */
-export async function openFilePath(resolvedPath: string, lineStart?: number): Promise<boolean> {
+export async function openFilePath(resolvedPath: string, lineStart?: number, lineEnd?: number): Promise<boolean> {
     const isExternal = resolvedPath.startsWith('/')
 
     if (!isExternal) {
         try {
             const resp = await fetch(`/api/dir?path=${encodeURIComponent(resolvedPath)}`)
             if (resp.ok) {
-                await store.pushDir(resolvedPath)
+                await store.navigateToDir(resolvedPath)
                 window.dispatchEvent(new CustomEvent('close-file-overlay'))
                 window.dispatchEvent(new CustomEvent('open-file-manager'))
                 return true
@@ -664,8 +671,15 @@ export async function openFilePath(resolvedPath: string, lineStart?: number): Pr
             if (isExternal && type === 'dir') {
                 const { useToast } = await import('@/composables/useToast')
                 const { gt } = await import('@/composables/useLocale')
-                useToast().show(gt('file.toast.externalDirNotSupported'), { type: 'warning', icon: '📁', duration: 2000 })
+                useToast().show(gt('file.toast.externalDirNotSupported'), { type: 'info', icon: '📁', duration: 2000 })
                 return false
+            }
+            if (type === 'dir') {
+                // Path is a directory — navigate into it instead of opening as file
+                await store.navigateToDir(resolvedPath)
+                window.dispatchEvent(new CustomEvent('close-file-overlay'))
+                window.dispatchEvent(new CustomEvent('open-file-manager'))
+                return true
             }
         }
     } catch {
@@ -674,7 +688,7 @@ export async function openFilePath(resolvedPath: string, lineStart?: number): Pr
 
     const ok = await store.selectFile(resolvedPath)
     if (ok) {
-        window.dispatchEvent(new CustomEvent('open-file-overlay', { detail: { path: resolvedPath, lineStart } }))
+        window.dispatchEvent(new CustomEvent('open-file-overlay', { detail: { path: resolvedPath, lineStart, lineEnd } }))
         if (isExternal) {
             const { useToast } = await import('@/composables/useToast')
             useToast().show(gt('file.toast.externalFile'), { type: 'info', duration: 2000 })
@@ -686,8 +700,8 @@ export async function openFilePath(resolvedPath: string, lineStart?: number): Pr
 /**
  * Dispatch a scroll-to-line event after a file has been opened.
  */
-export function dispatchScrollToLine(line: number): void {
+export function dispatchScrollToLine(line: number, lineEnd?: number): void {
     setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('scroll-to-line', { detail: { line } }))
+        window.dispatchEvent(new CustomEvent('scroll-to-line', { detail: { line, lineEnd } }))
     }, 100)
 }

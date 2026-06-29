@@ -26,7 +26,7 @@ vi.mock('@/stores/app', () => ({
   store: {
     state: { projectRoot: '/home/user/project' },
     selectFile: vi.fn(),
-    pushDir: vi.fn(),
+    navigateToDir: vi.fn(),
   },
 }))
 
@@ -1205,7 +1205,7 @@ describe('verifyFilePaths', () => {
     ;(globalThis as any).CSS = {}
   }
   if (typeof (globalThis as any).CSS.escape === 'undefined') {
-    ;(globalThis as any).CSS.escape = (s: string) => s.replace(/[!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~]/g, '\\$&')
+    ;(globalThis as any).CSS.escape = (s: string) => s.replace(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, '\\$&')
   }
 
   it('removes buttons for non-existent paths (batch API returns none)', async () => {
@@ -1454,15 +1454,15 @@ describe('verifyFilePaths', () => {
 
 describe('openFilePath', () => {
   let mockSelectFile: ReturnType<typeof vi.fn>
-  let mockPushDir: ReturnType<typeof vi.fn>
+  let mockNavigateToDir: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
     clearVerifiedCache()
     const { store } = await import('@/stores/app')
     mockSelectFile = store.selectFile as ReturnType<typeof vi.fn>
-    mockPushDir = store.pushDir as ReturnType<typeof vi.fn>
+    mockNavigateToDir = store.navigateToDir as ReturnType<typeof vi.fn>
     mockSelectFile.mockClear()
-    mockPushDir.mockClear()
+    mockNavigateToDir.mockClear()
   })
 
   afterEach(() => {
@@ -1481,7 +1481,7 @@ describe('openFilePath', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(1)
     expect(mockFetch.mock.calls[0][0]).toContain('/api/dir?path=')
-    expect(mockPushDir).toHaveBeenCalledWith('src')
+    expect(mockNavigateToDir).toHaveBeenCalledWith('src')
     expect(mockDispatchEvent).toHaveBeenCalled()
 
     window.dispatchEvent = origDispatch
@@ -1543,5 +1543,123 @@ describe('openFilePath', () => {
     expect(mockSelectFile).toHaveBeenCalledWith('src/main.go')
 
     vi.unstubAllGlobals()
+  })
+
+  it('dispatches open-file-overlay with lineStart and lineEnd', async () => {
+    mockSelectFile.mockResolvedValue(true)
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false }) // /api/dir
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: { 'src/main.go': 'file' } }) }) // batch-exists
+
+    vi.stubGlobal('fetch', mockFetch)
+
+    const mockDispatchEvent = vi.fn()
+    const origDispatch = window.dispatchEvent
+    window.dispatchEvent = mockDispatchEvent
+
+    await openFilePath('src/main.go', 42, 50)
+
+    expect(mockSelectFile).toHaveBeenCalledWith('src/main.go')
+    const overlayCalls = mockDispatchEvent.mock.calls.filter(call => call[0].type === 'open-file-overlay')
+    expect(overlayCalls).toHaveLength(1)
+    expect(overlayCalls[0][0].detail).toEqual({ path: 'src/main.go', lineStart: 42, lineEnd: 50 })
+
+    window.dispatchEvent = origDispatch
+    vi.unstubAllGlobals()
+  })
+
+  it('dispatches open-file-overlay with lineStart only (no lineEnd)', async () => {
+    mockSelectFile.mockResolvedValue(true)
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false }) // /api/dir
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: { 'src/main.go': 'file' } }) }) // batch-exists
+
+    vi.stubGlobal('fetch', mockFetch)
+
+    const mockDispatchEvent = vi.fn()
+    const origDispatch = window.dispatchEvent
+    window.dispatchEvent = mockDispatchEvent
+
+    await openFilePath('src/main.go', 10)
+
+    const overlayCalls = mockDispatchEvent.mock.calls.filter(call => call[0].type === 'open-file-overlay')
+    expect(overlayCalls).toHaveLength(1)
+    expect(overlayCalls[0][0].detail).toEqual({ path: 'src/main.go', lineStart: 10, lineEnd: undefined })
+
+    window.dispatchEvent = origDispatch
+    vi.unstubAllGlobals()
+  })
+
+  it('dispatches open-file-overlay without line info when none provided', async () => {
+    mockSelectFile.mockResolvedValue(true)
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false }) // /api/dir
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: { 'src/main.go': 'file' } }) }) // batch-exists
+
+    vi.stubGlobal('fetch', mockFetch)
+
+    const mockDispatchEvent = vi.fn()
+    const origDispatch = window.dispatchEvent
+    window.dispatchEvent = mockDispatchEvent
+
+    await openFilePath('src/main.go')
+
+    const overlayCalls = mockDispatchEvent.mock.calls.filter(call => call[0].type === 'open-file-overlay')
+    expect(overlayCalls).toHaveLength(1)
+    expect(overlayCalls[0][0].detail).toEqual({ path: 'src/main.go', lineStart: undefined, lineEnd: undefined })
+
+    window.dispatchEvent = origDispatch
+    vi.unstubAllGlobals()
+  })
+
+  it('navigates to directory when /api/dir fails but batch-exists returns dir', async () => {
+    // First fetch: /api/dir check → not ok (e.g. trailing slash issue)
+    // Second fetch: /api/file/batch-exists → type is "dir"
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false }) // /api/dir
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: { 'internal/rag/': 'dir' } }) }) // batch-exists
+
+    vi.stubGlobal('fetch', mockFetch)
+
+    const mockDispatchEvent = vi.fn()
+    const origDispatch = window.dispatchEvent
+    window.dispatchEvent = mockDispatchEvent
+
+    await openFilePath('internal/rag/')
+
+    // Should navigate to directory, NOT call selectFile
+    expect(mockNavigateToDir).toHaveBeenCalledWith('internal/rag/')
+    expect(mockSelectFile).not.toHaveBeenCalled()
+    // Should close file overlay and open file manager
+    const eventTypes = mockDispatchEvent.mock.calls.map(call => call[0].type)
+    expect(eventTypes).toContain('close-file-overlay')
+    expect(eventTypes).toContain('open-file-manager')
+
+    window.dispatchEvent = origDispatch
+    vi.unstubAllGlobals()
+  })
+
+  it('shows external dir toast when batch-exists returns dir for external path', async () => {
+    // First fetch: /api/dir is skipped for external paths
+    // Second fetch: /api/file/batch-exists → type is "dir"
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: { '/external/dir': 'dir' } }) }) // batch-exists
+
+    vi.stubGlobal('fetch', mockFetch)
+
+    // Mock useToast
+    const mockShow = vi.fn()
+    vi.doMock('@/composables/useToast', () => ({
+      useToast: () => ({ show: mockShow }),
+    }))
+
+    await openFilePath('/external/dir')
+
+    // Should NOT navigate to directory for external paths
+    expect(mockNavigateToDir).not.toHaveBeenCalled()
+    expect(mockSelectFile).not.toHaveBeenCalled()
+
+    vi.unstubAllGlobals()
+    vi.doUnmock('@/composables/useToast')
   })
 })

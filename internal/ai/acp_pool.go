@@ -259,7 +259,7 @@ func (m *ACPConnManager) GetOrCreateConn(ctx context.Context, agent *model.Agent
 		conn = newACPConn(agent, clawbenchSID)
 		// Pre-populate acpSID from DB so ensureAliveWithSession can attempt
 		// ResumeSession after a server restart.
-		if extID := getExternalSessionID(clawbenchSID); extID != "" && extID != clawbenchSID {
+		if extID := getExternalSessionID(clawbenchSID); extID != "" {
 			conn.acpSID = extID
 			slog.Info("acp conn: pre-populated acpSID from DB for ResumeSession",
 				"clawbench_sid", clawbenchSID, "acp_sid", extID)
@@ -372,6 +372,7 @@ type ACPCachedState struct {
 	Commands  []AvailableCommandInfo
 	ModelList *ModelListState
 	Plan      *PlanState
+	Usage     *UsageState
 }
 
 // GetCachedStateByClawbenchSID returns the cached state for the connection
@@ -392,6 +393,7 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCa
 	currentThinkingEffortID := conn.currentThinkingEffortID
 	currentModelID := conn.currentModelID
 	planState := conn.cachedPlanState
+	usageState := conn.cachedUsageState
 	agentID := ""
 	if conn.agent != nil {
 		agentID = conn.agent.ID
@@ -410,6 +412,7 @@ func (m *ACPConnManager) GetCachedStateByClawbenchSID(clawbenchSID string) ACPCa
 		Commands:  reg.GetCommands(agentID),
 		Config:    reg.GetConfigState(agentID),
 		Plan:      planState,
+		Usage:     usageState,
 	}
 }
 
@@ -513,11 +516,17 @@ func (m *ACPConnManager) GetPendingApprovalSessionIDs() map[string]bool {
 type ACPConn struct {
 	agent        *model.Agent
 	clawbenchSID string
+	cwd          string // project working directory, set on first ensureAliveWithSession
 	mu           sync.Mutex
 
 	cmd    *exec.Cmd
 	conn   *acp.ClientSideConnection
 	client *ClawBenchACPClient
+
+	// stdoutFilter wraps the agent's stdout pipe to fix ACP protocol violations
+	// (string-number IDs, non-JSON lines). Must be Close'd when the process dies
+	// to unblock pending reads and prevent cleanup hangs.
+	stdoutFilter *acpStdoutFilter
 
 	// acpSID is the ACP session ID. Populated from DB (ResumeSession) or
 	// from NewSession response. Empty means no session yet.
@@ -556,6 +565,7 @@ type ACPConn struct {
 	currentThinkingEffortID string
 	currentModelID          string
 	cachedPlanState         *PlanState
+	cachedUsageState        *UsageState
 
 	// lastSetConfig tracks the last values successfully sent to the agent via
 	// setSessionConfigOption. Used to avoid re-sending unchanged values.
@@ -567,6 +577,10 @@ type ACPConn struct {
 	// autoApprove enables hands-off mode: all permission requests are
 	// automatically approved with the first allow_* option.
 	autoApprove bool
+
+	// promptCancel is called when the agent process dies to unblock any
+	// pending conn.Prompt call that would otherwise hang indefinitely.
+	promptCancel context.CancelFunc
 
 	// unsupportedConfigs tracks config IDs that the agent reported as unknown.
 	unsupportedConfigs map[string]bool
@@ -603,6 +617,17 @@ func (c *ACPConn) AgentID() string {
 	defer c.mu.Unlock()
 	if c.agent != nil {
 		return c.agent.ID
+	}
+	return ""
+}
+
+// BackendID returns the backend identifier of the agent this connection belongs to.
+// Used for ACP event mapping to look up backend-specific tool name and input remap tables.
+func (c *ACPConn) BackendID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.agent != nil {
+		return c.agent.Backend
 	}
 	return ""
 }
@@ -708,6 +733,20 @@ func (c *ACPConn) GetCachedPlanState() *PlanState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cachedPlanState
+}
+
+// SetCachedUsageState caches the usage state from a usage_update event.
+func (c *ACPConn) SetCachedUsageState(state *UsageState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cachedUsageState = state
+}
+
+// GetCachedUsageState returns the cached usage state.
+func (c *ACPConn) GetCachedUsageState() *UsageState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cachedUsageState
 }
 
 // SetAutoApprove enables or disables hands-off mode for this connection.
@@ -960,17 +999,37 @@ func (c *ACPConn) ProcessPID() int {
 // close kills the agent process and marks the connection as dead.
 func (c *ACPConn) close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-		_ = c.cmd.Wait()
+		// Close the stdout filter first to unblock pending reads on the pipe.
+		// Without this, cmd.Wait() hangs when the process is killed but
+		// stdout hasn't been closed yet (same pattern as killProcessLocked).
+		if c.stdoutFilter != nil {
+			c.stdoutFilter.Close()
+			c.stdoutFilter = nil
+		}
+
+		// Kill the entire process group (not just the parent process).
+		// ACP agents like Claude are spawned via npx, which creates a child
+		// process (claude). Killing only npx leaves the child alive, which
+		// holds the stderr pipe open and causes cmd.Wait() to hang.
+		killProcessGroup(c.cmd.Process)
+
+		oldCmd := c.cmd
+		c.mu.Unlock()
+		_ = oldCmd.Wait()
+		c.mu.Lock()
+		if c.cmd == oldCmd {
+			c.cmd = nil
+		}
 	}
+
 	c.cmd = nil
 	c.conn = nil
 	c.client = nil
 	c.alive = false
 	c.acpSID = ""
+	c.mu.Unlock()
 }
 
 // Close kills the agent process and marks the connection as dead.

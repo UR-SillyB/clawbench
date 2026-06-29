@@ -1,6 +1,9 @@
 import { ref, type Ref } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { gt } from '@/composables/useLocale'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'useAcpSession'
 
 export interface AcpSessionInfo {
   sessionId: string
@@ -67,13 +70,18 @@ export function useAcpSession(options: UseAcpSessionOptions) {
       }
       nextCursor.value = data.nextCursor || null
     } catch (err) {
-      console.error('[useAcpSession] loadAcpSessions failed:', err)
+      appLog.e(TAG, 'loadAcpSessions failed:', err)
     } finally {
       acpSessionsLoading.value = false
     }
   }
 
-  /** Load an ACP session into a new ClawBench session. Returns the new sessionId. */
+  /** Remove an ACP session from the local list (e.g. after LoadSession failed with not-found). */
+  function removeAcpSession(acpSessionId: string): void {
+    acpSessions.value = acpSessions.value.filter(s => s.sessionId !== acpSessionId)
+  }
+
+  /** Load an ACP session into a new ClawBench session. Returns the new sessionId, or 'not-found' if the session no longer exists on the agent side. */
   async function acpLoadSession(acpSessionId: string): Promise<string | null> {
     const aid = currentAgentId.value
     if (!aid || !acpSessionId) return null
@@ -97,6 +105,9 @@ export function useAcpSession(options: UseAcpSessionOptions) {
         } catch { /* ignore parse error */ }
         if (msgKey === 'ACPSessionNotFound') {
           toast.show(gt('chat.acpSession.sessionNotFound'), { type: 'error', icon: '⚠️' })
+          // Remove the stale session from the list so the user can't retry it
+          removeAcpSession(acpSessionId)
+          return 'not-found'
         } else {
           toast.show(gt('chat.acpSession.loadFailed'), { type: 'error', icon: '⚠️' })
         }
@@ -105,7 +116,7 @@ export function useAcpSession(options: UseAcpSessionOptions) {
       const data = await resp.json()
       return data.sessionId || ''
     } catch (err) {
-      console.error('[useAcpSession] acpLoadSession failed:', err)
+      appLog.e(TAG, 'acpLoadSession failed:', err)
       toast.show(gt('chat.acpSession.loadFailed'), { type: 'error', icon: '⚠️' })
       return null
     } finally {
@@ -128,6 +139,7 @@ export function useAcpSession(options: UseAcpSessionOptions) {
     nextCursor,
     loadAcpSessions,
     acpLoadSession,
+    removeAcpSession,
     clearAcpSessions,
   }
 }

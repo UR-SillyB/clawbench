@@ -8,7 +8,7 @@ A: 支持 Linux（x86_64 / ARM64）和 Windows（x86_64）。后端使用 Go 编
 
 **Q: 支持哪些 AI 后端？**
 
-A: 支持 CodeBuddy、Claude Code、OpenCode、Gemini CLI、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code、Pi 十种 CLI 后端。可在 Web UI 中实时切换，会话数据隔离。只需确保对应 CLI 已安装并在 PATH 中可用。
+A: 支持 CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code、Pi 九种 CLI 后端，以及 Gemini/Kimi（ACP 模式）。可在 Web UI 中实时切换，会话数据隔离。CLI 后端需确保对应 CLI 已安装并在 PATH 中可用。
 
 **Q: 如何添加新的智能体？**
 
@@ -16,7 +16,7 @@ A: 通过 Web UI 的设置向导创建新智能体，选择 LLM 提供商、输�
 
 **Q: 是否需要配置 API Key？**
 
-A: 不需要。ClawBench 通过调用本地 CLI（CodeBuddy、Claude Code、OpenCode、Gemini CLI、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code 或 Pi）实现 AI 功能，这些 CLI 工具已经完成了 API Key 的配置和管理。
+A: 不需要。ClawBench 通过调用本地 CLI（CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code 或 Pi）实现 AI 功能，这些 CLI 工具已经完成了 API Key 的配置和管理。
 
 **Q: TTS 语音合成可以使用本地模型吗？**
 

@@ -122,16 +122,20 @@ const legacyKeys: Record<string, {
     format: 'raw',
   },
   androidLogCapture: {
-    // No legacy key — this is a new setting
+    key: '',
+    format: 'raw',
   },
   swipeSession: {
-    // No legacy key — this is a new setting
+    key: '',
+    format: 'raw',
   },
   stickyScroll: {
-    // No legacy key — this is a new setting
+    key: '',
+    format: 'raw',
   },
   pushPersistentNotification: {
-    // No legacy key — this is a new setting
+    key: '',
+    format: 'raw',
     sideEffect(value: boolean) {
       try {
         const native = (window as any).AndroidNative
@@ -140,6 +144,8 @@ const legacyKeys: Record<string, {
     },
   },
   sortField: {
+    key: '',
+    format: 'raw',
     sideEffect(value: string | null) {
       window.dispatchEvent(new CustomEvent('clawbench-sort-change', { detail: { field: value } }))
       // Reset sortDir when sort is cleared
@@ -151,6 +157,8 @@ const legacyKeys: Record<string, {
     },
   },
   sortDir: {
+    key: '',
+    format: 'raw',
     sideEffect(value: string) {
       window.dispatchEvent(new CustomEvent('clawbench-sort-change', { detail: { dir: value } }))
     },
@@ -249,7 +257,6 @@ const serverConfig = ref<Record<string, any>>({})
 const serverDefaults: Record<string, any> = {
   'chat.initial_messages': 20,
   'chat.page_size': 20,
-  'chat.collapsed_height': 150,
   'chat.system_prompt_interval': 10,
   'session.max_count': 10,
   'recent_projects.max_count': 10,
@@ -260,6 +267,7 @@ const serverDefaults: Record<string, any> = {
   'terminal.max_sessions': 10,
   'terminal.buffer_lines': 2000,
   'default_agent': '',
+  'require_auth_for_localhost': false,
   'tts.engine': 'edge',
   'tts.format': '',
   'tts.speed': 1.0,
@@ -298,6 +306,31 @@ export async function patchAgentPref(agentId: string, field: 'preferred_model' |
     transport: 'transport',
   }
   updateAgentField(agentId, fieldMap[field] || field, value)
+}
+
+/**
+ * Patch an agent's settings-panel configurable field on the server.
+ * Supports: name, icon, specialty, custom_system_prompt, sort_order,
+ * plus the original preferred_model/preferred_thinking_effort/transport.
+ */
+export async function patchAgentField(agentId: string, field: string, value: any): Promise<void> {
+  await apiPatch('/api/agents', { id: agentId, [field]: value })
+  const { updateAgentField } = useAgents()
+  const fieldMap: Record<string, string> = {
+    preferred_model: 'preferredModel',
+    preferred_thinking_effort: 'preferredThinkingEffort',
+    transport: 'transport',
+    custom_system_prompt: 'customSystemPrompt',
+    sort_order: 'sortOrder',
+    // name, icon, specialty map to themselves
+  }
+  updateAgentField(agentId, fieldMap[field] || field, value)
+  // When custom_system_prompt changes, reload agents to get the server-composed
+  // systemPrompt (commonPrompt + customSystemPrompt) into the reactive store.
+  if (field === 'custom_system_prompt') {
+    const { loadAgents } = useAgents()
+    await loadAgents(true)
+  }
 }
 
 /** Read the preferred model ID for an agent from the server-side agent data. */
@@ -345,8 +378,8 @@ export function useSettingsConfig() {
   async function patchConfig(changes: Record<string, any>): Promise<{ needsRestart: boolean; changedColdFields: string[] }> {
     const result = await apiPatch<{ needs_restart?: boolean; changed_cold_fields?: string[] }>('/api/config', changes)
     // Deep-merge patched values into local cache after successful response.
-    // Using Object.assign would overwrite nested objects (e.g. {chat: {collapsed_height: 300}}
-    // would lose the existing page_size), so we deep-merge instead.
+    // Using Object.assign would overwrite nested objects (e.g. {chat: {page_size: 50}}
+    // would lose the existing initial_messages), so we deep-merge instead.
     deepAssign(serverConfig.value, changes)
     return {
       needsRestart: result.needs_restart ?? false,
@@ -426,6 +459,7 @@ export function useSettingsConfig() {
     getServerValueWithDefault,
     setServerValue,
     patchAgentPref,
+    patchAgentField,
     getAgentModelPref,
     getAgentThinkingPref,
   }

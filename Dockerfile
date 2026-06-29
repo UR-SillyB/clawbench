@@ -17,7 +17,7 @@ FROM ubuntu:24.04
 # - ca-certificates: HTTPS (LLM provider APIs, Edge TTS WebSocket)
 # Edge TTS is compiled into the Go binary (github.com/lib-x/edgetts) — no Python needed.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl bash && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -26,32 +26,37 @@ WORKDIR /app
 COPY clawbench .
 COPY public/ ./public/
 
-# Copy Pi binary for setup wizard — multi-arch aware
-# Local build: scripts/docker-build.sh populates docker-staging/
-# CI build: release workflow passes PI_VERSION build arg; the RUN step
-# below downloads the correct Pi binary for each target architecture.
-ARG TARGETARCH
-ARG PI_VERSION=""
+# Copy embedded agent download helper and config
+COPY scripts/download-embedded-agent.sh ./scripts/download-embedded-agent.sh
+COPY embedded-agents.yaml ./embedded-agents.yaml
 
-# If PI_VERSION is set (CI), download the correct Pi binary for this architecture.
-# If not set (local build without --with-pi), fall back to docker-staging/ contents.
-RUN if [ -n "$PI_VERSION" ]; then \
-      PI_ARCH="x64"; \
-      if [ "$TARGETARCH" = "arm64" ]; then PI_ARCH="arm64"; fi; \
-      PI_URL="https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-${PI_ARCH}.tar.gz"; \
-      mkdir -p .clawbench/pi && \
-      curl -sL "$PI_URL" | tar xzf - -C .clawbench/pi --strip-components=1 && \
-      chmod +x .clawbench/pi/pi && \
-      echo "$PI_VERSION" > .clawbench/pi/VERSION && \
-      echo "Pi v${PI_VERSION} (${PI_ARCH}) downloaded"; \
+# Copy embedded agent binary — multi-arch aware
+# Local build: scripts/docker-build.sh populates docker-staging/
+# CI build: passes EMBEDDED_AGENT_ID + EMBEDDED_AGENT_VERSION build args; the RUN step
+# below downloads the correct agent binary for each target architecture.
+ARG TARGETARCH
+ARG EMBEDDED_AGENT_ID=""
+ARG EMBEDDED_AGENT_VERSION=""
+# Backward compat: OPENCODE_VERSION maps to EMBEDDED_AGENT_ID=opencode
+# If both OPENCODE_VERSION and EMBEDDED_AGENT_* are set, EMBEDDED_AGENT_* takes precedence.
+ARG OPENCODE_VERSION=""
+
+# Use bash for RUN commands (download-embedded-agent.sh requires bash features)
+SHELL ["/bin/bash", "-c"]
+
+RUN if [ -n "$EMBEDDED_AGENT_ID" ] && [ -n "$EMBEDDED_AGENT_VERSION" ]; then \
+      source ./scripts/download-embedded-agent.sh && \
+      download_embedded_agent_for_docker "$EMBEDDED_AGENT_ID" "$EMBEDDED_AGENT_VERSION"; \
+    elif [ -n "$OPENCODE_VERSION" ]; then \
+      source ./scripts/download-embedded-agent.sh && \
+      download_embedded_agent_for_docker opencode "$OPENCODE_VERSION"; \
     else \
       mkdir -p .clawbench; \
     fi
 
-# Copy local docker-staging/ as fallback (local builds only; no-op in CI since PI_VERSION is set).
-# When PI_VERSION is set above, the RUN step already populated .clawbench/pi/,
+# Copy local docker-staging/ as fallback (local builds only; no-op in CI when version is set).
+# When a version is set above, the RUN step already populated .clawbench/,
 # and this COPY overlays an empty directory (harmless).
-# In CI, docker-staging/ also contains provider_models.json from the Linux build artifact.
 COPY docker-staging/ .clawbench/
 
 # Data directory (mounted as volume for persistence)

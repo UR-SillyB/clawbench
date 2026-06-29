@@ -4,6 +4,8 @@ import (
 	"embed"
 	"net/http"
 
+	"clawbench/internal/model"
+
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 	"gopkg.in/yaml.v3"
@@ -36,7 +38,7 @@ func mustLoadEmbed(path string) {
 func Localizer(r *http.Request) *i18n.Localizer {
 	xLocale := r.Header.Get("X-Locale")
 	cookieLocale := ""
-	if c, err := r.Cookie("clawbench-locale"); err == nil {
+	if c, err := r.Cookie(model.ScopedCookieName("clawbench-locale")); err == nil {
 		cookieLocale = c.Value
 	}
 	acceptLang := r.Header.Get("Accept-Language")

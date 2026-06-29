@@ -45,6 +45,17 @@ export function registerSwitchTab(cb: (tab: string) => void) {
     switchTabCallback = cb
 }
 
+/** Reset all task tab navigation state (for project switch) */
+export function resetTaskTabState() {
+    currentView.value = 'list'
+    selectedTaskId.value = null
+    selectedExecId.value = null
+    selectedExecData.value = null
+    execDetailOpen.value = false
+    formViewOpen.value = false
+    formMode.value = 'create'
+}
+
 /** Called when a task execution completes (runningCount drops to 0) */
 function onTaskCompleted(task: any) {
     // Sound + haptic
@@ -52,7 +63,6 @@ function onTaskCompleted(task: any) {
 
     // Navigate to task history on click
     const navigateToHistory = () => {
-        navigateToTaskHistory(task.id)
         if (switchTabCallback) switchTabCallback('tasks')
     }
 

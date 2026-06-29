@@ -11,6 +11,8 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"clawbench/internal/model"
 )
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,13 @@ func (c *ACPConn) ListSessions(ctx context.Context, cursor *string) ([]acp.Sessi
 func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Set cwd on first call — used by spawnLocked to set cmd.Dir so the ACP
+	// process starts in the correct project directory instead of inheriting
+	// the ClawBench server's cwd.
+	if c.cwd == "" && cwd != "" {
+		c.cwd = cwd
+	}
 
 	// If alive and already has a session, reuse
 	if c.alive && c.isAliveLocked() && c.acpSID != "" {
@@ -122,15 +131,17 @@ func (c *ACPConn) ensureAliveWithSession(ctx context.Context, cwd string) (bool,
 		if err == nil {
 			return false, nil // recovered successfully
 		}
-		slog.Warn("acp conn: ResumeSession failed, falling back to NewSession",
+		// ResumeSession failed — the session is unrecoverable.
+		// Do NOT silently fall back to NewSession (amnesia): the user
+		// would lose all conversation context without any indication.
+		// Surface the error so the user knows the session needs a fresh start.
+		slog.Error("acp conn: ResumeSession failed, session is unrecoverable",
 			"clawbench_sid", c.clawbenchSID, "acp_sid", acpSID, "error", err)
 		c.killProcessLocked()
-		if err := c.spawnLocked(ctx); err != nil {
-			return false, err
-		}
+		return false, fmt.Errorf("acp: session %s ResumeSession failed: %w", acpSID, err)
 	}
 
-	// No prior session (or ResumeSession failed) — create new session.
+	// No prior session — create new session.
 	newSessCtx, newSessCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer newSessCancel()
 
@@ -245,7 +256,17 @@ func (c *ACPConn) killProcessLocked() {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return
 	}
-	_ = c.cmd.Process.Kill()
+
+	// Close the stdout filter first to unblock pending reads on the pipe.
+	// This prevents cmd.Wait() from hanging when the process is killed but
+	// stdout hasn't been closed yet.
+	if c.stdoutFilter != nil {
+		c.stdoutFilter.Close()
+		c.stdoutFilter = nil
+	}
+
+	// Kill the entire process group (see killProcessGroup for rationale).
+	killProcessGroup(c.cmd.Process)
 	oldCmd := c.cmd
 	c.mu.Unlock()
 	_ = oldCmd.Wait()
@@ -260,6 +281,8 @@ func (c *ACPConn) killProcessLocked() {
 }
 
 // spawnLocked spawns the agent process and initializes the connection (must hold c.mu).
+//
+//nolint:gocyclo // complex spawn logic with multiple sequential setup steps
 func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	// Kill any existing process first
 	if c.cmd != nil && c.cmd.Process != nil {
@@ -269,7 +292,13 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 			_ = c.conn.Cancel(cancelCtx, acp.CancelNotification{SessionId: acp.SessionId(c.acpSID)})
 			cancelCancel()
 		}
-		_ = c.cmd.Process.Kill()
+		// Close the old stdout filter to unblock pending reads before killing
+		if c.stdoutFilter != nil {
+			c.stdoutFilter.Close()
+			c.stdoutFilter = nil
+		}
+		// Kill the entire process group (npx + child processes).
+		killProcessGroup(c.cmd.Process)
 		oldCmd := c.cmd
 		c.mu.Unlock()
 		_ = oldCmd.Wait()
@@ -291,10 +320,24 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	cmdName := cmdParts[0]
 	cmdArgs := cmdParts[1:]
 
+	// Resolve embedded binary path for bare command names (e.g. "opencode acp" → use embedded opencode binary).
+	if !strings.Contains(cmdName, "/") {
+		if spec := model.FindBackendSpecByDefaultCmd(cmdName); spec != nil && spec.EmbeddedSubDir != "" {
+			if p := model.EmbeddedBinaryPath(spec.EmbeddedSubDir); p != "" {
+				cmdName = p
+			}
+		}
+	}
+
 	cmd := exec.CommandContext(context.Background(), cmdName, cmdArgs...)
-	cmd.Dir = "" // cwd is per-session, set during NewSession/ResumeSession
+	cmd.Dir = c.cwd // project working directory for this ACP session
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, OrphanChildEnvVar)
+	// Put the ACP process in its own process group so we can kill the
+	// entire tree (npx + child claude process) when closing the connection.
+	// Without this, killing npx leaves the claude child alive, which holds
+	// the stdout/stderr pipes open and causes cmd.Wait() to hang.
+	setProcessGroup(cmd)
 
 	if nodeOpts := os.Getenv("NODE_OPTIONS"); nodeOpts != "" {
 		cmd.Env = append(cmd.Env, "NODE_OPTIONS="+nodeOpts+" --report-on-fatalerror --report-on-signal --report-directory=/tmp/node-reports")
@@ -322,7 +365,13 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 
 	client := NewClawBenchACPClient()
 	client.connRef = c // back-reference for cache updates
-	conn := acp.NewClientSideConnection(client, stdinPipe, stdoutPipe)
+
+	// Wrap stdout to fix common ACP protocol violations:
+	// - CodeWhale/codewhale returns string IDs ("1") for numeric requests (1)
+	// - Some agents emit terminal escape sequences on stdout
+	stdoutFilter := newACPStdoutFilter(stdoutPipe)
+
+	conn := acp.NewClientSideConnection(client, stdinPipe, stdoutFilter)
 	conn.SetLogger(slog.Default())
 
 	initCtx, initCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -344,6 +393,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		stdoutFilter.Close()
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("acp: initialize: %w", err)
 	}
@@ -365,6 +415,7 @@ func (c *ACPConn) spawnLocked(ctx context.Context) error {
 	c.cmd = cmd
 	c.conn = conn
 	c.client = client
+	c.stdoutFilter = stdoutFilter
 	c.acpSID = "" // cleared on respawn — will be set by ensureAliveWithSession
 	c.alive = true
 	c.lastUsed = time.Now()
@@ -390,6 +441,11 @@ func (c *ACPConn) watchProcessDeath() {
 		if c.agent != nil && c.agent.ID != "" {
 			GetAgentCapabilityRegistry().MarkStale(c.agent.ID)
 		}
+	}
+	// Cancel any pending prompt to unblock conn.Prompt call
+	if c.promptCancel != nil {
+		c.promptCancel()
+		c.promptCancel = nil
 	}
 	agentID := ""
 	if c.agent != nil {

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { ref } from 'vue'
 import { useChatStream } from '@/composables/useChatStream'
-import { forceCleanupStreamingState, FILE_MODIFYING_TOOLS, syncPendingFromBackend } from '@/utils/chatStreamUtils'
+import { forceCleanupStreamingState, FILE_MODIFYING_TOOLS } from '@/utils/chatStreamUtils'
+import { usePendingStore } from '@/composables/usePendingStore'
 
 // ── Mock EventSource ──
 
@@ -75,40 +76,20 @@ vi.mock('@/utils/chatStreamUtils', () => ({
   findStreamingMsg: vi.fn((messages: any[]) => {
     return messages.find((m: any) => m.role === 'assistant' && m.streaming)
   }),
-  consumePendingMessage: vi.fn((messages: any[], userContent: string, userFiles: string[], currentBackend: string) => {
-    // Finalize any stale streaming message
+  drainQueueMessage: vi.fn((messages: any[], userContent: string, userFiles: string[], currentBackend: string, callbacks: any, _drainId?: string) => {
+    // Finalize any streaming message
     const streamingMsg = messages.find((m: any) => m.role === 'assistant' && m.streaming)
     if (streamingMsg) delete streamingMsg.streaming
-    // Find and un-mark the pending user message
-    const pendingMsg = messages.find((m: any) => m.role === 'user' && m.pending && m.content === userContent)
-    if (pendingMsg) {
-      delete pendingMsg.pending
-    } else {
-      const existingUserMsg = messages.find((m: any) => m.role === 'user' && m.content === userContent && !m.id)
-      if (!existingUserMsg) {
-        messages.push({
-          role: 'user',
-          content: userContent,
-          blocks: userContent ? [{ type: 'text', text: userContent }] : [],
-          files: userFiles.map(p => ({ path: p })),
-          createdAt: new Date().toISOString(),
-        })
-      }
+    // Push drained user message with drain ID (matches real impl)
+    if (userContent) {
+      const effectiveDrainId = _drainId || `drain-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      messages.push({ role: 'user', id: effectiveDrainId, _drain: true, content: userContent, blocks: [{ type: 'text', text: userContent }], files: userFiles.map((p: string) => ({ path: p })), createdAt: new Date().toISOString() })
     }
     // Create new streaming assistant placeholder
     const newStreamingMsg = { role: 'assistant', content: '', blocks: [], streaming: true, createdAt: new Date().toISOString(), backend: currentBackend }
     messages.push(newStreamingMsg)
     return newStreamingMsg
   }),
-  syncPendingFromBackend: vi.fn(),
-  createPendingUserMessage: vi.fn((text: string, files: string[] = []) => ({
-    role: 'user',
-    content: text || '',
-    blocks: text ? [{ type: 'text', text }] : [],
-    files: files.map(p => ({ path: p })),
-    createdAt: new Date().toISOString(),
-    pending: true,
-  })),
 }))
 
 vi.mock('@/composables/useLocale', () => ({
@@ -141,8 +122,10 @@ vi.mock('@/composables/usePlanProgress', async (importOriginal) => {
 
 function createOptions(overrides: Record<string, any> = {}) {
   const messages = ref<any[]>([])
+  const pendingStore = usePendingStore()
   return {
     messages,
+    pendingStore,
     currentSessionId: ref('test-session-1'),
     currentBackend: ref('test-backend'),
     loading: ref(false),
@@ -352,17 +335,20 @@ describe('useChatStream', () => {
       expect(toolBlock).toBeDefined()
       expect(toolBlock.done).toBe(false)
 
-      // Complete tool use
+      // Complete tool use (slim SSE: no output, but includes status)
       es.simulate('tool_use', {
         name: 'Read',
         id: 'tool-1',
         done: true,
-        output: 'file contents',
         status: 'success',
+        summary: 'main.go',
       })
 
       expect(toolBlock.done).toBe(true)
-      expect(toolBlock.output).toBe('file contents')
+      expect(toolBlock.status).toBe('success')
+      // Slim SSE: output is NOT included in the event
+      expect(toolBlock.output).toBeUndefined()
+      expect(toolBlock.summary).toBe('main.go')
     })
 
     it('should handle done event by disconnecting and loading history', () => {
@@ -465,10 +451,10 @@ describe('useChatStream', () => {
         input: { file_path: '/tmp/test.txt' },
       })
 
-      // Now send tool_result for the same id
+      // Now send tool_result for the same id (slim: no output in SSE)
       es.simulate('tool_result', {
         id: 'tool-1',
-        output: 'file contents here',
+        status: 'success',
       })
 
       const assistantMsg = options.messages.value.find(
@@ -477,7 +463,10 @@ describe('useChatStream', () => {
       const toolBlock = assistantMsg.blocks.find(
         (b: any) => b.type === 'tool_use' && b.id === 'tool-1'
       )
-      expect(toolBlock.output).toBe('file contents here')
+      expect(toolBlock.done).toBe(true)
+      expect(toolBlock.status).toBe('success')
+      // Slim SSE: output is NOT included in the event
+      expect(toolBlock.output).toBeUndefined()
     })
 
     it('should update status of existing tool_use block with matching id', () => {
@@ -593,38 +582,7 @@ describe('useChatStream', () => {
     })
   })
 
-  describe('queue_consume event', () => {
-    it('should add user message bubble with text content', () => {
-      const options = createOptions()
-      const { connectStream } = useChatStream(options)
-
-      connectStream('test-session-1')
-      const es = getLatestEs()
-      es.simulateOpen()
-
-      es.simulate('queue_consume', { text: 'Hello AI' })
-
-      const userMsg = options.messages.value.find((m: any) => m.role === 'user')
-      expect(userMsg).toBeDefined()
-      expect(userMsg.content).toBe('Hello AI')
-      expect(userMsg.blocks).toEqual([{ type: 'text', text: 'Hello AI' }])
-    })
-
-    it('should add user message with files array', () => {
-      const options = createOptions()
-      const { connectStream } = useChatStream(options)
-
-      connectStream('test-session-1')
-      const es = getLatestEs()
-      es.simulateOpen()
-
-      es.simulate('queue_consume', { text: 'Check these', files: ['/a.txt', '/b.txt'] })
-
-      const userMsg = options.messages.value.find((m: any) => m.role === 'user')
-      expect(userMsg).toBeDefined()
-      expect(userMsg.files).toEqual([{ path: '/a.txt' }, { path: '/b.txt' }])
-    })
-
+  describe('queue_drain event', () => {
     it('should create new streaming assistant placeholder', () => {
       const options = createOptions()
       const { connectStream } = useChatStream(options)
@@ -633,41 +591,14 @@ describe('useChatStream', () => {
       const es = getLatestEs()
       es.simulateOpen()
 
-      es.simulate('queue_consume', { text: 'Hello' })
+      es.simulate('queue_drain', { queue: [] })
 
-      // After queue_consume, the last message should be a new streaming assistant.
-      // (The initial placeholder from connectStream is also still streaming,
-      //  since queue_done hasn't fired to clean it up.)
+      // After queue_drain, the last message should be a new streaming assistant.
       const lastMsg = options.messages.value[options.messages.value.length - 1]
       expect(lastMsg.role).toBe('assistant')
       expect(lastMsg.streaming).toBe(true)
       expect(lastMsg.blocks).toEqual([])
       expect(lastMsg.content).toBe('')
-    })
-
-    it('should deduplicate user message when local copy already exists (no id)', () => {
-      const options = createOptions()
-      const { connectStream } = useChatStream(options)
-
-      connectStream('test-session-1')
-      const es = getLatestEs()
-      es.simulateOpen()
-
-      // Simulate a local user message pushed by sendMessageNow (no id)
-      options.messages.value.push({
-        role: 'user',
-        content: 'Hello AI',
-        blocks: [{ type: 'text', text: 'Hello AI' }],
-        createdAt: new Date().toISOString(),
-      })
-
-      const userCountBefore = options.messages.value.filter((m: any) => m.role === 'user').length
-
-      // queue_consume with the same content should NOT push another user message
-      es.simulate('queue_consume', { text: 'Hello AI' })
-
-      const userCountAfter = options.messages.value.filter((m: any) => m.role === 'user').length
-      expect(userCountAfter).toBe(userCountBefore)
     })
 
     it('should call onRenderNeeded and onScrollBottom(true)', () => {
@@ -678,13 +609,45 @@ describe('useChatStream', () => {
       const es = getLatestEs()
       es.simulateOpen()
 
-      es.simulate('queue_consume', { text: 'Hello' })
+      es.simulate('queue_drain', { queue: [] })
 
       expect(options.onRenderNeeded).toHaveBeenCalled()
       expect(options.onScrollBottom).toHaveBeenCalledWith(true)
     })
 
-    it('should handle event with empty text', () => {
+    it('should call pendingStore.syncFromBackendQueue with correct sessionId and queue', () => {
+      const options = createOptions()
+      const syncSpy = vi.spyOn(options.pendingStore, 'syncFromBackendQueue')
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('queue_drain', { queue: [{ id: 'q1' }, { id: 'q2' }] })
+
+      expect(syncSpy).toHaveBeenCalledWith('test-session-1', [{ id: 'q1' }, { id: 'q2' }])
+    })
+
+    it('should still sync pendingStore even when session changed', () => {
+      const options = createOptions()
+      const syncSpy = vi.spyOn(options.pendingStore, 'syncFromBackendQueue')
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Change session to fail guard
+      options.currentSessionId.value = 'different-session'
+
+      es.simulate('queue_drain', { queue: [{ id: 'q1' }] })
+
+      // pendingStore.syncFromBackendQueue IS always called — even on session change
+      expect(syncSpy).toHaveBeenCalledWith('test-session-1', [{ id: 'q1' }])
+    })
+
+    it('should not modify messages array when session changed (prevents cross-session contamination)', () => {
       const options = createOptions()
       const { connectStream } = useChatStream(options)
 
@@ -692,18 +655,111 @@ describe('useChatStream', () => {
       const es = getLatestEs()
       es.simulateOpen()
 
-      es.simulate('queue_consume', { text: '' })
+      // Add an existing user message to simulate a populated chat
+      options.messages.value.push({
+        role: 'user',
+        content: 'existing msg in session B',
+        blocks: [{ type: 'text', text: 'existing msg in session B' }],
+        createdAt: new Date().toISOString(),
+      })
 
-      const userMsg = options.messages.value.find((m: any) => m.role === 'user')
+      // Change to a different session
+      options.currentSessionId.value = 'different-session'
+
+      const msgCountBefore = options.messages.value.length
+      es.simulate('queue_drain', { queue: [{ id: 'q1', text: 'another queued msg' }] })
+
+      // Messages array must NOT be modified — drainQueueMessage was skipped
+      expect(options.messages.value.length).toBe(msgCountBefore)
+    })
+
+    it('should call drainQueueMessage with correct args', async () => {
+      const { drainQueueMessage } = await import('@/utils/chatStreamUtils')
+      ;(drainQueueMessage as any).mockClear()
+
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('queue_drain', { text: 'hello', filePaths: [], files: [], queue: [] })
+
+      // drainQueueMessage should be called with (messages.value, text, files, currentBackend.value, callbacks)
+      expect(drainQueueMessage).toHaveBeenCalled()
+      const callArgs = (drainQueueMessage as any).mock.calls[0]
+      expect(callArgs[0]).toBe(options.messages.value)
+      expect(callArgs[1]).toBe('hello')  // userContent
+      expect(callArgs[2]).toEqual([])    // userFiles
+      expect(callArgs[3]).toBe('test-backend')
+      // Fifth arg is callbacks object
+      expect(callArgs[4]).toHaveProperty('onRenderNeeded')
+      expect(callArgs[4]).toHaveProperty('onExtractScheduledTasks')
+    })
+
+    it('should push drain message BEFORE syncing pendingStore (atomic visual transition)', () => {
+      // This is the core fix: drainQueueMessage runs BEFORE syncFromBackendQueue
+      // so the user never sees a gap where neither pending nor drain message is visible.
+      // We verify by checking that the user message is already in messages.value
+      // BEFORE syncFromBackendQueue would have removed the pending.
+      const options = createOptions()
+      // Add a pending message to simulate a queued message
+      options.pendingStore.addPending('test-session-1', { role: 'user', content: 'queued msg', blocks: [{ type: 'text', text: 'queued msg' }], files: [], createdAt: new Date().toISOString(), pending: true })
+
+      const syncSpy = vi.spyOn(options.pendingStore, 'syncFromBackendQueue')
+      const { connectStream } = useChatStream(options)
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('queue_drain', { text: 'queued msg', filePaths: [], files: [], queue: [] })
+
+      // After queue_drain: user message should be in messages.value (pushed by drain)
+      const userMsg = options.messages.value.find((m: any) => m.role === 'user' && m.content === 'queued msg')
       expect(userMsg).toBeDefined()
-      expect(userMsg.content).toBe('')
-      expect(userMsg.blocks).toEqual([])
+      // And pendingStore should have been synced (drained item removed)
+      expect(syncSpy).toHaveBeenCalledWith('test-session-1', [])
+    })
+
+    it('should assign drain ID to the pushed user message', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('queue_drain', { text: 'my queued msg', filePaths: [], files: [], queue: [] })
+
+      // Find the user message that was just pushed
+      const userMsg = options.messages.value.find((m: any) => m.role === 'user' && m.content === 'my queued msg')
+      expect(userMsg).toBeDefined()
+      expect(userMsg.id).toMatch(/^drain-\d+-[a-z0-9]+$/)
+      expect(userMsg._drain).toBe(true)
+    })
+
+    it('should give drain message a stable v-for key (not index-based)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('queue_drain', { text: 'stable key test', filePaths: [], files: [], queue: [] })
+
+      const userMsg = options.messages.value.find((m: any) => m.role === 'user' && m.content === 'stable key test')
+      // With id present, key is 'db-{id}' — stable across renders
+      const key = userMsg.id ? `db-${userMsg.id}` : undefined
+      expect(key).toMatch(/^db-drain-/)
     })
   })
 
-  describe('queue_update event', () => {
-    it('should sync pending messages from backend queue', () => {
+  describe('queue_update event (enqueue notification)', () => {
+    it('should call pendingStore.syncFromBackendQueue with correct sessionId and queue', () => {
       const options = createOptions()
+      const syncSpy = vi.spyOn(options.pendingStore, 'syncFromBackendQueue')
       const { connectStream } = useChatStream(options)
 
       connectStream('test-session-1')
@@ -712,11 +768,12 @@ describe('useChatStream', () => {
 
       es.simulate('queue_update', { queue: [{ id: 'q1' }, { id: 'q2' }] })
 
-      expect(syncPendingFromBackend).toHaveBeenCalledWith(options.messages.value, [{ id: 'q1' }, { id: 'q2' }])
+      expect(syncSpy).toHaveBeenCalledWith('test-session-1', [{ id: 'q1' }, { id: 'q2' }])
     })
 
-    it('still syncs pending messages even when session changed (queue update is session-independent)', () => {
+    it('should still sync pendingStore when session changed (pendingStore is always updated)', () => {
       const options = createOptions()
+      const syncSpy = vi.spyOn(options.pendingStore, 'syncFromBackendQueue')
       const { connectStream } = useChatStream(options)
 
       connectStream('test-session-1')
@@ -728,13 +785,45 @@ describe('useChatStream', () => {
 
       es.simulate('queue_update', { queue: [{ id: 'q1' }] })
 
-      // syncPendingFromBackend IS still called because queue update is independent of streaming session
-      expect(syncPendingFromBackend).toHaveBeenCalledWith(options.messages.value, [{ id: 'q1' }])
+      // pendingStore.syncFromBackendQueue IS always called — even on session change
+      expect(syncSpy).toHaveBeenCalledWith('test-session-1', [{ id: 'q1' }])
+    })
+
+    it('should not render when session changed (only pendingStore is updated)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Change session to fail guard
+      options.currentSessionId.value = 'different-session'
+
+      options.onRenderNeeded.mockClear()
+      es.simulate('queue_update', { queue: [{ id: 'q1' }] })
+
+      // onRenderNeeded should NOT be called — rendering is skipped on session change
+      expect(options.onRenderNeeded).not.toHaveBeenCalled()
+    })
+
+    it('should call onRenderNeeded when session matches', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      options.onRenderNeeded.mockClear()
+      es.simulate('queue_update', { queue: [{ id: 'q1' }] })
+
+      expect(options.onRenderNeeded).toHaveBeenCalled()
     })
   })
 
-  describe('queue_done event', () => {
-    it('should call forceCleanupStreamingState', () => {
+  describe('queue_drain finalizes old streaming and creates new', () => {
+    it('should finalize old streaming assistant and create new streaming assistant', () => {
       const options = createOptions()
       const { connectStream } = useChatStream(options)
 
@@ -742,23 +831,42 @@ describe('useChatStream', () => {
       const es = getLatestEs()
       es.simulateOpen()
 
-      es.simulate('queue_done', {})
+      // Simulate: A is streaming with content
+      const streamingMsg = options.messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
+      expect(streamingMsg).toBeDefined()
+      streamingMsg.content = ''
+      streamingMsg.blocks = [{ type: 'text', text: 'A reply content' }]
 
-      expect(forceCleanupStreamingState).toHaveBeenCalled()
+      const msgCountBefore = options.messages.value.length
+
+      // queue_drain atomically finalizes A and starts B
+      es.simulate('queue_drain', { queue: [] })
+
+      // Old streaming message finalized (no longer streaming)
+      const finalizedMsg = options.messages.value.find((m: any) => m.blocks?.[0]?.text === 'A reply content')
+      expect(finalizedMsg).toBeDefined()
+      expect(finalizedMsg.streaming).toBeUndefined()
+
+      // New streaming assistant created
+      const newStreaming = options.messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
+      expect(newStreaming).toBeDefined()
+      expect(newStreaming.blocks).toEqual([])
     })
 
-    it('should call onScrollBottom', () => {
+    it('should create new streaming assistant with correct backend', () => {
       const options = createOptions()
+      options.currentBackend.value = 'claude-code'
       const { connectStream } = useChatStream(options)
 
       connectStream('test-session-1')
       const es = getLatestEs()
       es.simulateOpen()
 
-      const scrollCallsBefore = options.onScrollBottom.mock.calls.length
-      es.simulate('queue_done', {})
+      es.simulate('queue_drain', { queue: [] })
 
-      expect(options.onScrollBottom.mock.calls.length).toBeGreaterThan(scrollCallsBefore)
+      const newStreaming = options.messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
+      expect(newStreaming).toBeDefined()
+      expect(newStreaming.backend).toBe('claude-code')
     })
   })
 
@@ -1071,16 +1179,15 @@ describe('useChatStream', () => {
       es.simulate('tool_use', {
         name: 'Write',
         id: 'tool-write',
-        input: { file_path: '/tmp/newfile.txt' },
       })
 
+      // Slim SSE: file_path is a dedicated field, not in input
       es.simulate('tool_use', {
         name: 'Write',
         id: 'tool-write',
         done: true,
-        input: { file_path: '/tmp/newfile.txt', content: 'hello' },
-        output: 'File written',
         status: 'success',
+        file_path: '/tmp/newfile.txt',
       })
 
       expect(options.onFileModified).toHaveBeenCalledWith('/tmp/newfile.txt')
@@ -1367,7 +1474,7 @@ describe('useChatStream', () => {
 
       es.simulate('tool_result', {
         id: 'tool-guard-2',
-        output: 'file contents',
+        status: 'success',
       })
 
       const assistantMsg = options.messages.value.find(
@@ -1376,7 +1483,8 @@ describe('useChatStream', () => {
       const toolBlock = assistantMsg.blocks.find(
         (b: any) => b.type === 'tool_use' && b.id === 'tool-guard-2'
       )
-      expect(toolBlock.output).toBe('file contents')
+      expect(toolBlock.done).toBe(true)
+      expect(toolBlock.status).toBe('success')
       expect(options.onScrollBottom).not.toHaveBeenCalled()
     })
 
@@ -1436,7 +1544,7 @@ describe('useChatStream', () => {
       expect(options.onRenderNeeded).not.toHaveBeenCalled()
     })
 
-    it('should skip onRenderNeeded and onScrollBottom on queue_consume when isOpen=false', () => {
+    it('should skip onRenderNeeded and onScrollBottom on queue_drain when isOpen=false', () => {
       const options = createOptions({ isOpen: ref(false) })
       const { connectStream } = useChatStream(options)
 
@@ -1447,32 +1555,14 @@ describe('useChatStream', () => {
       options.onRenderNeeded.mockClear()
       options.onScrollBottom.mockClear()
 
-      es.simulate('queue_consume', { text: 'Hello' })
+      es.simulate('queue_drain', { queue: [] })
 
-      const userMsg = options.messages.value.find((m: any) => m.role === 'user')
-      expect(userMsg).toBeDefined()
-      expect(userMsg.content).toBe('Hello')
+      // drainQueueMessage still processes messages, but render/scroll are skipped
       expect(options.onRenderNeeded).not.toHaveBeenCalled()
       expect(options.onScrollBottom).not.toHaveBeenCalled()
     })
 
-    it('should skip onScrollBottom on queue_done when isOpen=false', () => {
-      const options = createOptions({ isOpen: ref(false) })
-      const { connectStream } = useChatStream(options)
-
-      connectStream('test-session-1')
-      const es = getLatestEs()
-      es.simulateOpen()
-
-      options.onScrollBottom.mockClear()
-
-      es.simulate('queue_done', {})
-
-      expect(forceCleanupStreamingState).toHaveBeenCalled()
-      expect(options.onScrollBottom).not.toHaveBeenCalled()
-    })
-
-    it('should call onScrollBottom on queue_done when isOpen=true', () => {
+    it('should call onScrollBottom on queue_drain when isOpen=true', () => {
       const options = createOptions({ isOpen: ref(true) })
       const { connectStream } = useChatStream(options)
 
@@ -1482,9 +1572,9 @@ describe('useChatStream', () => {
 
       options.onScrollBottom.mockClear()
 
-      es.simulate('queue_done', {})
+      es.simulate('queue_drain', { queue: [] })
 
-      expect(options.onScrollBottom).toHaveBeenCalled()
+      expect(options.onScrollBottom).toHaveBeenCalledWith(true)
     })
 
     it('should still call onToast and onNotification on done when isOpen=false', async () => {
@@ -1943,6 +2033,81 @@ describe('useChatStream', () => {
       es.simulate('resume_split', {})
 
       expect(options.onRenderNeeded).toHaveBeenCalled()
+    })
+
+    it('should set Phase 2 message id from resume_split message_id', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('content', { content: 'Phase 1' })
+      // resume_split with message_id — backend sends the new streaming message ID
+      es.simulate('resume_split', { message_id: 12345 })
+
+      const phase2Msg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(phase2Msg).toBeDefined()
+      expect(phase2Msg.id).toBe(12345)
+    })
+
+    it('should create Phase 2 without id when resume_split data has no message_id (backward compat)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // resume_split with empty data — old backend behavior
+      es.simulate('resume_split', {})
+
+      const phase2Msg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(phase2Msg).toBeDefined()
+      expect(phase2Msg.id).toBeUndefined()
+    })
+
+    it('should handle resume_split with malformed JSON gracefully', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // resume_split with data that causes JSON.parse to fail
+      // The mock EventSource simulate method stringifies the data,
+      // so we test with an object that won't have message_id
+      es.simulate('resume_split', { foo: 'bar' })
+
+      const phase2Msg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(phase2Msg).toBeDefined()
+      expect(phase2Msg.id).toBeUndefined()
+    })
+
+    it('should not set Phase 2 id when message_id is 0 (falsy)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // message_id: 0 is falsy — should not set phase2.id
+      es.simulate('resume_split', { message_id: 0 })
+
+      const phase2Msg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(phase2Msg).toBeDefined()
+      expect(phase2Msg.id).toBeUndefined()
     })
   })
 

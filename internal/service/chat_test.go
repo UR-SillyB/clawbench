@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE TABLE IF NOT EXISTS recent_projects (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	project_path TEXT UNIQUE NOT NULL,
-	accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	is_default INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1258,10 +1259,10 @@ func TestUpdateAndGetExternalSessionID(t *testing.T) {
 
 	sid := helperCreateSession(t, "/project", "opencode", "Test")
 
-	// Initially set to ClawBench UUID (id) by CreateSession
-	assert.Equal(t, sid, service.GetExternalSessionID(sid))
+	// Initially empty (populated later by session_capture)
+	assert.Equal(t, "", service.GetExternalSessionID(sid))
 
-	// Set external ID (overwrites the default ClawBench UUID)
+	// Set external ID
 	err := service.UpdateExternalSessionID(sid, "ext-session-123")
 	assert.NoError(t, err)
 
@@ -2418,29 +2419,26 @@ func TestGetRunningSessionIDs_AfterClearAll(t *testing.T) {
 
 // ========== CreateSession: external_session_id initialization ==========
 
-// TestCreateSession_ExternalSessionIDInitialized verifies that CreateSession
-// sets external_session_id = sessionID at creation time for all backends.
-// This is critical for --resume to work with codebuddy/claude/qoder backends
-// where the ClawBench UUID IS the CLI session ID.
-func TestCreateSession_ExternalSessionIDInitialized(t *testing.T) {
+// TestCreateSession_ExternalSessionIDEmpty verifies that CreateSession
+// initializes external_session_id to empty string. The real external ID is
+// populated later via session_capture events from the AI backend.
+func TestCreateSession_ExternalSessionIDEmpty(t *testing.T) {
 	setupDB(t)
 
-	// Test with multiple backends
 	for _, backend := range []string{"codebuddy", "claude", "opencode", "pi"} {
 		t.Run(backend, func(t *testing.T) {
 			sid, err := service.CreateSession("/project", backend, "Test "+backend, "", "", "default", "chat")
 			assert.NoError(t, err)
 			assert.NotEmpty(t, sid)
 
-			// external_session_id should be initialized to the session ID
 			extID := service.GetExternalSessionID(sid)
-			assert.Equal(t, sid, extID, "external_session_id should be initialized to sessionID for backend %s", backend)
+			assert.Equal(t, "", extID, "external_session_id should be empty for backend %s", backend)
 		})
 	}
 }
 
 // TestCreateSession_ExternalSessionIDPersistedInDB explicitly verifies
-// that the INSERT statement in CreateSession writes external_session_id = sessionID.
+// that the INSERT statement in CreateSession writes external_session_id = ”.
 func TestCreateSession_ExternalSessionIDPersistedInDB(t *testing.T) {
 	setupDB(t)
 
@@ -2450,7 +2448,7 @@ func TestCreateSession_ExternalSessionIDPersistedInDB(t *testing.T) {
 	var extID string
 	err = service.DB.QueryRow("SELECT external_session_id FROM chat_sessions WHERE id = ?", sid).Scan(&extID)
 	assert.NoError(t, err)
-	assert.Equal(t, sid, extID, "external_session_id column should equal session ID in DB")
+	assert.Equal(t, "", extID, "external_session_id column should be empty in DB")
 }
 
 // ========== DeleteSession: does NOT modify chat_history ==========
@@ -2651,6 +2649,61 @@ func TestGetStreamingMessageID_NoAssistantMessage(t *testing.T) {
 	sid := helperCreateSession(t, "/project", "claude", "Empty")
 	id := service.GetStreamingMessageID(sid)
 	assert.Equal(t, int64(0), id)
+}
+
+func TestGetStreamingMessageID_PrefersStreaming(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Stream Pref")
+
+	// Add a finalized message (streaming=0)
+	finalizedID, err := service.AddChatMessage("/project", "claude", sid, "assistant", "finalized", nil, true, "")
+	assert.NoError(t, err)
+	_, err = service.FinalizeStreamingMessage("/project", "claude", sid, "final content")
+	assert.NoError(t, err)
+
+	// Add a streaming message (streaming=1) — should be preferred
+	streamingID, err := service.AddChatMessage("/project", "claude", sid, "assistant", "streaming...", nil, true, "")
+	assert.NoError(t, err)
+
+	id := service.GetStreamingMessageID(sid)
+	assert.Equal(t, streamingID, id, "should prefer streaming=1 message over streaming=0")
+	assert.NotEqual(t, finalizedID, id, "should NOT return the finalized message")
+}
+
+func TestGetStreamingMessageID_OnlyStreamingNoFinalized(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Only Stream")
+
+	// Add only a streaming message, never finalize it
+	streamingID, err := service.AddChatMessage("/project", "claude", sid, "assistant", "streaming...", nil, true, "")
+	assert.NoError(t, err)
+
+	id := service.GetStreamingMessageID(sid)
+	assert.Equal(t, streamingID, id, "should return streaming=1 message even with no finalized messages")
+}
+
+func TestGetStreamingMessageID_SessionIsolation(t *testing.T) {
+	setupDB(t)
+
+	sid1 := helperCreateSession(t, "/project", "claude", "Session 1")
+	sid2 := helperCreateSession(t, "/project", "claude", "Session 2")
+
+	// Session 1: add a streaming message
+	s1StreamingID, err := service.AddChatMessage("/project", "claude", sid1, "assistant", "s1 streaming", nil, true, "")
+	assert.NoError(t, err)
+
+	// Session 2: add a different streaming message
+	s2StreamingID, err := service.AddChatMessage("/project", "claude", sid2, "assistant", "s2 streaming", nil, true, "")
+	assert.NoError(t, err)
+
+	id1 := service.GetStreamingMessageID(sid1)
+	id2 := service.GetStreamingMessageID(sid2)
+
+	assert.Equal(t, s1StreamingID, id1, "session 1 should return its own streaming message")
+	assert.Equal(t, s2StreamingID, id2, "session 2 should return its own streaming message")
+	assert.NotEqual(t, id1, id2, "different sessions should not return each other's message IDs")
 }
 
 // ---------- SaveRawResponse ----------
@@ -2872,4 +2925,92 @@ func TestCreateSession_EmptySessionTypeDefaultsToChat(t *testing.T) {
 	err = service.DB.QueryRow("SELECT session_type FROM chat_sessions WHERE id = ?", sid).Scan(&sessionType)
 	assert.NoError(t, err)
 	assert.Equal(t, "chat", sessionType)
+}
+
+// ---------- GetUserMessageIndex ----------
+
+func TestGetUserMessageIndex_Basic(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Index Test")
+
+	_, err := service.AddChatMessage("/project", "claude", sid, "user", "First question", nil, false, "NewSession")
+	assert.NoError(t, err)
+	_, err = service.AddChatMessage("/project", "claude", sid, "assistant", `{"blocks":[{"type":"text","text":"Answer"}]}`, nil, false, "NewSession")
+	assert.NoError(t, err)
+	_, err = service.AddChatMessage("/project", "claude", sid, "user", "Second question", []string{"file1.go"}, false, "NewSession")
+	assert.NoError(t, err)
+
+	msgs, err := service.GetUserMessageIndex(sid)
+	assert.NoError(t, err)
+	assert.Len(t, msgs, 2)
+
+	assert.Equal(t, "user", msgs[0].Role)
+	assert.Equal(t, "First question", msgs[0].Content)
+	assert.Equal(t, "user", msgs[1].Role)
+	assert.Equal(t, "Second question", msgs[1].Content)
+	assert.Equal(t, []string{"file1.go"}, msgs[1].Files)
+}
+
+func TestGetUserMessageIndex_Empty(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Empty Index")
+
+	msgs, err := service.GetUserMessageIndex(sid)
+	assert.NoError(t, err)
+	assert.Empty(t, msgs)
+}
+
+func TestGetUserMessageIndex_OnlyAssistantMessages(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "No User Msgs")
+
+	_, err := service.AddChatMessage("/project", "claude", sid, "assistant", "Hello", nil, false, "NewSession")
+	assert.NoError(t, err)
+	_, err = service.AddChatMessage("/project", "claude", sid, "assistant", "World", nil, false, "NewSession")
+	assert.NoError(t, err)
+
+	msgs, err := service.GetUserMessageIndex(sid)
+	assert.NoError(t, err)
+	assert.Empty(t, msgs)
+}
+
+func TestGetUserMessageIndex_SkipsStreaming(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Streaming Test")
+
+	// Add a streaming user message (streaming=1) — should be excluded
+	_, err := service.AddChatMessage("/project", "claude", sid, "user", "Streaming msg", nil, true, "NewSession")
+	assert.NoError(t, err)
+	// Add a non-streaming user message — should be included
+	_, err = service.AddChatMessage("/project", "claude", sid, "user", "Done msg", nil, false, "NewSession")
+	assert.NoError(t, err)
+
+	msgs, err := service.GetUserMessageIndex(sid)
+	assert.NoError(t, err)
+	assert.Len(t, msgs, 1)
+	assert.Equal(t, "Done msg", msgs[0].Content)
+}
+
+func TestGetUserMessageIndex_OrderPreserved(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Order Test")
+
+	for i := range 5 {
+		_, err := service.AddChatMessage("/project", "claude", sid, "user", fmt.Sprintf("Question %d", i+1), nil, false, "NewSession")
+		assert.NoError(t, err)
+		_, err = service.AddChatMessage("/project", "claude", sid, "assistant", fmt.Sprintf("Answer %d", i+1), nil, false, "NewSession")
+		assert.NoError(t, err)
+	}
+
+	msgs, err := service.GetUserMessageIndex(sid)
+	assert.NoError(t, err)
+	assert.Len(t, msgs, 5)
+	for i, msg := range msgs {
+		assert.Equal(t, fmt.Sprintf("Question %d", i+1), msg.Content)
+	}
 }

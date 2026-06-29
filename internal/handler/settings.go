@@ -18,9 +18,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"clawbench/internal/model"
 	"clawbench/internal/service"
+	"clawbench/internal/speech"
 	"clawbench/internal/version"
 
 	"golang.org/x/crypto/bcrypt"
@@ -34,7 +36,6 @@ var configMutex sync.RWMutex
 // hotReloadFields is the set of config dot-paths that take effect immediately
 // via applyHotReloadGlobals() and do NOT require a server restart.
 var hotReloadFields = map[string]bool{
-	"chat.collapsed_height":       true,
 	"chat.initial_messages":       true,
 	"chat.page_size":              true,
 	"chat.system_prompt_interval": true,
@@ -43,7 +44,10 @@ var hotReloadFields = map[string]bool{
 	"upload.max_size_mb":          true,
 	"upload.max_files":            true,
 	"tts.max_cache_files":         true,
+	"tts.voice":                   true,
+	"tts.speed":                   true,
 	"default_agent":               true,
+	"require_auth_for_localhost":  true,
 }
 
 // restartGracePeriod is the delay before shutting down the server after a restart
@@ -64,25 +68,25 @@ func SetRestartFunc(f func()) {
 // It only contains fields safe for frontend display — no passwords, keys, or
 // internal paths.
 type configResponse struct {
-	Version        string               `json:"version"`
-	HasPassword    bool                 `json:"has_password"` // true when a password is configured
-	DefaultAgent   string               `json:"default_agent"`
-	Chat           configChat           `json:"chat"`
-	Session        configSession        `json:"session"`
-	RecentProjects configRecentProjects `json:"recent_projects"`
-	Upload         configUpload         `json:"upload"`
-	Terminal       configTerminal       `json:"terminal"`
-	TTS            configTTS            `json:"tts"`
-	RAG            configRAG            `json:"rag"`
-	PortForward    configPortForward    `json:"port_forward"`
-	Push           configPush           `json:"push"`
-	Summarize      configSummarize      `json:"summarize"`
+	Version                 string               `json:"version"`
+	HasPassword             bool                 `json:"has_password"`               // true when a password is configured
+	RequireAuthForLocalhost bool                 `json:"require_auth_for_localhost"` // true = localhost also requires password
+	DefaultAgent            string               `json:"default_agent"`
+	Chat                    configChat           `json:"chat"`
+	Session                 configSession        `json:"session"`
+	RecentProjects          configRecentProjects `json:"recent_projects"`
+	Upload                  configUpload         `json:"upload"`
+	Terminal                configTerminal       `json:"terminal"`
+	TTS                     configTTS            `json:"tts"`
+	RAG                     configRAG            `json:"rag"`
+	PortForward             configPortForward    `json:"port_forward"`
+	Push                    configPush           `json:"push"`
+	Summarize               configSummarize      `json:"summarize"`
 }
 
 type configChat struct {
 	InitialMessages      int `json:"initial_messages"`
 	PageSize             int `json:"page_size"`
-	CollapsedHeight      int `json:"collapsed_height"`
 	SystemPromptInterval int `json:"system_prompt_interval"`
 }
 
@@ -181,7 +185,6 @@ var PatchableConfigPaths = map[string]bool{
 	"default_agent":               true,
 	"chat.initial_messages":       true,
 	"chat.page_size":              true,
-	"chat.collapsed_height":       true,
 	"chat.system_prompt_interval": true,
 	"session.max_count":           true,
 	"recent_projects.max_count":   true,
@@ -225,6 +228,7 @@ var PatchableConfigPaths = map[string]bool{
 	"summarize.api.base_url":      true,
 	"summarize.api.key":           true,
 	"summarize.api.format":        true,
+	"require_auth_for_localhost":  true,
 }
 
 // validTTSEngines is the set of valid TTS engine values.
@@ -293,13 +297,13 @@ func serveConfigGet(w http.ResponseWriter, _ *http.Request) {
 	configMutex.RUnlock()
 
 	resp := configResponse{
-		Version:      getBuildVersion(),
-		HasPassword:  model.SessionToken != "",
-		DefaultAgent: cfg.DefaultAgent,
+		Version:                 getBuildVersion(),
+		HasPassword:             model.SessionToken != "",
+		RequireAuthForLocalhost: cfg.RequireAuthForLocalhost,
+		DefaultAgent:            cfg.DefaultAgent,
 		Chat: configChat{
 			InitialMessages:      cfg.Chat.InitialMessages,
 			PageSize:             cfg.Chat.PageSize,
-			CollapsedHeight:      cfg.Chat.CollapsedHeight,
 			SystemPromptInterval: cfg.Chat.SystemPromptInterval,
 		},
 		Session: configSession{
@@ -660,7 +664,7 @@ func validatePatchValues(patch map[string]any) error { //nolint:gocognit,gocyclo
 
 	chat, ok := patch["chat"].(map[string]any)
 	if ok {
-		for _, key := range []string{"collapsed_height", "initial_messages", "page_size", "system_prompt_interval"} {
+		for _, key := range []string{"initial_messages", "page_size", "system_prompt_interval"} {
 			if v, ok := chat[key].(float64); ok && v < 0 {
 				return fmt.Errorf("chat.%s must be non-negative", key)
 			}
@@ -700,10 +704,11 @@ func applyConfigPatch(patch map[string]any) error { //nolint:gocognit,gocyclo //
 		model.DefaultAgentID = v
 	}
 
+	if v, ok := patch["require_auth_for_localhost"].(bool); ok {
+		cfg.RequireAuthForLocalhost = v
+	}
+
 	if chat, ok := patch["chat"].(map[string]any); ok {
-		if v, ok := chat["collapsed_height"].(float64); ok {
-			cfg.Chat.CollapsedHeight = int(v)
-		}
 		if v, ok := chat["initial_messages"].(float64); ok {
 			cfg.Chat.InitialMessages = int(v)
 		}
@@ -895,7 +900,6 @@ func applyConfigPatch(patch map[string]any) error { //nolint:gocognit,gocyclo //
 // ConfigInstance. Called after a successful patch (and on rollback).
 func applyHotReloadGlobals() {
 	cfg := model.ConfigInstance
-	model.ChatCollapsedHeight = cfg.Chat.CollapsedHeight
 	model.ChatInitialMessages = cfg.Chat.InitialMessages
 	model.ChatPageSize = cfg.Chat.PageSize
 	model.ChatSystemPromptInterval = cfg.Chat.SystemPromptInterval
@@ -905,6 +909,41 @@ func applyHotReloadGlobals() {
 	model.UploadMaxFiles = cfg.Upload.MaxFiles
 	model.TTSMaxCacheFiles = cfg.TTS.MaxCacheFiles
 	model.DefaultAgentID = cfg.DefaultAgent
+	model.RequireAuthForLocalhost = cfg.RequireAuthForLocalhost
+
+	// Hot-reload TTS voice and speed on the existing speech provider
+	if cfg.TTS.Voice != "" {
+		if p, ok := speechProvider.(*speech.EdgeTTSProvider); ok {
+			p.Voice = cfg.TTS.Voice
+		}
+		if p, ok := speechProvider.(*speech.KokoroProvider); ok {
+			p.Voice = cfg.TTS.Voice
+		}
+		// Piper: voice is embedded in model_path, not a standalone field
+		// MOSS-Nano: uses moss_nano.voice, not tts.voice
+	}
+	if cfg.TTS.Speed > 0 {
+		if p, ok := speechProvider.(*speech.EdgeTTSProvider); ok {
+			ratePercent := int((cfg.TTS.Speed - 1.0) * 100)
+			if ratePercent > 0 {
+				p.Rate = fmt.Sprintf("+%d%%", ratePercent)
+			} else if ratePercent < 0 {
+				p.Rate = fmt.Sprintf("%d%%", ratePercent)
+			} else {
+				p.Rate = "+0%"
+			}
+		}
+		if p, ok := speechProvider.(*speech.KokoroProvider); ok {
+			p.Speed = cfg.TTS.Speed
+		}
+		if p, ok := speechProvider.(*speech.PiperProvider); ok {
+			// Only update if no explicit length_scale is set
+			if cfg.TTS.Piper.LengthScale <= 0 {
+				p.LengthScale = 1.0 / cfg.TTS.Speed
+			}
+		}
+		// MOSS-Nano: speed not supported
+	}
 }
 
 // writeConfigYAML writes the patched fields back to config/config.yaml atomically.
@@ -1032,17 +1071,34 @@ func ServeConfigPassword(w http.ResponseWriter, r *http.Request) { //nolint:gocy
 		})
 		return
 	}
-	if len(req.NewPassword) < 6 {
+	if utf8.RuneCountInString(req.NewPassword) < 8 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "password_too_short",
-			"message": "new password must be at least 6 characters",
+			"message": "new password must be at least 8 characters",
 		})
 		return
 	}
-	if len(req.NewPassword) > 72 {
+	if utf8.RuneCountInString(req.NewPassword) > 32 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "password_too_long",
-			"message": "new password must be at most 72 characters",
+			"message": "new password must be at most 32 characters",
+		})
+		return
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, ch := range req.NewPassword {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			hasLetter = true
+		}
+		if ch >= '0' && ch <= '9' {
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "password_no_letter_digit",
+			"message": "new password must contain both letters and digits",
 		})
 		return
 	}

@@ -6,6 +6,9 @@ import { useTaskTab } from '@/composables/useTaskTab.ts'
 import { useChatRender } from '@/composables/useChatRender.ts'
 import { gt } from '@/composables/useLocale'
 import { stripMarkdownPreview } from '@/utils/format.ts'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'TaskHistory'
 
 interface UseTaskHistoryOptions {
   task: Ref<any>
@@ -114,7 +117,7 @@ export function useTaskHistory(options: UseTaskHistoryOptions) {
     } catch (err: any) {
       // Don't report AbortError (expected when switching tasks)
       if (err?.name !== 'AbortError') {
-        console.error('Failed to load executions:', err)
+        appLog.e(TAG, 'Failed to load executions:', err)
       }
     } finally {
       loading.value = false
@@ -145,7 +148,7 @@ export function useTaskHistory(options: UseTaskHistoryOptions) {
       hasMore.value = !!data.hasMore
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
-        console.error('Failed to load more executions:', err)
+        appLog.e(TAG, 'Failed to load more executions:', err)
       }
     } finally {
       loadingMore.value = false
@@ -165,7 +168,7 @@ export function useTaskHistory(options: UseTaskHistoryOptions) {
       hasMore.value = !!data.hasMore
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
-        console.error('Failed to reload executions:', err)
+        appLog.e(TAG, 'Failed to reload executions:', err)
       }
     }
   }
@@ -284,7 +287,7 @@ export function useTaskHistory(options: UseTaskHistoryOptions) {
       if (block.type === 'text' && block.text) {
         const clean = block.text
           .replace(/<scheduled-task\s+id="[^"]+"\s*\/>/g, '')
-          .replace(/[#*`_~\[\]()]/g, '')
+          .replace(/[#*`_~[\]()]/g, '')
           .trim()
         if (clean) {
           return clean.length > 120 ? clean.substring(0, 120) + '...' : clean

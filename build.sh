@@ -9,7 +9,7 @@ ASSETS="assets"
 TARGET_OS=""
 TARGET_ARCH=""
 BUILD_ANDROID=""
-DOWNLOAD_PI=""
+EMBED_AGENTS=()
 for arg in "$@"; do
     case "$arg" in
         --windows)
@@ -36,26 +36,17 @@ for arg in "$@"; do
         --android)
             BUILD_ANDROID=1
             ;;
-        --with-pi)
-            DOWNLOAD_PI=1
+        --embed-agent=*)
+            EMBED_AGENTS+=("${arg#--embed-agent=}")
+            ;;
+        --with-opencode)
+            # Backward-compatible alias for --embed-agent=opencode
+            EMBED_AGENTS+=("opencode")
             ;;
     esac
 done
 
 echo "=== Building $NAME ==="
-
-# 0. Generate provider models from models.dev API
-if command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-    echo "[0/5] Generating provider models..."
-    mkdir -p .clawbench
-    if scripts/fetch-provider-models.sh --output .clawbench/provider_models.json; then
-        echo "  .clawbench/provider_models.json updated"
-    else
-        echo "  WARNING: Failed to fetch provider models (using existing file if any)"
-    fi
-else
-    echo "[0/5] Provider models skipped (requires curl and jq)"
-fi
 
 # Derive version from git (e.g. v1.0.0, v0.30.0-30-g830bb6c, or short SHA)
 VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
@@ -101,62 +92,19 @@ else
     echo "  Go not found, skipping backend build"
 fi
 
-# 1.5 Download Pi binary (embedded agent for setup wizard)
-# Default: skip. Use --with-pi to download, or set PI_VERSION to pin a version.
-# Without PI_VERSION, the latest release is fetched from GitHub API automatically.
-PI_DIR=".clawbench/pi"
-if [ -n "$DOWNLOAD_PI" ]; then
-    # Resolve Pi version: env var override > auto-detect latest from GitHub
-    if [ -z "$PI_VERSION" ]; then
-        PI_VERSION=$(curl -sI https://github.com/earendil-works/pi/releases/latest 2>/dev/null | grep -i "^location:" | sed 's|.*/tag/v||' | tr -d '[:space:]')
-        if [ -z "$PI_VERSION" ]; then
-            echo "  ERROR: Could not detect latest Pi version. Set PI_VERSION manually."
-            exit 1
-        fi
-        echo "  Auto-detected latest Pi version: v${PI_VERSION}"
-    fi
-    echo "[3/5] Downloading Pi v${PI_VERSION}..."
-    # Determine platform for Pi binary
-    if [ -n "$TARGET_OS" ] && [ -n "$TARGET_ARCH" ]; then
-        case "$TARGET_OS" in
-            linux)   PI_PLATFORM="linux-$TARGET_ARCH" ;;
-            darwin)  PI_PLATFORM="darwin-$TARGET_ARCH" ;;
-            windows) PI_PLATFORM="windows-$TARGET_ARCH" ;;
-            *)       PI_PLATFORM="" ;;
-        esac
-        # Pi uses "x64" not "amd64" in its archive names
-        PI_PLATFORM="${PI_PLATFORM/amd64/x64}"
-    else
-        PI_PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-        PI_PLATFORM="${PI_PLATFORM/x86_64/x64}"
-        PI_PLATFORM="${PI_PLATFORM/aarch64/arm64}"
-    fi
-
-    if [ -n "$PI_PLATFORM" ]; then
-        PI_EXT="tar.gz"
-        [ "${TARGET_OS:-}" = "windows" ] && PI_EXT="zip"
-        PI_ARCHIVE="pi-${PI_PLATFORM}.${PI_EXT}"
-        PI_URL="https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/${PI_ARCHIVE}"
-
-        mkdir -p "$PI_DIR"
-        if [ -f "$PI_DIR/VERSION" ] && [ "$(cat "$PI_DIR/VERSION")" = "$PI_VERSION" ] && [ -f "$PI_DIR/pi" -o -f "$PI_DIR/pi.exe" ]; then
-            echo "  Pi v${PI_VERSION} already cached in $PI_DIR/"
-        else
-            echo "  Downloading $PI_URL ..."
-            if [ "$PI_EXT" = "zip" ]; then
-                curl -sL "$PI_URL" -o /tmp/pi-download.zip && unzip -qo /tmp/pi-download.zip -d /tmp/pi-download && cp -r /tmp/pi-download/pi/* "$PI_DIR/" && rm -rf /tmp/pi-download /tmp/pi-download.zip
-            else
-                curl -sL "$PI_URL" | tar xzf - -C "$PI_DIR" --strip-components=1
-            fi
-            chmod +x "$PI_DIR/pi" 2>/dev/null || true
-            echo -n "$PI_VERSION" > "$PI_DIR/VERSION"
-            echo "  Pi v${PI_VERSION} downloaded to $PI_DIR/"
-        fi
-    else
-        echo "  Unknown platform, skipping Pi download"
-    fi
+# 1.5 Download embedded agent binaries
+# Use --embed-agent=<id> to download (e.g., --embed-agent=opencode).
+# --with-opencode is a backward-compatible alias for --embed-agent=opencode.
+# Version can be pinned via the version_env variable defined in embedded-agents.yaml.
+if [ ${#EMBED_AGENTS[@]} -gt 0 ]; then
+    # Source the shared download helper
+    # shellcheck source=scripts/download-embedded-agent.sh
+    . ./scripts/download-embedded-agent.sh
+    for _agent_id in "${EMBED_AGENTS[@]}"; do
+        download_embedded_agent "$_agent_id"
+    done
 else
-    echo "[3/5] Pi download skipped (use --with-pi to download embedded agent)"
+    echo "[3/5] Embedded agent download skipped (use --embed-agent=<id> or --with-opencode)"
 fi
 
 # 2. Build Vue frontend
@@ -198,7 +146,7 @@ else
     echo "  ./$NAME              # Go binary"
 fi
 echo "  public/              # Frontend (if built)"
-echo "  .clawbench/pi/       # Pi agent binary (if --with-pi)"
+echo "  .clawbench/          # Embedded agent binaries (if --embed-agent=<id>)"
 echo ""
 echo "Run with: ./$NAME"
 echo ""
@@ -211,5 +159,6 @@ echo "  ./build.sh --target=darwin/arm64"
 echo "  ./build.sh --android          # Android APK (release)"
 echo ""
 echo "Embedded agent:"
-echo "  ./build.sh --linux --with-pi  # Linux + Pi binary (CI release)"
-echo "  PI_VERSION=0.79.0 ./build.sh --with-pi  # Pin a specific Pi version"
+echo "  ./build.sh --linux --embed-agent=opencode   # Linux + OpenCode (CI release)"
+echo "  ./build.sh --linux --with-opencode          # Backward-compatible alias"
+echo "  OPENCODE_VERSION=1.17.10 ./build.sh --embed-agent=opencode  # Pin a specific version"

@@ -12,6 +12,7 @@ import (
 
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
+	"clawbench/internal/platform"
 	"clawbench/internal/summarize"
 )
 
@@ -106,6 +107,36 @@ func GetChatMessageCount(sessionID string) int {
 	var count int
 	DBRead.QueryRow("SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sessionID).Scan(&count)
 	return count
+}
+
+// GetUserMessageIndex returns lightweight {id, content, files, createdAt} for all user messages
+// in a session, ordered by id ASC. Used for the user message index navigation feature.
+func GetUserMessageIndex(sessionID string) ([]model.ChatMessage, error) {
+	rows, err := DBRead.Query(
+		"SELECT id, content, files, created_at FROM chat_history WHERE session_id = ? AND role = 'user' AND streaming = 0 ORDER BY id ASC",
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []model.ChatMessage{}
+	for rows.Next() {
+		var msg model.ChatMessage
+		var filesJSON sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.Content, &filesJSON, &msg.CreatedAt); err != nil {
+			return nil, err
+		}
+		msg.Role = "user"
+		if filesJSON.Valid && filesJSON.String != "" {
+			json.Unmarshal([]byte(filesJSON.String), &msg.Files)
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // GetMessageByID fetches a single chat message by its database ID.
@@ -307,8 +338,61 @@ func AddRecentProject(projectPath string) error {
 }
 
 // RemoveRecentProject deletes a project path from the recent projects list.
+// If the removed project was the default, its is_default flag is cleared first.
 func RemoveRecentProject(projectPath string) error {
+	_, _ = DB.Exec("UPDATE recent_projects SET is_default = 0 WHERE project_path = ? AND is_default = 1", projectPath)
 	_, err := DB.Exec("DELETE FROM recent_projects WHERE project_path = ?", projectPath)
+	return err
+}
+
+// GetDefaultProject returns the project path marked as default (is_default=1),
+// or falls back to the most recently accessed project, or the user's home directory,
+// or the first root path. This is the server-side source of truth for project selection.
+// It does NOT update accessed_at (avoids the self-reinforcing loop).
+func GetDefaultProject() (string, error) {
+	// 1. Try is_default=1 row
+	var path string
+	err := DBRead.QueryRow("SELECT project_path FROM recent_projects WHERE is_default = 1 LIMIT 1").Scan(&path)
+	if err == nil {
+		// Verify directory still exists
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return path, nil
+		}
+		// Stale default — clear it
+		_, _ = DB.Exec("UPDATE recent_projects SET is_default = 0 WHERE is_default = 1")
+	}
+
+	// 2. Fall back to most recently accessed (DO NOT update accessed_at)
+	recents, err := GetRecentProjects()
+	if err == nil && len(recents) > 0 {
+		return recents[0], nil
+	}
+
+	// 3. Home directory
+	if homeDir := platform.UserHomeDir(); homeDir != "" {
+		return homeDir, nil
+	}
+
+	// 4. First root path
+	if len(model.RootPaths) > 0 {
+		return model.RootPaths[0], nil
+	}
+
+	return "", fmt.Errorf("no project path available")
+}
+
+// SetDefaultProject marks the given project path as the default project.
+// It clears any existing default first (only one row can have is_default=1).
+// This should only be called on user-initiated project switches.
+func SetDefaultProject(projectPath string) error {
+	// Clear existing default
+	_, _ = DB.Exec("UPDATE recent_projects SET is_default = 0 WHERE is_default = 1")
+	// Ensure the project exists in recent_projects (upsert with accessed_at update)
+	if err := AddRecentProject(projectPath); err != nil {
+		return err
+	}
+	// Set the new default
+	_, err := DB.Exec("UPDATE recent_projects SET is_default = 1 WHERE project_path = ?", projectPath)
 	return err
 }
 
@@ -565,7 +649,8 @@ func SaveMetadata(messageID int64, meta *ai.Metadata) error {
 	if meta.IsError {
 		isError = 1
 	}
-	_, err := DB.Exec(`
+	_, err := DB.Exec(
+		`
 		INSERT OR REPLACE INTO chat_metadata
 			(message_id, mode, thinking_effort, transport, model, input_tokens, output_tokens,
 			 duration_ms, wall_ms, cost_usd, stop_reason, is_error, error_message)
@@ -606,7 +691,7 @@ func CreateSession(projectPath, backend, title, agentID, modelName, agentSource,
 	}
 	_, err := DB.Exec(
 		"INSERT INTO chat_sessions (id, project_path, backend, title, agent_id, agent_source, model, session_type, external_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		sessionID, projectPath, backend, title, agentID, agentSource, modelName, sessionType, sessionID,
+		sessionID, projectPath, backend, title, agentID, agentSource, modelName, sessionType, "",
 	)
 	if err != nil {
 		return "", err
@@ -836,11 +921,23 @@ func FinalizeStreamingMessage(projectPath, backend, sessionID, content string) (
 	return msgID, nil
 }
 
-// GetStreamingMessageID returns the ID of the finalized assistant message for a session.
+// GetStreamingMessageID returns the ID of the current or most recent assistant message for a session.
+// Prefers the actively streaming message (streaming=1) so that stream_start events
+// and tool call detail APIs reference the correct message ID during streaming.
+// Falls back to the latest finalized message (streaming=0) if no active stream exists.
 // Returns 0 if not found.
 func GetStreamingMessageID(sessionID string) int64 {
 	var id int64
+	// Prefer actively streaming message
 	err := DBRead.QueryRow(
+		"SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' AND streaming = 1 ORDER BY id DESC LIMIT 1",
+		sessionID,
+	).Scan(&id)
+	if err == nil {
+		return id
+	}
+	// Fallback: latest finalized message
+	err = DBRead.QueryRow(
 		"SELECT id FROM chat_history WHERE session_id = ? AND role = 'assistant' AND streaming = 0 ORDER BY id DESC LIMIT 1",
 		sessionID,
 	).Scan(&id)
@@ -876,6 +973,14 @@ func UpdateExternalSessionID(sessionID, externalID string) error {
 		slog.String("session", sessionID),
 		slog.String("external_session_id", externalID))
 	return nil
+}
+
+// ClearExternalSessionID clears the external session ID for a ClawBench session.
+// Called when transport switches from CLI to ACP — ACP manages its own session
+// mapping internally, so the CLI's external_session_id must not leak into the
+// ACP connection pool's GetOrCreateConn pre-population logic.
+func ClearExternalSessionID(sessionID string) {
+	_, _ = DB.Exec("UPDATE chat_sessions SET external_session_id = '' WHERE id = ?", sessionID)
 }
 
 // GetExternalSessionID returns the external session ID for a ClawBench session.
@@ -983,6 +1088,9 @@ func PurgeDeletedData(sessionIDs []string) (sessionsPurged int64, messagesPurged
 	// Delete ai_raw_responses for these sessions
 	_, _ = tx.Exec("DELETE FROM ai_raw_responses WHERE session_id IN ("+placeholders+")", args...)
 
+	// Delete chat_tool_calls for these sessions
+	_, _ = tx.Exec("DELETE FROM chat_tool_calls WHERE session_id IN ("+placeholders+")", args...)
+
 	// Delete chat_history for these sessions (includes deleted messages)
 	result, err := tx.Exec("DELETE FROM chat_history WHERE session_id IN ("+placeholders+")", args...)
 	if err != nil {
@@ -1018,6 +1126,7 @@ func HardDeleteSession(sessionID string) error {
 	defer tx.Rollback()
 
 	_, _ = tx.Exec("DELETE FROM ai_raw_responses WHERE session_id = ?", sessionID)
+	_, _ = tx.Exec("DELETE FROM chat_tool_calls WHERE session_id = ?", sessionID)
 	_, _ = tx.Exec("DELETE FROM chat_history WHERE session_id = ?", sessionID)
 	_, _ = tx.Exec("DELETE FROM task_executions WHERE session_id = ?", sessionID)
 	_, err = tx.Exec("DELETE FROM chat_sessions WHERE id = ?", sessionID)

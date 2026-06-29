@@ -206,6 +206,34 @@ func TestGetCachedStateByClawbenchSID_WithCachedState(t *testing.T) {
 	assert.Len(t, s.Plan.Entries, 1)
 }
 
+func TestACPConn_SetCachedUsageState(t *testing.T) {
+	conn := newACPConn(nil, "test-usage-sid")
+	assert.Nil(t, conn.GetCachedUsageState())
+
+	state := &UsageState{Used: 50000, Size: 200000}
+	conn.SetCachedUsageState(state)
+	got := conn.GetCachedUsageState()
+	assert.Equal(t, 50000, got.Used)
+	assert.Equal(t, 200000, got.Size)
+}
+
+func TestGetCachedStateByClawbenchSID_Usage(t *testing.T) {
+	mgr := GetACPConnManager()
+	agent := &model.Agent{ID: "test-usage-agent", Backend: "acp-stdio", AcpCommand: "echo"}
+	conn := newACPConn(agent, "test-sid-usage")
+	usageState := &UsageState{Used: 100000, Size: 200000, Cost: 1.5, Currency: "USD"}
+	conn.SetCachedUsageState(usageState)
+	mgr.SetConnForTest("test-sid-usage", conn)
+	defer mgr.CloseConn("test-sid-usage")
+
+	state := mgr.GetCachedStateByClawbenchSID("test-sid-usage")
+	assert.NotNil(t, state.Usage)
+	assert.Equal(t, 100000, state.Usage.Used)
+	assert.Equal(t, 200000, state.Usage.Size)
+	assert.InDelta(t, 1.5, state.Usage.Cost, 0.001)
+	assert.Equal(t, "USD", state.Usage.Currency)
+}
+
 // --- ACPConn.shouldSetConfig / markConfigSet ---
 
 func TestACPConn_ShouldSetConfig_ModeInitial(t *testing.T) {
@@ -858,46 +886,6 @@ func TestGetOrCreateConn_DoesNotPrePopulateAcpSID_WhenEmpty(t *testing.T) {
 		sid := poolConn.acpSID
 		poolConn.mu.Unlock()
 		assert.Empty(t, sid, "acpSID should NOT be pre-populated when external_session_id is empty")
-	}
-
-	// Cleanup
-	mgr.CloseConn(clawbenchSID)
-}
-
-func TestGetOrCreateConn_DoesNotPrePopulateAcpSID_WhenEqualsClawbenchSID(t *testing.T) {
-	// When external_session_id equals clawbenchSID (i.e., the initial value
-	// from CreateSession, not a real ACP session ID), GetOrCreateConn should
-	// NOT pre-populate acpSID — it would cause a 60s timeout on ResumeSession.
-	mgr := GetACPConnManager()
-
-	clawbenchSID := "session-no-prepopulate-test"
-
-	// Simulate external_session_id == clawbenchSID (initial value, not a real ACP session)
-	originalGetter := getExternalSessionID
-	getExternalSessionID = func(sid string) string {
-		if sid == clawbenchSID {
-			return clawbenchSID // Same as clawbenchSID — NOT a valid ACP session ID
-		}
-		return ""
-	}
-	defer func() { getExternalSessionID = originalGetter }()
-
-	agent := &model.Agent{ID: "test-no-prepopulate", Backend: "acp-stdio", AcpCommand: "echo"}
-
-	// GetOrCreateConn will create a new ACPConn
-	_, _, err := mgr.GetOrCreateConn(context.Background(), agent, clawbenchSID, "/tmp")
-	assert.Error(t, err) // expected — "echo" is not a real ACP agent
-
-	// Verify acpSID was NOT pre-populated
-	mgr.mu.Lock()
-	poolConn, exists := mgr.conns[clawbenchSID]
-	mgr.mu.Unlock()
-
-	if exists && poolConn != nil {
-		poolConn.mu.Lock()
-		sid := poolConn.acpSID
-		poolConn.mu.Unlock()
-		assert.Empty(t, sid, "acpSID should NOT be pre-populated when external_session_id == clawbenchSID")
 	}
 
 	// Cleanup

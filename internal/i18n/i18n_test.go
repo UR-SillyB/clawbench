@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"clawbench/internal/model"
+
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"github.com/stretchr/testify/assert"
 )
@@ -34,7 +36,7 @@ func TestLocalizer_Chinese(t *testing.T) {
 
 func TestLocalizer_Cookie(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
-	r.AddCookie(&http.Cookie{Name: "clawbench-locale", Value: "zh"})
+	r.AddCookie(&http.Cookie{Name: model.ScopedCookieName("clawbench-locale"), Value: "zh"})
 	loc := Localizer(r)
 
 	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
@@ -55,7 +57,7 @@ func TestLocalizer_AcceptLanguage(t *testing.T) {
 func TestLocalizer_XLocaleOverridesCookie(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	r.Header.Set("X-Locale", "en")
-	r.AddCookie(&http.Cookie{Name: "clawbench-locale", Value: "zh"})
+	r.AddCookie(&http.Cookie{Name: model.ScopedCookieName("clawbench-locale"), Value: "zh"})
 	loc := Localizer(r)
 
 	// X-Locale takes priority over cookie
@@ -100,6 +102,8 @@ func TestT_AllKeysPresentInBothLanguages(t *testing.T) {
 		"SessionIdRequired",
 		"NewSession",
 		"NewSessionN",
+		"ForkPrefix",
+		"Session",
 		"FileMessage",
 		"FileTooLarge",
 		"TextTooLong",

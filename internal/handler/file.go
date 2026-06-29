@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"clawbench/internal/model"
 	"clawbench/internal/platform"
@@ -204,20 +205,7 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// os.Stat fails on dangling symlinks. Check with Lstat —
-			// if it's a symlink, include the target in the error message
-			// so the user knows the link is broken (not just "file not found").
-			linfo, lerr := os.Lstat(absPath)
-			if lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
-				target, _ := os.Readlink(absPath)
-				writeLocalizedErrorf(w, r, http.StatusNotFound, "BrokenSymlink", map[string]any{"Target": target})
-				return
-			}
-			writeLocalizedError(w, r, model.NotFound(nil, "FileNotFoundShort"))
-		} else {
-			model.WriteError(w, model.Internal(fmt.Errorf("cannot access file")))
-		}
+		handleStatError(w, r, absPath, err)
 		return
 	}
 	if info.IsDir() {
@@ -230,25 +218,32 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only serve content for known text files; everything else is binary.
-	// This prevents accidentally reading large binary files into memory.
-	// Use ?forceText=1 to override (e.g. user explicitly wants to view as text).
+	// For non-text files, check if the content is actually binary (via null-byte
+	// sniffing). If binary, return isBinary=true without the content — the
+	// frontend shows a placeholder with "Open as text" button.
+	// Use ?forceText=1 to override: returns sanitized content (truncated +
+	// non-printable chars replaced) safe for DOM rendering.
+	isText := model.IsTextFile(info.Name())
 	forceText := r.URL.Query().Get("forceText") == "1"
-	if !forceText && !model.IsTextFile(info.Name()) {
-		respPath := absPath
-		if !isExternal {
-			relPath, _ := filepath.Rel(projectPath, absPath)
-			respPath = filepath.ToSlash(relPath)
+
+	if !isText && !forceText {
+		isBinary, sniffErr := sniffBinaryContent(absPath)
+		if sniffErr != nil {
+			model.WriteError(w, model.Internal(fmt.Errorf("cannot open file")))
+			return
 		}
-		writeJSON(w, http.StatusOK, FileContent{
-			Content:   "",
-			Name:      info.Name(),
-			Path:      respPath,
-			Supported: false,
-			IsBinary:  true,
-			Size:      info.Size(),
-		})
-		return
+		if isBinary {
+			respPath := responsePath(absPath, projectPath, isExternal)
+			writeJSON(w, http.StatusOK, FileContent{
+				Content:   "",
+				Name:      info.Name(),
+				Path:      respPath,
+				Supported: false,
+				IsBinary:  true,
+				Size:      info.Size(),
+			})
+			return
+		}
 	}
 
 	content, err := os.ReadFile(absPath)
@@ -257,18 +252,73 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respPath := absPath
-	if !isExternal {
-		relPath, _ := filepath.Rel(projectPath, absPath)
-		respPath = filepath.ToSlash(relPath)
+	// Sanitize content for non-text files when forceText is used,
+	// or when the file passed binary sniffing (non-text ext but actually text).
+	var truncated bool
+	if !isText {
+		content, truncated = sanitizeTextContent(content)
 	}
+
+	respPath := responsePath(absPath, projectPath, isExternal)
 	writeJSON(w, http.StatusOK, FileContent{
 		Content:   string(content),
 		Name:      info.Name(),
 		Path:      respPath,
 		Supported: model.IsSupportedFile(info.Name()),
 		Size:      info.Size(),
+		Truncated: truncated,
 	})
+}
+
+// handleStatError writes an appropriate error response for os.Stat failures,
+// including broken symlink detection.
+func handleStatError(w http.ResponseWriter, r *http.Request, absPath string, err error) {
+	if !os.IsNotExist(err) {
+		slog.Warn("file access error", "path", absPath, "err", err)
+		model.WriteError(w, model.Internal(fmt.Errorf("cannot access file")))
+		return
+	}
+	// os.Stat fails on dangling symlinks. Check with Lstat —
+	// if it's a symlink, include the target in the error message
+	// so the user knows the link is broken (not just "file not found").
+	linfo, lerr := os.Lstat(absPath)
+	if lerr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(absPath)
+		slog.Warn("broken symlink", "path", absPath, "target", target)
+		writeLocalizedErrorf(w, r, http.StatusNotFound, "BrokenSymlink", map[string]any{"Target": target})
+		return
+	}
+	slog.Warn("file not found", "path", absPath)
+	writeLocalizedError(w, r, model.NotFound(nil, "FileNotFoundShort"))
+}
+
+// sniffBinaryContent reads the beginning of a file and returns true if it
+// contains null bytes (indicating binary content).
+func sniffBinaryContent(absPath string) (bool, error) {
+	sniffBuf := make([]byte, binarySniffSize)
+	f, err := os.Open(absPath)
+	if err != nil {
+		return false, err
+	}
+	n, _ := f.Read(sniffBuf)
+	_ = f.Close()
+
+	for i := range n {
+		if sniffBuf[i] == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// responsePath returns the path to include in API responses: relative for
+// project files, absolute for external files.
+func responsePath(absPath, projectPath string, isExternal bool) string {
+	if isExternal {
+		return absPath
+	}
+	relPath, _ := filepath.Rel(projectPath, absPath)
+	return filepath.ToSlash(relPath)
 }
 
 // ServeLocalFile serves a file directly (for images, PDFs, etc.).
@@ -539,6 +589,7 @@ type FileContent struct {
 	Path      string `json:"path"`
 	Supported bool   `json:"supported"`
 	IsBinary  bool   `json:"isBinary,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 	Size      int64  `json:"size"`
 }
 
@@ -689,4 +740,80 @@ func serveProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": newDirAbs})
+}
+
+const (
+	// binarySniffSize is how many bytes to inspect for null-byte detection.
+	binarySniffSize = 8192
+	// maxForceTextSize is the maximum bytes to return for large text files.
+	maxForceTextSize = 512 * 1024 // 512KB
+	// maxBinaryTextSize is the maximum bytes to return for binary files
+	// opened as text (detected via null-byte sniffing).
+	maxBinaryTextSize = 64 * 1024 // 64KB
+)
+
+// sanitizeTextContent prepares raw file bytes for text display.
+// For binary files (detected via null-byte sniffing in the first 8KB):
+// - Truncates to maxBinaryTextSize
+// - Replaces non-printable characters with '.'
+// For large text files:
+// - Truncates to maxForceTextSize at a UTF-8 boundary
+// Returns the sanitized content and whether truncation occurred.
+func sanitizeTextContent(data []byte) ([]byte, bool) {
+	if len(data) == 0 {
+		return data, false
+	}
+
+	if hasBinaryContent(data) {
+		return sanitizeBinaryContent(data)
+	}
+
+	if len(data) > maxForceTextSize {
+		return truncateAtUTF8Boundary(data), true
+	}
+
+	return data, false
+}
+
+// hasBinaryContent checks the first 8KB for null bytes to detect binary content.
+func hasBinaryContent(data []byte) bool {
+	sniffEnd := len(data)
+	if sniffEnd > binarySniffSize {
+		sniffEnd = binarySniffSize
+	}
+	for i := range sniffEnd {
+		if data[i] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeBinaryContent truncates binary content and replaces non-printable
+// characters with '.', keeping \n, \r, \t, printable ASCII, and high bytes.
+func sanitizeBinaryContent(data []byte) ([]byte, bool) {
+	truncated := false
+	if len(data) > maxBinaryTextSize {
+		data = data[:maxBinaryTextSize]
+		truncated = true
+	}
+	out := make([]byte, len(data))
+	for i, b := range data {
+		if b == '\n' || b == '\r' || b == '\t' || (b >= 0x20 && b < 0x7F) || b >= 0x80 {
+			out[i] = b
+		} else {
+			out[i] = '.'
+		}
+	}
+	return out, truncated
+}
+
+// truncateAtUTF8Boundary truncates data at maxForceTextSize, stepping back to
+// avoid splitting a multi-byte UTF-8 character.
+func truncateAtUTF8Boundary(data []byte) []byte {
+	cut := maxForceTextSize
+	for cut > 0 && cut < len(data) && !utf8.RuneStart(data[cut]) {
+		cut--
+	}
+	return data[:cut]
 }

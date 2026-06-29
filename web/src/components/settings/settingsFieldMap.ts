@@ -52,7 +52,6 @@ export const categoryItems: Record<string, ItemSpec[]> = {
     { labelKey: 'settings.items.swipeSession', descriptionKey: 'settings.items.swipeSessionDesc', key: 'swipeSession', type: 'switch', source: 'local' },
     { labelKey: 'settings.items.chatInitialMessages', descriptionKey: 'settings.items.chatInitialMessagesDesc', key: 'chat.initial_messages', type: 'number', source: 'server' },
     { labelKey: 'settings.items.chatPageSize', descriptionKey: 'settings.items.chatPageSizeDesc', key: 'chat.page_size', type: 'number', source: 'server' },
-    { labelKey: 'settings.items.chatCollapsedHeight', descriptionKey: 'settings.items.chatCollapsedHeightDesc', key: 'chat.collapsed_height', type: 'number', source: 'server' },
     { labelKey: 'settings.items.chatSystemPromptInterval', descriptionKey: 'settings.items.chatSystemPromptIntervalDesc', key: 'chat.system_prompt_interval', type: 'number', source: 'server' },
     { labelKey: 'settings.items.sessionMaxCount', descriptionKey: 'settings.items.sessionMaxCountDesc', key: 'session.max_count', type: 'number', source: 'server' },
   ],
@@ -75,7 +74,7 @@ export const categoryItems: Record<string, ItemSpec[]> = {
       { labelKey: 'settings.items.sortFieldType', value: 'type' },
       { labelKey: 'settings.items.sortFieldSize', value: 'size' },
     ]},
-    { labelKey: 'settings.items.sortDir', descriptionKey: 'settings.items.sortDirDesc', key: 'sortDir', type: 'select', source: 'local', dependsOn: { key: 'sortField', values: ['name', 'time', 'type', 'size'] }, options: [
+    { labelKey: 'settings.items.sortDir', descriptionKey: 'settings.items.sortDirHint', key: 'sortDir', type: 'select', source: 'local', dependsOn: { key: 'sortField', values: ['name', 'time', 'type', 'size'] }, options: [
       { labelKey: 'settings.items.sortDirAsc', value: 'asc' },
       { labelKey: 'settings.items.sortDirDesc', value: 'desc' },
     ]},
@@ -98,7 +97,7 @@ export const categoryItems: Record<string, ItemSpec[]> = {
       { labelKey: 'settings.items.ttsEngineMossNano', value: 'moss-nano' },
     ]},
     // Common fields (always shown)
-    { labelKey: 'settings.items.ttsVoice', descriptionKey: 'settings.items.ttsVoiceDesc', key: 'tts.voice', type: 'text', source: 'server' },
+    { labelKey: 'settings.items.ttsVoice', descriptionKey: 'settings.items.ttsVoiceDesc', key: 'tts.voice', type: 'select', source: 'server' },
     { labelKey: 'settings.items.ttsSpeed', descriptionKey: 'settings.items.ttsSpeedDesc', key: 'tts.speed', type: 'slider', source: 'server', min: 0.5, max: 3, step: 0.1 },
     // Minimax-specific
     { labelKey: 'settings.items.ttsModel', descriptionKey: 'settings.items.ttsModelDesc', key: 'tts.tts_model', type: 'text', source: 'server',
@@ -131,8 +130,10 @@ export const categoryItems: Record<string, ItemSpec[]> = {
       dependsOn: { key: 'tts.engine', value: 'moss-nano' }, sectionHeader: 'settings.items.ttsMossNanoHeader' },
     { labelKey: 'settings.items.mossNanoPromptSpeech', descriptionKey: 'settings.items.mossNanoPromptSpeechDesc', key: 'tts.moss_nano.prompt_speech', type: 'text', source: 'server',
       dependsOn: { key: 'tts.engine', value: 'moss-nano' } },
-    { labelKey: 'settings.items.mossNanoVoice', descriptionKey: 'settings.items.mossNanoVoiceDesc', key: 'tts.moss_nano.voice', type: 'text', source: 'server',
-      dependsOn: { key: 'tts.engine', value: 'moss-nano' } },
+    { labelKey: 'settings.items.mossNanoVoice', descriptionKey: 'settings.items.mossNanoVoiceDesc', key: 'tts.moss_nano.voice', type: 'select', source: 'server',
+      dependsOn: { key: 'tts.engine', value: 'moss-nano' }, options: [
+      { labelKey: 'settings.items.voiceMossJunhao', value: 'Junhao' },
+    ]},
     { labelKey: 'settings.items.mossNanoBackend', descriptionKey: 'settings.items.mossNanoBackendDesc', key: 'tts.moss_nano.backend', type: 'select', source: 'server',
       dependsOn: { key: 'tts.engine', value: 'moss-nano' }, options: [
       { labelKey: 'settings.items.mossNanoBackendOnnx', value: 'onnx' },
@@ -193,6 +194,7 @@ export const categoryItems: Record<string, ItemSpec[]> = {
     { labelKey: 'settings.items.reconfigureServer', descriptionKey: 'settings.items.reconfigureServerDesc', key: 'reconfigureServer', type: 'action', source: 'local' },
   ],
   security: [
+    { labelKey: 'settings.items.requireAuthForLocalhost', descriptionKey: 'settings.items.requireAuthForLocalhostDesc', key: 'require_auth_for_localhost', type: 'switch', source: 'server' },
     { labelKey: 'settings.items.changePassword', descriptionKey: 'settings.items.changePasswordDesc', key: 'changePassword', type: 'action', source: 'local' },
   ],
   about: [
@@ -216,3 +218,57 @@ export function getServerFieldToLabelKey(): Record<string, string> {
 
 /** Pre-computed singleton — used by SettingsRestartDialog to translate field paths. */
 export const serverFieldToLabelKey: Record<string, string> = getServerFieldToLabelKey()
+
+/**
+ * Voice options per TTS engine.
+ * Used by SettingsCategory.vue to dynamically resolve tts.voice select options
+ * based on the currently selected tts.engine value.
+ *
+ * Labels are i18n keys — resolved at render time for locale support.
+ */
+export const engineVoiceOptions: Record<string, { labelKey: string; value: string }[]> = {
+  edge: [
+    { labelKey: 'settings.items.voiceEdgeXiaoxiao', value: 'zh-CN-XiaoxiaoNeural' },
+    { labelKey: 'settings.items.voiceEdgeYunxi', value: 'zh-CN-YunxiNeural' },
+    { labelKey: 'settings.items.voiceEdgeYunjian', value: 'zh-CN-YunjianNeural' },
+    { labelKey: 'settings.items.voiceEdgeXiaoyi', value: 'zh-CN-XiaoyiNeural' },
+    { labelKey: 'settings.items.voiceEdgeXiaochen', value: 'zh-CN-XiaochenNeural' },
+    { labelKey: 'settings.items.voiceEdgeXiaohan', value: 'zh-CN-XiaohanNeural' },
+    { labelKey: 'settings.items.voiceEdgeXiaomo', value: 'zh-CN-XiaomoNeural' },
+    { labelKey: 'settings.items.voiceEdgeXiaorui', value: 'zh-CN-XiaoruiNeural' },
+    { labelKey: 'settings.items.voiceEdgeYunyang', value: 'zh-CN-YunyangNeural' },
+    { labelKey: 'settings.items.voiceEdgeYunhao', value: 'zh-CN-YunhaoNeural' },
+    { labelKey: 'settings.items.voiceEdgeJenny', value: 'en-US-JennyNeural' },
+    { labelKey: 'settings.items.voiceEdgeGuy', value: 'en-US-GuyNeural' },
+    { labelKey: 'settings.items.voiceEdgeAria', value: 'en-US-AriaNeural' },
+    { labelKey: 'settings.items.voiceEdgeDavis', value: 'en-US-DavisNeural' },
+  ],
+  piper: [
+    { labelKey: 'settings.items.voicePiperHuayanMedium', value: 'zh_CN-huayan-medium' },
+    { labelKey: 'settings.items.voicePiperHuayanXLow', value: 'zh_CN-huayan-x_low' },
+    { labelKey: 'settings.items.voicePiperChaowenMedium', value: 'zh_CN-chaowen-medium' },
+    { labelKey: 'settings.items.voicePiperLessacMedium', value: 'en_US-lessac-medium' },
+    { labelKey: 'settings.items.voicePiperLibrittsHigh', value: 'en_US-libritts-high' },
+  ],
+  kokoro: [
+    { labelKey: 'settings.items.voiceKokoroZf001', value: 'zf_001' },
+    { labelKey: 'settings.items.voiceKokoroZf002', value: 'zf_002' },
+    { labelKey: 'settings.items.voiceKokoroZf003', value: 'zf_003' },
+    { labelKey: 'settings.items.voiceKokoroZf004', value: 'zf_004' },
+    { labelKey: 'settings.items.voiceKokoroZf005', value: 'zf_005' },
+    { labelKey: 'settings.items.voiceKokoroZf006', value: 'zf_006' },
+    { labelKey: 'settings.items.voiceKokoroZf007', value: 'zf_007' },
+    { labelKey: 'settings.items.voiceKokoroZf008', value: 'zf_008' },
+    { labelKey: 'settings.items.voiceKokoroZm009', value: 'zm_009' },
+    { labelKey: 'settings.items.voiceKokoroZm010', value: 'zm_010' },
+    { labelKey: 'settings.items.voiceKokoroZm011', value: 'zm_011' },
+    { labelKey: 'settings.items.voiceKokoroZfXiaobei', value: 'zf_xiaobei' },
+    { labelKey: 'settings.items.voiceKokoroZfShanshan', value: 'zf_shanshan' },
+    { labelKey: 'settings.items.voiceKokoroZfXiaoyi', value: 'zf_xiaoyi' },
+    { labelKey: 'settings.items.voiceKokoroZmYunxi', value: 'zm_yunxi' },
+    { labelKey: 'settings.items.voiceKokoroZmYunjian', value: 'zm_yunjian' },
+  ],
+  'moss-nano': [
+    { labelKey: 'settings.items.voiceMossJunhao', value: 'Junhao' },
+  ],
+}

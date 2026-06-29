@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -29,15 +30,16 @@ func ParseSHA256Hash(password string) string {
 
 // Config holds the application configuration.
 type Config struct {
-	Port         int    `yaml:"port"`
-	Host         string `yaml:"host"`      // Bind address (empty = 0.0.0.0, "localhost" = 127.0.0.1 only)
-	LogLevel     string `yaml:"log_level"` // Log level: "debug", "info", "warn", "error" (default: "info")
-	Password     string `yaml:"password"`
-	DefaultAgent         string `yaml:"default_agent"`
-	ModelRefreshInterval string `yaml:"model_refresh_interval"` // Auto-refresh interval for model list (e.g. "30m", "1h"; empty = disabled)
-	LogDir       string `yaml:"log_dir"`
-	LogMaxDays   int    `yaml:"log_max_days"`
-	TLS          struct {
+	Port                    int    `yaml:"port"`
+	Host                    string `yaml:"host"`      // Bind address (empty = 0.0.0.0, "localhost" = 127.0.0.1 only)
+	LogLevel                string `yaml:"log_level"` // Log level: "debug", "info", "warn", "error" (default: "info")
+	Password                string `yaml:"password"`
+	DefaultAgent            string `yaml:"default_agent"`
+	ModelRefreshInterval    string `yaml:"model_refresh_interval"` // Auto-refresh interval for model list (e.g. "30m", "1h"; empty = disabled)
+	LogDir                  string `yaml:"log_dir"`
+	RequireAuthForLocalhost bool   `yaml:"require_auth_for_localhost"`
+	LogMaxDays              int    `yaml:"log_max_days"`
+	TLS                     struct {
 		Enabled  bool   `yaml:"enabled"`
 		CertFile string `yaml:"cert_file"`
 		KeyFile  string `yaml:"key_file"`
@@ -51,7 +53,6 @@ type Config struct {
 		InitialMessages      int `yaml:"initial_messages"`       // Number of messages to load initially (default: 20)
 		PageSize             int `yaml:"page_size"`              // Number of messages per lazy-load batch (default: 20)
 		SessionPageSize      int `yaml:"session_page_size"`      // Number of sessions per page in session list (default: 10)
-		CollapsedHeight      int `yaml:"collapsed_height"`       // Collapsed message height in pixels (default: 150)
 		SystemPromptInterval int `yaml:"system_prompt_interval"` // Re-inject system prompt every N assistant turns (0=never, default: 10)
 	} `yaml:"chat"`
 	Session struct {
@@ -174,14 +175,16 @@ var ConfigInstance Config
 
 // Global application state
 var (
-	BinDir           string   // Directory of the running binary
-	RootPaths        []string // Filesystem root paths (Linux/macOS: ["/"], Windows: drive list)
-	SessionToken     string   // Legacy: stores the password-derived token for "has password" check; NOT used for cookie validation when CookieToken is set
-	CookieToken      string   // Cryptographically random session token for cookie validation (ISS-117, ISS-131, ISS-183)
-	PasswordHash     []byte   // bcrypt hash for password verification (ISS-003a)
-	PasswordIsSHA256 bool     // true when config.yaml stores password as sha256:<hex>
-	SessionCookie    = "clawbench_session"
-	DefaultAgentID   string // Default agent for new sessions, set from config or first agent
+	BinDir                  string   // Directory of the running binary
+	RootPaths               []string // Filesystem root paths (Linux/macOS: ["/"], Windows: drive list)
+	SessionToken            string   // Legacy: stores the password-derived token for "has password" check; NOT used for cookie validation when CookieToken is set
+	CookieToken             string   // Cryptographically random session token for cookie validation (ISS-117, ISS-131, ISS-183)
+	PasswordHash            []byte   // bcrypt hash for password verification (ISS-003a)
+	PasswordIsSHA256        bool     // true when config.yaml stores password as sha256:<hex>
+	ServerPort              int      // Server listen port — set once at startup before HTTP listeners start, read-only afterwards. Do NOT modify after server starts; cookie names must be stable.
+	SessionCookie           = "clawbench_session"
+	DefaultAgentID          string // Default agent for new sessions, set from config or first agent
+	RequireAuthForLocalhost bool   // When true, localhost requests must also authenticate
 
 	// Upload limits (set from config, with defaults)
 	UploadMaxSizeMB int // Default: 100
@@ -191,7 +194,6 @@ var (
 	ChatInitialMessages      int // Default: 20
 	ChatPageSize             int // Default: 20
 	ChatSessionPageSize      int // Default: 10
-	ChatCollapsedHeight      int // Default: 150
 	ChatSystemPromptInterval int // Re-inject system prompt every N assistant turns (0=never, default: 10)
 
 	// Session limits (set from config, with defaults)
@@ -203,6 +205,17 @@ var (
 	// TTS cache limits (set from config, with defaults)
 	TTSMaxCacheFiles int // Default: 100; 0 = unlimited
 )
+
+// ScopedCookieName returns a port-prefixed cookie name when running on a
+// non-default port, so multiple ClawBench instances on the same hostname
+// don't collide. Default port 20000 uses unprefixed names for backward
+// compatibility; other ports get a "cb{port}_" prefix (e.g. "cb20300_").
+func ScopedCookieName(name string) string {
+	if ServerPort != 0 && ServerPort != 20000 {
+		return fmt.Sprintf("cb%d_%s", ServerPort, name)
+	}
+	return name
+}
 
 // GenerateRandomToken creates a cryptographically random hex token of the
 // specified byte length. Used for session cookie tokens to decouple them

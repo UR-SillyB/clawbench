@@ -16,7 +16,6 @@
         :expandedTools="expandedTools"
         :blockTasks="{}"
         :blockAskQuestions="{}"
-        :shouldCollapse="false"
         @toggle-tool="toggleTool"
         @show-tool-detail="handleShowToolDetail"
         @show-metadata="showMetadata"
@@ -42,6 +41,7 @@
     <ToolDetailOverlay
       :show="toolDetailOverlay.show"
       :toolName="toolDetailOverlay.name"
+      :toolSubagentType="toolDetailOverlay.subagentType"
       :toolSummary="toolDetailOverlay.summary"
       :toolInputHtml="toolDetailOverlay.inputHtml"
       :toolOutputHtml="toolDetailOverlay.outputHtml"
@@ -49,6 +49,7 @@
       :toolDone="toolDetailOverlay.done"
       @close="toolDetailOverlay.show = false"
       @file-open="handleFileOpenInOverlay"
+      @click="handleOverlayRetryClick"
     />
 
     <!-- Metadata Modal -->
@@ -84,7 +85,7 @@ import { store as appStore } from '@/stores/app.ts'
 import { useAutoSpeech } from '@/composables/useAutoSpeech.ts'
 import { useTaskTab } from '@/composables/useTaskTab.ts'
 import { useSessionIdentity } from '@/composables/useSessionIdentity.ts'
-import { formatToolOutput } from '@/utils/renderToolDetail.ts'
+import { useToolDetailOverlay } from '@/composables/useToolDetailOverlay.ts'
 
 const props = defineProps({
   execDetail: Object,
@@ -170,7 +171,7 @@ const msgData = computed(() => {
   const { blocks } = chatRender.parseAssistantContent(props.execDetail.content || '{}')
   if (!blocks || blocks.length === 0) return null
   return {
-    id: props.execDetail.id || 'exec',
+    id: props.execDetail.messageId || props.execDetail.id || 'exec',
     role: 'assistant',
     content: props.execDetail.content,
     blocks,
@@ -213,33 +214,18 @@ function toggleTool(key) {
 }
 
 // ── Tool Detail Overlay ──
-const toolDetailOverlay = ref({
-  show: false,
-  name: '',
-  summary: '',
-  inputHtml: '',
-  outputHtml: '',
-  status: '',
-  done: true,
+const {
+  toolDetailOverlay,
+  handleShowToolDetail,
+  handleOverlayRetryClick,
+  handleFileOpenInOverlay,
+} = useToolDetailOverlay({
+  chatRender,
+  onFileOpen: (path, lineStart, lineEnd) => {
+    openFilePath(path, lineStart, lineEnd)
+    emit('open-file', { path, lineStart, lineEnd })
+  },
 })
-
-function handleShowToolDetail(block) {
-  toolDetailOverlay.value = {
-    show: true,
-    name: block.name || '',
-    summary: chatRender.toolCallSummary(block),
-    inputHtml: chatRender.formatToolInput(block.input, block.name, { done: block.done, status: block.status, output: block.output }),
-    outputHtml: block.output ? formatToolOutput(block.output, block.name) : '',
-    status: block.status || '',
-    done: !!block.done,
-  }
-}
-
-function handleFileOpenInOverlay(filePath, lineStart) {
-  toolDetailOverlay.value.show = false
-  openFilePath(filePath, lineStart)
-  emit('open-file', filePath, lineStart)
-}
 
 // ── Metadata Modal ──
 const metadataModal = ref({
@@ -304,9 +290,10 @@ function handleContentClick(event) {
   event.stopPropagation()
   const filePath = btn.getAttribute('data-file-path')
   const lineStart = btn.getAttribute('data-line-start')
+  const lineEnd = btn.getAttribute('data-line-end')
   if (filePath) {
-    openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined)
-    emit('open-file', filePath, lineStart ? parseInt(lineStart, 10) : undefined)
+    openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined, lineEnd ? parseInt(lineEnd, 10) : undefined)
+    emit('open-file', { path: filePath, lineStart: lineStart ? parseInt(lineStart, 10) : undefined, lineEnd: lineEnd ? parseInt(lineEnd, 10) : undefined })
   }
 }
 

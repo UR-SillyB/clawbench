@@ -10,13 +10,11 @@
 
 **从终端到掌心** — 为移动端打造的 AI 工作台。
 
-将强大的 AI 编程智能体能力完整移植到浏览器与移动端 App，打造真正的移动端工作环境。文件浏览、代码编辑、AI 对话、Git 操作、定时调度 —— 一个应用，全部搞定。
-
-核心优势：原生透传 AI 能力（工具调用、深度思考、Skill、MCP），零适配成本，完整保留编程智能体的强大功能。不同于其他移动端 AI 工具仅做"遥控器"，ClawBench 是全功能移动端工作台——文件、代码、Git、AI、定时任务、TTS，手机上直接干活，不依赖电脑在线。（[同类项目对比](docs/COMPARISON.md)）
+将强大的 AI 编程智能体能力完整移植到浏览器与移动端 App，打造真正的移动端工作环境。文件浏览、代码编辑、AI 对话、Git 操作、定时调度、命令行终端 —— 一个应用，全部搞定。
 
 
 - **支持平台**：浏览器（PC / 平板 / 手机）、Android App、PWA
-- **AI 后端**：CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code、Pi、Cline、Copilot、Kimi
+- **AI 后端**：CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code、Pi、Cline、Copilot、Kimi
 
 ---
 
@@ -24,9 +22,9 @@
 
 ### 登录与导航
 
-| 登录 | 首页 | 选择项目 |
-|------|------|----------|
-| ![登录](docs/screenshots/login.png) | ![首页](docs/screenshots/home.png) | ![选择项目](docs/screenshots/project-select.png) |
+| 登录 | 首页 | 选择项目 | 设置面板 |
+|------|------|----------|----------|
+| ![登录](docs/screenshots/login.png) | ![首页](docs/screenshots/home.png) | ![选择项目](docs/screenshots/project-select.png) | ![设置面板](docs/screenshots/settings-panel.png) |
 
 ### 文件浏览与代码编辑
 
@@ -40,11 +38,12 @@
 |---------------|------------|-------------|----------|
 | ![Markdown 渲染](docs/screenshots/markdown-preview.png) | ![LaTeX 公式](docs/screenshots/latex-formula.png) | ![Mermaid 图表](docs/screenshots/mermaid-diagram.png) | ![目录导航](docs/screenshots/toc-drawer.png) |
 
+
 ### AI 智能体
 
-| 智能体选择 | AI 对话 | 结构化提问 | 会话管理 |
-|------------|---------|------------|----------|
-| ![智能体选择](docs/screenshots/agent-selector.png) | ![AI 对话](docs/screenshots/chat-panel.png) | ![结构化提问](docs/screenshots/ask-question.png) | ![会话管理](docs/screenshots/session-manager.png) |
+| 智能体选择 | AI 对话 | ACP 权限审批 | RAG 检索 | 会话管理 |
+|------------|---------|-------------|----------|----------|
+| ![智能体选择](docs/screenshots/agent-selector.png) | ![AI 对话](docs/screenshots/chat-panel.png) | ![ACP 权限审批](docs/screenshots/acp-permission.png) | ![RAG 检索](docs/screenshots/rag-search.png) | ![会话管理](docs/screenshots/session-manager.png) |
 
 | 定时任务 | 创建任务 | 任务卡片 |
 |----------|----------|----------|
@@ -52,9 +51,9 @@
 
 ### Git 集成
 
-| 提交历史与分支图 | 提交详情 | 比较报告 |
-|------------------|----------|----------|
-| ![提交历史与分支图](docs/screenshots/git-history.png) | ![提交详情](docs/screenshots/git-commit-detail.png) | ![比较报告](docs/screenshots/git-comparison-report.png) |
+| 提交历史与分支图 | 分支管理 | 提交详情 | 比较报告 |
+|------------------|----------|----------|----------|
+| ![提交历史与分支图](docs/screenshots/git-history.png) | ![分支管理](docs/screenshots/git-branches.png) | ![提交详情](docs/screenshots/git-commit-detail.png) | ![比较报告](docs/screenshots/git-comparison-report.png) |
 
 ### 媒体预览
 
@@ -64,53 +63,9 @@
 
 ### SSH 隧道与 Web 终端
 
-| 端口转发 | 交互式终端 |
-|---------|-----------|
-| ![端口转发](docs/screenshots/port-forwarding.png) | ![交互式终端](docs/screenshots/terminal.png) |
-
----
-
-## 技术架构
-
-ClawBench 的核心哲学：
-
-- **零适配透传**：不重新实现 AI 能力，而是将 AI 编程智能体 CLI 作为后端引擎，通过 Web 服务封装为 HTTP API + SSE 流式接口，完整保留工具调用、深度思考、Skill、MCP 等全部能力，零适配成本。前端只负责渲染和交互，所有智能逻辑由 CLI 原生提供。
-- **AI 负责改，我负责看**：项目不提供直接的文件编辑能力，所有修改通过 AI 完成。重点打造 Markdown 和代码的预览体验，以及在预览过程中与 AI 的交互能力——选中代码或文本即可向 AI 提问、要求修改，快速迭代。
-
-```mermaid
-graph LR
-    Client["📱 手机 / PWA / Pad"] -->|HTTP / SSE| Server["🏗️ ClawBench\nGo Web Server"]
-    Server -->|CLI 调用 · 流式输出| CB["🤖 CodeBuddy CLI"]
-    Server -->|CLI 调用 · 流式输出| CC["🤖 Claude Code CLI"]
-    Server -->|CLI 调用 · 流式输出| OC["🤖 OpenCode CLI"]
-    Server -->|CLI 调用 · 流式输出| CX["🤖 Codex CLI"]
-    Server -->|CLI 调用 · 流式输出| QR["🤖 Qoder CLI"]
-    Server -->|CLI 调用 · 流式输出| VC["🤖 VeCLI"]
-    Server -->|CLI 调用 · 流式输出| DS["🔍 DeepSeek TUI"]
-    Server -->|CLI 调用 · 流式输出| MM["🚀 MiMo-Code"]
-    Server -->|CLI 调用 · 流式输出| PI["🥧 Pi"]
-    Server -->|CLI 调用 · 流式输出| CL["🤖 Cline"]
-    Server -->|CLI 调用 · 流式输出| CP["🤖 Copilot"]
-    Server -->|CLI 调用 · 流式输出| KM["🤖 Kimi"]
-    Server -->|读写| DB[("💾 SQLite\n会话 · 历史 · 定时任务")]
-    CB -->|原生支持| Tools["🔧 工具调用"]
-    CB -->|原生支持| Think["🧠 深度思考"]
-    CB -->|原生支持| Skills["🎯 Skill"]
-    CB -->|原生支持| MCP["🔌 MCP"]
-    CC -->|原生支持| Tools
-    CC -->|原生支持| Think
-    CC -->|原生支持| Skills
-    CC -->|原生支持| MCP
-    OC -->|原生支持| Tools
-    CX -->|原生支持| Tools
-    QR -->|原生支持| Tools
-    VC -->|原生支持| Tools
-    DS -->|原生支持| Tools
-    MM -->|原生支持| Tools
-    MM -->|原生支持| Think
-    PI -->|原生支持| Tools
-    PI -->|原生支持| Think
-```
+| 端口转发 | 交互式终端 | 按键/符号配置 |
+|---------|-----------|--------------|
+| ![端口转发](docs/screenshots/port-forwarding.png) | ![交互式终端](docs/screenshots/terminal.png) | ![按键配置](docs/screenshots/terminal-key-config.png) |
 
 ---
 
@@ -118,12 +73,12 @@ graph LR
 
 ### 前置准备
 
-- **一台 PC（Linux / macOS / Windows）**：用于运行 ClawBench 服务端，需已安装至少一种 AI 编程智能体 CLI（CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code、Pi、Cline、Copilot、Kimi 均可）
+- **一台 PC（Linux / macOS / Windows）**：用于运行 ClawBench 服务端，需已安装至少一种 AI 编程智能体 CLI（CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code、Pi、Cline、Copilot、Kimi 均可）
 - **一台手机**：安装 [ClawBench Android App](https://github.com/xulongzhe/clawbench/releases)，或使用手机浏览器（推荐 Chrome）访问服务端地址
 
-### 下载与启动
+### 安装包部署
 
-从 [GitHub Releases](https://github.com/xulongzhe/clawbench/releases) 下载最新版 ZIP 包，解压即可部署：
+从 [GitHub Releases](https://github.com/xulongzhe/clawbench/releases) 下载最新版 ZIP 包，解压即可运行，无需安装：
 
 ```bash
 wget https://github.com/xulongzhe/clawbench/releases/latest/download/clawbench-linux-amd64.zip
@@ -132,9 +87,20 @@ cd clawbench
 ./clawbench
 ```
 
-就这么简单 —— 每次启动时，ClawBench 会自动扫描系统中已安装的 AI CLI 工具，为每个检测到的后端生成最小化智能体配置，并自动发现可用模型和思考档位。无需手动配置即可开始使用。
 
-> 如果系统没有安装任何 AI CLI，但下载了内置 Pi 智能体（发布包或 `--with-pi` 构建），首次启动会显示设置向导，引导你选择 LLM 提供商、输入 API Key、验证模型，一键创建智能体。
+
+### Docker 部署
+
+```bash
+docker pull ghcr.io/clawbench-dev/clawbench:latest
+docker run -d -p 20000:20000 -v clawbench-data:/data ghcr.io/clawbench-dev/clawbench:latest
+```
+
+修改 `-p` 可自定义端口（如 `-p 20300:20000`），`clawbench-data` 卷持久化数据。查看自动生成的密码：
+
+```bash
+docker exec $(docker ps -qf ancestor=ghcr.io/clawbench-dev/clawbench) cat /data/.clawbench/auto-password
+```
 
 > 首次启动会自动生成8位随机密码，以字符框突出打印到控制台，请妥善保存。
 
@@ -143,9 +109,6 @@ cd clawbench
 - **手机 App**：原生集成，自动连接，支持完整功能
 - **手机浏览器**：推荐使用 **Chrome 浏览器**访问，支持将网页安装为 PWA 应用（添加到主屏幕），获得接近原生 App 的体验
 
-### 自定义智能体
-
-自动发现的智能体配置为最小化默认值（不含模型列表和思考档位，由运行时自动发现填充）。如需自定义模型列表、系统提示词等，可在 Web UI 的设置向导中创建新智能体，智能体配置存储在数据库中。
 
 > 编译构建、高级配置、部署说明、架构设计等详细文档请参阅 **[编译与开发指南](docs/DEVELOPMENT.md)**。
 
@@ -185,7 +148,7 @@ cd clawbench
 ### 🤖 AI 智能体
 - **流式响应**：SSE 实时推送，思维过程、工具调用全程可见
 - **多 Agent 支持**：全能助手、编码专家、勤杂工等，YAML 配置即插即用
-- **AI 后端切换**：CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、DeepSeek TUI、MiMo-Code、Pi、Cline、Copilot、Kimi，会话级隔离
+- **AI 后端切换**：CodeBuddy、Claude Code、OpenCode、Codex、Qoder CLI、VeCLI、CodeWhale、MiMo-Code、Pi、Cline、Copilot、Kimi，会话级隔离
 - **深度思考档位**：支持按智能体选择思考深度（Auto / Low / Medium / High），Claude/CodeBuddy/OpenCode/Codex/MiMo/Pi/Cline/Copilot/Kimi 九后端支持，选择自动持久化
 - **模型选择模态框**：统一模型切换与思考深度选择，双 Tab 界面，搜索过滤，一键刷新模型列表（支持自动发现的智能体），长按设为默认模型
 - **模型选择持久化**：每个智能体的模型选择和思考档位自动保存到 localStorage，刷新/切换会话自动恢复
@@ -213,6 +176,8 @@ cd clawbench
 - **引用提问**：选中代码或文本，直接向 AI 提问，自动附带上下文
 - **当前目录附加**：聊天输入支持附加当前目录上下文，AI 自动获取目录结构
 - **未读徽章**：聊天面板图标显示未读消息数
+
+- **自动审批指示**：模式芯片在启用 auto-approve 时变为绿色，直观显示权限模式
 
 ### 🖼️ 媒体预览
 - 图片、音频、视频应用内直接预览
@@ -246,9 +211,12 @@ cd clawbench
 ### 💻 Web 终端
 - **交互式终端**：基于 PTY + WebSocket + xterm.js，浏览器内直接操作服务器终端
 - **多会话并发**：每个客户端拥有独立 PTY 会话，互不干扰
+- **多标签管理**：支持关闭所有标签页，空状态显示创建按钮，Dock 图标显示活跃会话数
 - **虚拟按键栏**：按类型分组的颜色编码按键（修饰键、快捷键、导航键、方向键、操作键），修饰键支持三态切换
-- **符号栏**：可展开的符号输入行，19 个终端高频符号，支持智能排序（指数衰减模型，兼顾频率与时效性）
-- **触摸手势**：Termius 风格手势（滑动→方向键、长按重复、双击→Tab、捏合缩放），手势关闭时支持触摸滚动
+- **按键/符号配置**：全屏配置抽屉，按键和符号双标签页，支持点选添加、拖拽排序、手势模式自动隐藏部分按键，配置持久化到数据库
+- **符号栏**：可展开的符号输入行，19 个终端高频符号，过渡动画
+- **触摸手势**：Termius 风格手势（滑动→方向键、长按重复、双击→Tab、捏合缩放），手势关闭时支持触摸滚动，切换时 Toast 提示
+- **选中文本自动复制**：选中终端文本自动复制到剪贴板，Toast 反馈
 - **快捷命令**：CRUD 管理常用命令，支持拖拽排序、隐藏、自动执行（每次连接自动运行）
 - **Android 音量键**：App 内终端打开时，音量键映射为方向键上下
 - 详见 [Web 终端使用指南](docs/TERMINAL.md)
@@ -267,6 +235,7 @@ cd clawbench
 - 通知音效 + 触觉反馈（AI 完成时提醒）
 - 浏览器推送通知
 - **任务完成推送**：定时任务执行完成后推送包含响应预览摘要，点击跳转至执行详情
+- **ACP 审批推送**：ACP 代理需要用户审批时（如文件写入、命令执行），通过 JPush 发送安卓通知，显示工具名称，点击直达会话审批
 
 ### 🎨 主题
 - 亮色 / 暗色模式，跟随系统偏好

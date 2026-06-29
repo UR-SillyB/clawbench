@@ -5,6 +5,8 @@ import i18n from '@/i18n'
 export function formatRelativeTime(date: string | Date): string {
     if (!date) return ''
     const d = new Date(date)
+    // Guard against Go zero-value time.Time (year 0001)
+    if (d.getFullYear() < 2000) return ''
     const now = new Date()
     const diff = now.getTime() - d.getTime()
     const minutes = Math.floor(diff / 60000)
@@ -89,7 +91,7 @@ export function stripMarkdownPreview(text: string, maxLen: number = 100): string
         .replace(/_([^_]+)_/g, '$1')       // italic
         .replace(/~~([^~]+)~~/g, '$1')     // strikethrough
         .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
-        .replace(/[#*`_~\[\]()>|]/g, '')   // remaining syntax chars
+        .replace(/[#*`_~[\]()>|]/g, '')   // remaining syntax chars
         .replace(/\n+/g, ' ')             // newlines → space
         .trim()
     return clean.length > maxLen ? clean.substring(0, maxLen) + '...' : clean
@@ -108,4 +110,9 @@ export function statusLabel(status: string): string {
     if (status === 'paused') return i18n.global.t('task.status.paused')
     if (status === 'completed') return i18n.global.t('task.status.completed')
     return status
+}
+
+/** Format badge count: truncate to "99+" when exceeding 99 */
+export function formatBadgeCount(n: number): string | number {
+    return n > 99 ? '99+' : n
 }

@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
+import android.util.Log;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.view.KeyEvent;
@@ -26,6 +27,7 @@ import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
+import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -90,6 +92,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "clawbench_prefs";
     private static final String KEY_SERVER_URL = "server_url";
     private static final String KEY_SSH_PASSWORD = "ssh_password";
+    private static final String KEY_SERVER_LIST = "server_list";
     private static final String TAG = "ClawBench";
     private static final String LOGIN_HTML_URL = "file:///android_asset/login.html";
 
@@ -119,9 +122,29 @@ public class MainActivity extends AppCompatActivity {
     // Replaces the old fixed 300ms delay — see showLoginPage() and onPageFinished().
     private String pendingLoginErrorMessage = null;
 
+    // Set to true when the user has confirmed a self-signed SSL certificate at the OkHttp level.
+    // When true, onReceivedSslError will auto-accept SSL errors for the current server,
+    // because the user has already explicitly trusted the certificate.
+    private boolean sslCertTrustedByUser = false;
+
     // File chooser state for WebView <input type="file"> support
     private ValueCallback<Uri[]> filePathCallback;
     private Uri cameraImageUri; // URI for camera capture image
+    private Intent pendingFileChooserIntent; // Stored chooser intent while waiting for camera permission
+
+    // Camera permission launcher — requests CAMERA runtime permission before
+    // launching the camera intent. On many OEM ROMs (Xiaomi, Huawei, etc.),
+    // ACTION_IMAGE_CAPTURE fails silently without the CAMERA permission granted,
+    // even though AOSP doesn't strictly require it.
+    private final ActivityResultLauncher<String> cameraPermissionLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
+                if (isGranted) {
+                    launchFileChooserWithCamera();
+                } else {
+                    AppLog.w(TAG, "CAMERA permission denied — launching file chooser without camera option");
+                    launchFileChooserWithoutCamera();
+                }
+            });
 
     // Notification permission launcher (Android 13+) — required for foreground service notification
     private final ActivityResultLauncher<String> notificationPermissionLauncher =
@@ -234,9 +257,16 @@ public class MainActivity extends AppCompatActivity {
         // Load saved URL or show configuration dialog
         String savedUrl = prefs.getString(KEY_SERVER_URL, null);
         if (savedUrl != null) {
-            webView.setVisibility(View.INVISIBLE);
-            webView.loadUrl(savedUrl);
-            startConnectionTimeout();
+            // Auto-reconnect: use pre-authentication to verify server is reachable
+            // before loading the WebView. This prevents Chrome's built-in error page.
+            String savedPassword = prefs.getString(KEY_SSH_PASSWORD, null);
+            if (savedPassword != null && !savedPassword.isEmpty()) {
+                webView.setVisibility(View.INVISIBLE);
+                authenticateAndNavigate(savedUrl, savedPassword);
+            } else {
+                webView.setVisibility(View.INVISIBLE);
+                checkConnectivityAndNavigate(savedUrl);
+            }
         } else {
             webView.loadUrl(LOGIN_HTML_URL);
         }
@@ -282,6 +312,24 @@ public class MainActivity extends AppCompatActivity {
         // Chrome client for progress and file chooser
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                String tag = "WebView:" + consoleMessage.messageLevel();
+                String msg = consoleMessage.message() + " (" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + ")";
+                switch (consoleMessage.messageLevel()) {
+                    case ERROR:
+                        Log.e(tag, msg);
+                        break;
+                    case WARNING:
+                        Log.w(tag, msg);
+                        break;
+                    default:
+                        Log.d(tag, msg);
+                        break;
+                }
+                return true;
+            }
+
+            @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 if (newProgress < 100) {
                     progressBar.setVisibility(View.VISIBLE);
@@ -312,41 +360,18 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
-                // Offer camera as an additional option
-                Intent cameraIntent = null;
-                try {
-                    cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                    if (cameraIntent.resolveActivity(getPackageManager()) != null) {
-                        File photoFile = createImageFile();
-                        if (photoFile != null) {
-                            cameraImageUri = androidx.core.content.FileProvider.getUriForFile(
-                                    MainActivity.this,
-                                    getPackageName() + ".fileprovider",
-                                    photoFile
-                            );
-                            cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri);
-                        } else {
-                            cameraIntent = null;
-                        }
-                    } else {
-                        cameraIntent = null;
-                    }
-                } catch (Exception e) {
-                    AppLog.w(TAG, "Camera intent not available", e);
-                    cameraIntent = null;
-                }
+                // Store the chooser intent for use after permission check
+                pendingFileChooserIntent = chooserIntent;
 
-                try {
-                    if (cameraIntent != null) {
-                        // Show chooser with both file picker and camera options
-                        chooserIntent = Intent.createChooser(chooserIntent, "选择文件");
-                        chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{ cameraIntent });
-                    }
-                    fileChooserLauncher.launch(chooserIntent);
-                } catch (Exception e) {
-                    AppLog.e(TAG, "File chooser failed to launch", e);
-                    filePathCallback = null;
-                    return false;
+                // Request CAMERA runtime permission before offering the camera option.
+                // Many OEM ROMs (Xiaomi, Huawei, Samsung) require this permission to be
+                // granted at runtime, even though AOSP's ACTION_IMAGE_CAPTURE should work
+                // without it when using FileProvider URI.
+                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
+                        == PackageManager.PERMISSION_GRANTED) {
+                    launchFileChooserWithCamera();
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA);
                 }
                 return true;
             }
@@ -510,6 +535,70 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Launch file chooser with camera option included.
+     * Called after CAMERA runtime permission is confirmed.
+     */
+    private void launchFileChooserWithCamera() {
+        if (filePathCallback == null) return;
+        Intent chooserIntent = pendingFileChooserIntent;
+        pendingFileChooserIntent = null;
+
+        // Build camera intent with FileProvider URI
+        Intent cameraIntent = null;
+        try {
+            cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            if (cameraIntent.resolveActivity(getPackageManager()) != null) {
+                File photoFile = createImageFile();
+                if (photoFile != null) {
+                    cameraImageUri = androidx.core.content.FileProvider.getUriForFile(
+                            this,
+                            getPackageName() + ".fileprovider",
+                            photoFile
+                    );
+                    cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri);
+                    // Grant URI permissions so the camera app can write to the FileProvider URI
+                    cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } else {
+                    cameraIntent = null;
+                }
+            } else {
+                cameraIntent = null;
+            }
+        } catch (Exception e) {
+            AppLog.w(TAG, "Camera intent not available", e);
+            cameraIntent = null;
+        }
+
+        try {
+            if (cameraIntent != null) {
+                // Show chooser with both file picker and camera options
+                chooserIntent = Intent.createChooser(chooserIntent, "选择文件");
+                chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{ cameraIntent });
+            }
+            fileChooserLauncher.launch(chooserIntent);
+        } catch (Exception e) {
+            AppLog.e(TAG, "File chooser failed to launch", e);
+            filePathCallback = null;
+        }
+    }
+
+    /**
+     * Launch file chooser without camera option (fallback when CAMERA permission denied).
+     */
+    private void launchFileChooserWithoutCamera() {
+        if (filePathCallback == null) return;
+        Intent chooserIntent = pendingFileChooserIntent;
+        pendingFileChooserIntent = null;
+
+        try {
+            fileChooserLauncher.launch(chooserIntent);
+        } catch (Exception e) {
+            AppLog.e(TAG, "File chooser failed to launch", e);
+            filePathCallback = null;
+        }
+    }
+
+    /**
      * Show the static login page. Hides the WebView content area so the
      * dark background shows through, and calls onConnectError() on the
      * login page to display the error message inline.
@@ -518,6 +607,7 @@ public class MainActivity extends AppCompatActivity {
     private void showLoginPage(String errorMessage) {
         webViewConnected = false;
         loadErrorPending = false;
+        sslCertTrustedByUser = false;
         cancelConnectionTimeout();
         // Store error message for delivery after login page finishes loading.
         // See onPageFinished() where pendingLoginErrorMessage is consumed.
@@ -556,10 +646,15 @@ public class MainActivity extends AppCompatActivity {
      * Attempt to connect to a server URL.
      * Called from the static login page via AndroidNative.connectToServer().
      * Hides WebView content during the connection attempt so error pages don't flash.
+     *
+     * All connection errors are handled at the OkHttp level — the WebView is only
+     * asked to load a URL after pre-authentication succeeds. This prevents Chrome's
+     * built-in error page from appearing when the server is unreachable.
      */
     private void connectToServer(String url, String password) {
         webViewConnected = false;
         loadErrorPending = false;
+        sslCertTrustedByUser = false;
         webView.setVisibility(View.INVISIBLE);
 
         // Save URL and password
@@ -575,15 +670,12 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (isNetworkAvailable()) {
-            // Pre-authenticate with server before navigating WebView.
-            // This sets the clawbench_session cookie so the Vue app
-            // won't show a second web login page.
             if (password != null && !password.isEmpty()) {
                 authenticateAndNavigate(url, password);
             } else {
-                // No password — navigate directly (server may have no auth)
-                webView.loadUrl(url);
-                startConnectionTimeout();
+                // No password — perform connectivity check first, then navigate WebView.
+                // This avoids loading an unreachable URL into the WebView.
+                checkConnectivityAndNavigate(url);
             }
         } else {
             // No network — go back to login page with error
@@ -595,25 +687,173 @@ public class MainActivity extends AppCompatActivity {
      * Pre-authenticate with the server before navigating the WebView.
      * POSTs /login with the password, extracts the Set-Cookie header,
      * injects it into WebView's CookieManager, then loads the URL.
-     * On failure (wrong password, SSL error, network error), falls back
-     * to direct navigation so WebView can handle it (e.g. SSL confirmation).
+     *
+     * SSL errors are handled at the OkHttp level: a native confirmation dialog
+     * is shown, and if the user trusts the certificate, the request is retried
+     * with a trusting OkHttp client. The WebView is NEVER asked to load a URL
+     * that hasn't been pre-verified, preventing Chrome's built-in error page.
      */
     private void authenticateAndNavigate(String url, String password) {
         new Thread(() -> {
             try {
                 AuthResult result = performLoginRequest(url, password);
-                handleAuthResponse(result.statusCode, url, result.cookies);
+                handleAuthResponse(result.statusCode, url, password, result.cookies);
+            } catch (javax.net.ssl.SSLException e) {
+                // SSL error (self-signed cert, hostname mismatch, etc.)
+                // Show native confirmation dialog on UI thread, then retry with trusting client
+                AppLog.w(TAG, "SSL error during pre-auth, showing confirmation dialog", e);
+                runOnUiThread(() -> showSslConfirmationDialog(() -> {
+                    try {
+                        AuthResult result = performLoginRequestWithClient(buildTrustingOkHttpClient(), url, password);
+                        handleAuthResponse(result.statusCode, url, password, result.cookies);
+                    } catch (Exception retryEx) {
+                        AppLog.w(TAG, "SSL retry failed", retryEx);
+                        runOnUiThread(() -> showLoginPage(getNetworkErrorMessage(retryEx)));
+                    }
+                }));
             } catch (Exception e) {
-                // SSL error (self-signed cert), network error, etc.
-                // Fall back to direct WebView navigation — it may handle
-                // SSL via onReceivedSslError user confirmation.
-                AppLog.w(TAG, "Pre-auth failed, falling back to direct navigation", e);
+                // Network error (DNS failure, connection refused, timeout, etc.)
+                // Go back to login page — never fallback to webView.loadUrl()
+                AppLog.w(TAG, "Pre-auth failed, returning to login page", e);
+                String msg = getNetworkErrorMessage(e);
+                runOnUiThread(() -> showLoginPage(msg));
+            }
+        }).start();
+    }
+
+    /**
+     * Show SSL confirmation dialog. If the user trusts the certificate, runs the provided action
+     * on a background thread. This is used by both the pre-authentication path and the
+     * connectivity-check path to handle self-signed certificates at the OkHttp level.
+     */
+    private void showSslConfirmationDialog(Runnable onTrustAction) {
+        new AlertDialog.Builder(this)
+                .setTitle("SSL 证书验证失败")
+                .setMessage("服务器使用了自签名证书，连接可能不安全。\n\n仅当您信任该服务器时才继续。")
+                .setPositiveButton("信任并继续", (dialog, which) -> {
+                    // Mark that the user has trusted this certificate.
+                    // This allows onReceivedSslError to auto-accept when the WebView
+                    // loads the same URL (since WebView doesn't share OkHttp's trust store).
+                    sslCertTrustedByUser = true;
+                    new Thread(onTrustAction).start();
+                })
+                .setNegativeButton("取消连接", (dialog, which) -> {
+                    showLoginPage(null);
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    /**
+     * Build an OkHttpClient that trusts all SSL certificates (self-signed, hostname mismatch, etc.).
+     * Used after the user explicitly confirms they trust the server's certificate.
+     */
+    private OkHttpClient buildTrustingOkHttpClient() {
+        TrustManager[] trustAll = { new X509TrustManager() {
+            public void checkClientTrusted(X509Certificate[] c, String a) {}
+            public void checkServerTrusted(X509Certificate[] c, String a) {}
+            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+        }};
+
+        try {
+            SSLContext sc = SSLContext.getInstance("TLS");
+            sc.init(null, trustAll, new java.security.SecureRandom());
+            return new OkHttpClient.Builder()
+                    .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .sslSocketFactory(sc.getSocketFactory(), (X509TrustManager) trustAll[0])
+                    .hostnameVerifier((hostname, session) -> true)
+                    .build();
+        } catch (Exception e) {
+            // Should never happen — TLS is always available
+            throw new RuntimeException("Failed to create trusting OkHttpClient", e);
+        }
+    }
+
+    /**
+     * Extract a user-friendly error message from a network exception.
+     */
+    private String getNetworkErrorMessage(Exception e) {
+        if (e instanceof java.net.UnknownHostException) {
+            return "无法解析服务器地址，请检查域名是否正确。";
+        } else if (e instanceof java.net.ConnectException) {
+            return "无法连接到服务器，请检查地址和端口。";
+        } else if (e instanceof java.net.SocketTimeoutException) {
+            return "连接超时，请检查服务器地址和网络连接。";
+        } else if (e instanceof IOException) {
+            return "网络错误，请检查网络连接。";
+        } else {
+            return "无法连接到服务器，请检查地址和网络连接。";
+        }
+    }
+
+    /**
+     * Perform a health check (GET /api/health) before loading the WebView.
+     * Used when no password is provided (server may have no auth).
+     * Verifies the server is both reachable AND is a ClawBench instance.
+     */
+    private void checkConnectivityAndNavigate(String url) {
+        new Thread(() -> {
+            try {
+                String healthError = performHealthCheck(url, new OkHttpClient.Builder()
+                        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .build());
+                if (healthError != null) {
+                    runOnUiThread(() -> showLoginPage(healthError));
+                    return;
+                }
                 runOnUiThread(() -> {
                     webView.loadUrl(url);
                     startConnectionTimeout();
                 });
+            } catch (javax.net.ssl.SSLException e) {
+                AppLog.w(TAG, "SSL error during health check, showing confirmation dialog", e);
+                runOnUiThread(() -> showSslConfirmationDialog(() -> {
+                    try {
+                        OkHttpClient trustClient = buildTrustingOkHttpClient();
+                        String healthError = performHealthCheck(url, trustClient);
+                        if (healthError != null) {
+                            runOnUiThread(() -> showLoginPage(healthError));
+                            return;
+                        }
+                        runOnUiThread(() -> {
+                            webView.loadUrl(url);
+                            startConnectionTimeout();
+                        });
+                    } catch (Exception retryEx) {
+                        AppLog.w(TAG, "SSL health check retry failed", retryEx);
+                        runOnUiThread(() -> showLoginPage(getNetworkErrorMessage(retryEx)));
+                    }
+                }));
+            } catch (Exception e) {
+                AppLog.w(TAG, "Health check failed", e);
+                runOnUiThread(() -> showLoginPage(getNetworkErrorMessage(e)));
             }
         }).start();
+    }
+
+    /**
+     * Perform GET /api/health and verify the response contains {"app":"clawbench"}.
+     * Returns null on success, or an error message string on failure.
+     */
+    String performHealthCheck(String url, OkHttpClient client) throws Exception {
+        Request request = new Request.Builder()
+                .url(url + "/api/health")
+                .get()
+                .build();
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                AppLog.w(TAG, "Health check failed: HTTP " + response.code());
+                return "该地址不是 ClawBench 服务器。";
+            }
+            String body = response.body() != null ? response.body().string() : "";
+            if (!body.contains("\"app\"") || !body.contains("\"clawbench\"")) {
+                AppLog.w(TAG, "Health check failed: response does not identify as clawbench: " + body);
+                return "该地址不是 ClawBench 服务器。";
+            }
+            return null; // success
+        }
     }
 
     /**
@@ -625,14 +865,22 @@ public class MainActivity extends AppCompatActivity {
      * @return AuthResult with status code and Set-Cookie headers
      */
     AuthResult performLoginRequest(String url, String password) throws Exception {
-        OkHttpClient client = new OkHttpClient.Builder()
-                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .build();
+        return performLoginRequestWithClient(
+                new OkHttpClient.Builder()
+                        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .build(),
+                url, password);
+    }
 
-        String escapedPwd = password.replace("\\", "\\\\").replace("\"", "\\\"");
-        String jsonBody = "{\"password\":\"" + escapedPwd + "\"}";
-        RequestBody body = RequestBody.create(jsonBody,
+    /**
+     * Perform the HTTP POST /login request with a pre-built OkHttpClient.
+     * Shared by performLoginRequest (standard client) and the SSL retry path (trusting client).
+     */
+    private AuthResult performLoginRequestWithClient(OkHttpClient client, String url, String password) throws Exception {
+        org.json.JSONObject json = new org.json.JSONObject();
+        json.put("password", password);
+        RequestBody body = RequestBody.create(json.toString(),
                 MediaType.parse("application/json; charset=utf-8"));
 
         Request request = new Request.Builder()
@@ -667,23 +915,48 @@ public class MainActivity extends AppCompatActivity {
      * @param url        the server URL to navigate to on success/fallback
      * @param cookies    Set-Cookie headers from the response (may be empty)
      */
-    void handleAuthResponse(int statusCode, String url, java.util.List<String> cookies) {
+    void handleAuthResponse(int statusCode, String url, String password, java.util.List<String> cookies) {
         if (statusCode == 200) {
-            // Extract Set-Cookie and inject into WebView CookieManager
-            if (cookies != null && !cookies.isEmpty()) {
-                try {
-                    CookieManager cm = CookieManager.getInstance();
+            // Extract Set-Cookie and inject into WebView CookieManager.
+            // Before injecting, clear all ClawBench cookies for the target domain
+            // to prevent stale cookies from a previous server instance (e.g., switching
+            // from port 20000 which uses unscoped "clawbench_session" to port 20300
+            // which uses "cb20300_clawbench_session"). Without this cleanup, the old
+            // unscoped cookie would be sent alongside the new scoped cookie, causing
+            // confusion on the server side. (Browsers/WebView do not isolate cookies
+            // by port — only by domain + path.)
+            try {
+                CookieManager cm = CookieManager.getInstance();
+                clearClawBenchCookies(cm, url);
+                if (cookies != null) {
                     for (String cookie : cookies) {
                         cm.setCookie(url, cookie);
                     }
-                    cm.flush();
-                } catch (Exception e) {
-                    // CookieManager may be unavailable in test environments
-                    AppLog.w(TAG, "Failed to inject auth cookie", e);
                 }
+                cm.flush();
+            } catch (Exception e) {
+                // CookieManager may be unavailable in test environments
+                AppLog.w(TAG, "Failed to inject auth cookie", e);
             }
-            // Auth success — navigate WebView (cookie already set)
+            // Auth success — verify this is a ClawBench server before navigating WebView
+            try {
+                OkHttpClient healthClient = new OkHttpClient.Builder()
+                        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .build();
+                String healthError = performHealthCheck(url, healthClient);
+                if (healthError != null) {
+                    runOnUiThread(() -> showLoginPage(healthError));
+                    return;
+                }
+            } catch (Exception e) {
+                AppLog.w(TAG, "Health check after auth failed", e);
+                runOnUiThread(() -> showLoginPage(getNetworkErrorMessage(e)));
+                return;
+            }
+            // Health check passed — promote server to head of list, then navigate
             runOnUiThread(() -> {
+                saveServerInternal(url, password);
                 webView.loadUrl(url);
                 startConnectionTimeout();
             });
@@ -693,19 +966,63 @@ public class MainActivity extends AppCompatActivity {
         } else if (statusCode == 429) {
             runOnUiThread(() -> showLoginPage("尝试次数过多，请稍后再试。"));
         } else {
-            // Unexpected status — still try navigating
-            runOnUiThread(() -> {
-                webView.loadUrl(url);
-                startConnectionTimeout();
-            });
+            // Unexpected status — do not navigate WebView, return to login page
+            String msg;
+            if (statusCode >= 500) {
+                msg = "服务器错误 (" + statusCode + ")，请稍后重试。";
+            } else {
+                msg = "连接失败 (" + statusCode + ")，请检查服务器地址。";
+            }
+            final String errorMsg = msg;
+            runOnUiThread(() -> showLoginPage(errorMsg));
         }
     }
 
-    private void loadUrl(String url) {
-        if (isNetworkAvailable()) {
-            webView.loadUrl(url);
-        } else {
-            Toast.makeText(this, R.string.error_connection_failed, Toast.LENGTH_LONG).show();
+    /**
+     * Clear all ClawBench-related cookies for the given URL's domain.
+     * This is necessary when switching between server instances on different ports
+     * because browsers/WebView do not isolate cookies by port — only by domain + path.
+     * Without this cleanup, stale cookies from a previous server (e.g., unscoped
+     * "clawbench_session" from port 20000) would be sent alongside the new server's
+     * scoped cookies (e.g., "cb20300_clawbench_session"), causing auth failures or
+     * incorrect behavior on the new server.
+     *
+     * The method parses the cookie string from CookieManager.getCookie(), identifies
+     * all ClawBench cookies (both unscoped and port-scoped variants), and removes
+     * them by setting expired versions.
+     */
+    private void clearClawBenchCookies(CookieManager cm, String url) {
+        String existing = cm.getCookie(url);
+        if (existing == null || existing.isEmpty()) return;
+
+        // Parse the URL to build the cookie removal string with correct attributes
+        String path = "/";
+        boolean secure = url.startsWith("https://");
+        try {
+            android.net.Uri parsed = android.net.Uri.parse(url);
+            String pathPart = parsed.getPath();
+            if (pathPart != null && !pathPart.isEmpty() && !pathPart.equals("/")) {
+                path = pathPart;
+            }
+        } catch (Exception ignored) {}
+
+        // Build removal suffix: expires in the past, correct path, and secure flag if HTTPS
+        String removeSuffix = "=; Path=" + path + "; Max-Age=0" + (secure ? "; Secure" : "");
+
+        // Known ClawBench cookie name patterns (unscoped + cb{port}_ scoped variants)
+        String[] baseNames = {"clawbench_session", "clawbench_project", "clawbench-locale"};
+        for (String pair : existing.split(";")) {
+            String trimmed = pair.trim();
+            int eqIdx = trimmed.indexOf('=');
+            if (eqIdx < 0) continue;
+            String name = trimmed.substring(0, eqIdx).trim();
+            // Remove any ClawBench cookie: unscoped or port-scoped (cb{port}_)
+            for (String base : baseNames) {
+                if (name.equals(base) || name.matches("cb\\d+_" + java.util.regex.Pattern.quote(base))) {
+                    cm.setCookie(url, name + removeSuffix);
+                    break;
+                }
+            }
         }
     }
 
@@ -754,6 +1071,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** Timestamp of the last unhandled back press (for double-back-to-exit) */
+    private long lastBackPressTime = 0;
+    private static final long BACK_PRESS_TIMEOUT = 2000; // ms
+
     @Override
     public void onBackPressed() {
         // If in fullscreen video mode, exit fullscreen first
@@ -764,10 +1085,16 @@ public class MainActivity extends AppCompatActivity {
             }
             return;
         }
-        // If currently on the login page, allow the system back gesture (exit app)
+        // If currently on the login page, apply double-back-to-exit
         String currentUrl = webView.getUrl();
         if (currentUrl != null && currentUrl.equals(LOGIN_HTML_URL)) {
-            super.onBackPressed();
+            if (System.currentTimeMillis() - lastBackPressTime < BACK_PRESS_TIMEOUT) {
+                lastBackPressTime = 0;
+                super.onBackPressed();
+            } else {
+                lastBackPressTime = System.currentTimeMillis();
+                Toast.makeText(this, R.string.press_again_to_exit, Toast.LENGTH_SHORT).show();
+            }
             return;
         }
         // If the WebView is not connected (stuck on black screen or error),
@@ -779,9 +1106,9 @@ public class MainActivity extends AppCompatActivity {
         // Delegate to JS: dispatch a clawbench-back-press event.
         // The JS layer checks if any drill-down page can navigate back.
         // If it can, the JS handler calls goBack() and sets __clawbenchBackHandled = true.
-        // If not, we fall back to the default behavior (super.onBackPressed)
-        // so that non-drill-down pages (chat, terminal, etc.) retain the normal
-        // Android back/edge-swipe-to-exit behavior.
+        // If not, the JS layer implements double-back-to-exit:
+        //   - First press: shows toast tip, sets __clawbenchBackHandled = true (prevents exit)
+        //   - Second press within 2s: sets __clawbenchBackHandled = false (allows exit)
         webView.evaluateJavascript(
             "(function() {" +
             "  if (typeof window.__clawbenchBackHandled === 'undefined') window.__clawbenchBackHandled = false;" +
@@ -792,9 +1119,7 @@ public class MainActivity extends AppCompatActivity {
             result -> {
                 boolean handled = "true".equals(result);
                 if (!handled) {
-                    // No JS handler consumed the back press — fall back to default behavior.
-                    // This allows the system edge-swipe-to-exit to work on pages
-                    // without drill-down navigation (chat, terminal, etc.).
+                    // JS confirmed exit — second press within timeout
                     super.onBackPressed();
                 }
             }
@@ -1203,12 +1528,24 @@ public class MainActivity extends AppCompatActivity {
                 handler.proceed();
                 return;
             }
-            String serverUrl = prefs.getString(KEY_SERVER_URL, "");
-            if (serverUrl.startsWith("https://")) {
-                showSslConfirmationDialog(handler);
-            } else {
-                handler.cancel();
+            // Auto-accept SSL errors if the user already confirmed the certificate
+            // at the OkHttp level during pre-authentication.
+            if (sslCertTrustedByUser) {
+                AppLog.i(TAG, "Auto-accepting SSL error: user already confirmed certificate");
+                handler.proceed();
+                return;
             }
+            // Unexpected SSL error — WebView should not encounter this because
+            // all connections are pre-verified at the OkHttp level.
+            AppLog.w(TAG, "Unexpected SSL error in WebView, returning to login");
+            handler.cancel();
+            loadErrorPending = true;
+            view.setVisibility(View.INVISIBLE);
+            view.postDelayed(() -> {
+                if (!isFinishing() && !isDestroyed() && !webViewConnected && loadErrorPending) {
+                    showLoginPage("SSL 连接异常，请重新连接。");
+                }
+            }, 600);
         }
 
         @Override
@@ -1277,33 +1614,6 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> recreateWebViewAfterCrash(view));
             return true; // We handled the crash — don't let the default behavior show a blank screen
         }
-    }
-
-    /**
-     * Show SSL confirmation dialog for non-localhost HTTPS servers.
-     * Separated from WebViewClient for testability — the logic branches are tested
-     * in WebViewClient; this method only handles the UI dialog creation.
-     */
-    void showSslConfirmationDialog(SslErrorHandler handler) {
-        final boolean[] handlerUsed = {false};
-        new AlertDialog.Builder(this)
-                .setTitle("SSL 证书验证失败")
-                .setMessage("服务器使用了自签名证书，连接可能不安全。\n\n仅当您信任该服务器时才继续。")
-                .setPositiveButton("信任并继续", (dialog, which) -> {
-                    handlerUsed[0] = true;
-                    handler.proceed();
-                })
-                .setNegativeButton("取消连接", (dialog, which) -> {
-                    handlerUsed[0] = true;
-                    handler.cancel();
-                })
-                .setOnDismissListener(dialog -> {
-                    if (!handlerUsed[0]) {
-                        handler.cancel();
-                    }
-                })
-                .setCancelable(false)
-                .show();
     }
 
     /**
@@ -1787,6 +2097,117 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void setTerminalSessionCount(int count) {
             BackgroundService.setTerminalSessionCount(count);
+        }
+
+        /**
+         * Get the saved server list as a JSON array.
+         * Each entry: {"url":"https://host:port", "password":"..."}
+         * Returns "[]" when no servers are saved.
+         */
+        @JavascriptInterface
+        public String getServerList() {
+            try {
+                String json = activity.prefs.getString(KEY_SERVER_LIST, "[]");
+                return json;
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        /**
+         * Save (add or update) a server entry in the server list.
+         * If a server with the same URL already exists, its password is updated
+         * and the entry is moved to the head of the list (most recently used).
+         * @param url      The server URL (e.g. "https://192.168.1.100:20000")
+         * @param password The password for this server
+         */
+        @JavascriptInterface
+        public void saveServer(String url, String password) {
+            activity.saveServerInternal(url, password);
+        }
+
+        /**
+         * Remove a server entry from the server list by URL.
+         * @param url The server URL to remove
+         */
+        @JavascriptInterface
+        public void removeServer(String url) {
+            try {
+                org.json.JSONArray list = new org.json.JSONArray(
+                        activity.prefs.getString(KEY_SERVER_LIST, "[]"));
+                org.json.JSONArray newList = new org.json.JSONArray();
+                for (int i = 0; i < list.length(); i++) {
+                    org.json.JSONObject entry = list.getJSONObject(i);
+                    if (!url.equals(entry.optString("url", ""))) {
+                        newList.put(entry);
+                    }
+                }
+                activity.prefs.edit().putString(KEY_SERVER_LIST, newList.toString()).apply();
+            } catch (Exception e) {
+                AppLog.e(TAG, "removeServer failed", e);
+            }
+        }
+    }
+
+    /**
+     * Save (add or update) a server entry in the server list.
+     * If the URL already exists, its password is updated and the entry is
+     * promoted to the head of the list (most recently used).
+     * Thread-safe: only called on the UI thread.
+     */
+    private void saveServerInternal(String url, String password) {
+        try {
+            org.json.JSONArray list = new org.json.JSONArray(
+                    prefs.getString(KEY_SERVER_LIST, "[]"));
+            org.json.JSONArray reordered = new org.json.JSONArray();
+            org.json.JSONObject updated = null;
+
+            // Find and update existing entry
+            for (int i = 0; i < list.length(); i++) {
+                org.json.JSONObject entry = list.getJSONObject(i);
+                if (url.equals(entry.optString("url", ""))) {
+                    entry.put("password", password);
+                    updated = entry;
+                } else {
+                    reordered.put(entry);
+                }
+            }
+
+            // If not found, create new entry
+            if (updated == null) {
+                updated = new org.json.JSONObject();
+                updated.put("url", url);
+                updated.put("password", password);
+            }
+
+            // Insert at head (most recently used)
+            org.json.JSONArray result = new org.json.JSONArray();
+            result.put(updated);
+            for (int i = 0; i < reordered.length(); i++) {
+                result.put(reordered.get(i));
+            }
+
+            prefs.edit().putString(KEY_SERVER_LIST, result.toString()).apply();
+        } catch (Exception e) {
+            AppLog.e(TAG, "saveServerInternal failed", e);
+        }
+    }
+
+    /**
+     * Log a message from the WebView JS layer through AppLog.
+     * This gives frontend code explicit control over log relay to the server,
+     * independent of the implicit onConsoleMessage capture.
+     * @param level One of "D", "I", "W", "E"
+     * @param tag   Log tag (e.g. "ChatStream", "PortForward")
+     * @param msg   Log message
+     */
+    @JavascriptInterface
+    public void log(String level, String tag, String msg) {
+        switch (level) {
+            case "E": AppLog.e(tag, msg); break;
+            case "W": AppLog.w(tag, msg); break;
+            case "I": AppLog.i(tag, msg); break;
+            default:  AppLog.d(tag, msg); break;
         }
     }
 }

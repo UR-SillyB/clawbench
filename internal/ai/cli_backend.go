@@ -18,28 +18,56 @@ import (
 // JSON output. It implements the AIBackend interface via callbacks for
 // backend-specific behavior.
 type CLIBackend struct {
-	name           string
-	defaultCommand string
-	buildArgs      func(req ChatRequest) []string
-	newParser      func() LineParser
-	filterLine     func(line string) (string, bool)     // nil = skip empty lines only
-	preStart       func(cmd *exec.Cmd, req ChatRequest) // optional, e.g. Claude stdin
+	BackendName   string // exported for sub-package construction; Name() method returns this
+	Cmd           string // default CLI command
+	BuildArgsFn   func(req ChatRequest) []string
+	NewParserFn   func() LineParser
+	FilterLineFn  func(line string) (string, bool)     // nil = skip empty lines only
+	PreStartFn    func(cmd *exec.Cmd, req ChatRequest) // optional, e.g. Claude stdin
+	PreExecHookFn func(cmd *exec.Cmd, req ChatRequest) // optional, e.g. Pi API key injection
 }
 
-// Name returns the backend identifier.
+// truncatePrompt returns a truncated version of the prompt for logging.
+// When fork context is prepended, the prompt can be very long.
+func truncatePrompt(req ChatRequest) string {
+	const maxPromptLog = 200
+	p := req.Prompt
+	if len(p) > maxPromptLog {
+		return p[:maxPromptLog] + "..."
+	}
+	return p
+}
+
+// Name returns the backend identifier (implements AIBackend).
 func (b *CLIBackend) Name() string {
-	return b.name
+	return b.BackendName
 }
 
 // ExecuteStream runs the CLI backend in streaming mode and returns a channel of events.
 //
 //nolint:gocognit,gocyclo // complex stream parsing logic
 func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
-	args := b.buildArgs(req)
+	// Prepend fork context to prompt if present (fork session first message).
+	// This must happen before BuildArgsFn and PreStartFn so the AI receives
+	// the full context via stdin.
+	if req.ForkContext != "" {
+		req.Prompt = req.ForkContext + req.Prompt
+	}
+
+	args := b.BuildArgsFn(req)
 
 	cmdName := req.Command
 	if cmdName == "" {
-		cmdName = b.defaultCommand
+		cmdName = b.Cmd
+	}
+	// Resolve embedded binary path for bare command names (e.g. "opencode")
+	// that aren't found in $PATH but exist under .clawbench/{subDir}/.
+	if !strings.Contains(cmdName, "/") {
+		if spec := model.FindBackendSpecByDefaultCmd(cmdName); spec != nil && spec.EmbeddedSubDir != "" {
+			if p := model.EmbeddedBinaryPath(spec.EmbeddedSubDir); p != "" {
+				cmdName = p
+			}
+		}
 	}
 	cmd := exec.CommandContext(ctx, cmdName, args...)
 	cmd.Dir = req.WorkDir
@@ -59,34 +87,35 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 	}
 
 	// Inject API key from agent_api_keys table if available.
-	// This enables Pi CLI to authenticate without relying on global auth.json.
-	// Env vars are per-process, so concurrent sessions with different providers work correctly.
-	if req.AgentID != "" {
-		injectAgentAPIKey(cmd, req)
+	// This is handled by the backend's PreExecHookFn (e.g. Pi's injectPiAPIKey).
+	// Legacy injectAgentAPIKey has been replaced by per-backend PreExecHookFn.
+	if b.PreExecHookFn != nil {
+		b.PreExecHookFn(cmd, req)
 	}
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
-	if b.preStart != nil {
-		b.preStart(cmd, req)
+	if b.PreStartFn != nil {
+		b.PreStartFn(cmd, req)
 	}
 
 	slog.Info(
 		"executing ai stream command",
-		slog.String("backend", b.name),
+		slog.String("backend", b.BackendName),
 		slog.String("work_dir", req.WorkDir),
 		slog.String("session_id", req.SessionID),
-		slog.String("prompt", req.Prompt),
+		slog.String("prompt", truncatePrompt(req)),
+		slog.Bool("has_fork_context", req.ForkContext != ""),
 		slog.Any("args", args),
 	)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("%s stream: failed to create stdout pipe: %w", b.name, err)
+		return nil, fmt.Errorf("%s stream: failed to create stdout pipe: %w", b.BackendName, err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("%s stream: failed to start command: %w", b.name, err)
+		return nil, fmt.Errorf("%s stream: failed to start command: %w", b.BackendName, err)
 	}
 
 	ch := make(chan StreamEvent, streamChanSize)
@@ -119,7 +148,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 					case <-waitCh:
 						// Process reaped successfully
 					case <-timer.C:
-						slog.Warn(b.name+" stream: cmd.Wait() timed out after context cancellation, releasing process",
+						slog.Warn(b.BackendName+" stream: cmd.Wait() timed out after context cancellation, releasing process",
 							slog.String("session_id", req.SessionID))
 						_ = cmd.Process.Release()
 					}
@@ -131,13 +160,13 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		buf := make([]byte, scannerInitial)
 		scanner.Buffer(buf, scannerMax)
 
-		parser := b.newParser()
+		parser := b.NewParserFn()
 		for scanner.Scan() {
 			line := scanner.Text()
 
 			// Filter lines based on backend-specific logic
-			if b.filterLine != nil {
-				filtered, ok := b.filterLine(line)
+			if b.FilterLineFn != nil {
+				filtered, ok := b.FilterLineFn(line)
 				if !ok {
 					continue
 				}
@@ -161,7 +190,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				}
 			}
 
-			slog.Debug(b.name+" stream: raw line", "session_id", req.SessionID, "line", line)
+			slog.Debug(b.BackendName+" stream: raw line", "session_id", req.SessionID, "line", line)
 			parser.ParseLine(line, ch)
 
 			// Early capture of external session ID (OpenCode ses_xxx, Codex thread_xxx).
@@ -179,7 +208,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			select {
 			case <-ctx.Done():
 				slog.Warn(
-					b.name+" stream: context cancelled",
+					b.BackendName+" stream: context cancelled",
 					slog.String("session_id", req.SessionID),
 				)
 				// Send raw output before returning so it's available for debugging
@@ -205,7 +234,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
 				slog.Warn(
-					b.name+" stream: command cancelled",
+					b.BackendName+" stream: command cancelled",
 					slog.String("session_id", req.SessionID),
 					slog.String("ctx_err", ctx.Err().Error()),
 					slog.String("stderr", stderrBuf.String()),
@@ -221,7 +250,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			}
 			stderr := stderrBuf.String()
 			slog.Error(
-				b.name+" stream: command exited abnormally",
+				b.BackendName+" stream: command exited abnormally",
 				slog.String("session_id", req.SessionID),
 				slog.String("exit_error", err.Error()),
 				slog.String("stderr", stderr),
@@ -237,7 +266,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		} else if stderrBuf.Len() > 0 {
 			stderr := stderrBuf.String()
 			slog.Warn(
-				b.name+" stream: command succeeded with stderr output",
+				b.BackendName+" stream: command succeeded with stderr output",
 				slog.String("session_id", req.SessionID),
 				slog.String("stderr", stderr),
 			)
@@ -277,6 +306,12 @@ func SetAgentAPIKeyLoader(loader AgentAPIKeyLoader) {
 	agentAPIKeyLoader = loader
 }
 
+// GetAgentAPIKeyLoader returns the current agent API key loader function.
+// Used by backend sub-packages (e.g. backends/pi) for PreExecHookFn injection.
+func GetAgentAPIKeyLoader() AgentAPIKeyLoader {
+	return agentAPIKeyLoader
+}
+
 // filterSkipNonJSON returns a line filter that discards lines
 // that don't start with '{' (non-JSON lines from CLI stderr).
 func filterSkipNonJSON() func(string) (string, bool) {
@@ -286,54 +321,4 @@ func filterSkipNonJSON() func(string) (string, bool) {
 		}
 		return line, true
 	}
-}
-
-// injectAgentAPIKey loads the encrypted API key for the agent from the database
-// and injects it as an environment variable on the CLI command. For Pi agents,
-// also adds the --provider flag so Pi knows which provider config to use.
-// If the agent has no stored API key, this is a no-op (Pi falls back to auth.json).
-//
-// For custom URL agents (customURL != ""): the provider stored in agent_api_keys
-// is the agent ID itself (e.g., "custom-agent"), and Pi uses models.json to find
-// the endpoint. We inject --provider {agentID} --api-key {key} directly.
-// For built-in providers: we inject the env var (e.g., OPENAI_API_KEY=sk-...)
-// and --provider {provider}.
-func injectAgentAPIKey(cmd *exec.Cmd, req ChatRequest) {
-	if agentAPIKeyLoader == nil {
-		return
-	}
-
-	agent, ok := model.Agents[req.AgentID]
-	if !ok {
-		return
-	}
-
-	// Only inject for Pi backend (setup-wizard-created agents)
-	if agent.Backend != "pi" {
-		return
-	}
-
-	// Find the provider and API key for this agent — single DB query
-	provider, customURL, apiKey, found := agentAPIKeyLoader(req.AgentID)
-	if !found || apiKey == "" {
-		return // No stored API key — Pi will fall back to auth.json
-	}
-
-	// Custom URL mode: provider is the agent ID (set by setup complete).
-	// Use --provider {agentID} + --api-key so Pi reads models.json for the endpoint.
-	if customURL != "" {
-		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "--provider", provider, "--api-key", apiKey, cmd.Args[len(cmd.Args)-1])
-		slog.Debug("injected custom URL API key for agent", "agent_id", req.AgentID, "provider", provider)
-		return
-	}
-
-	// Built-in provider mode: inject env var + --provider flag
-	spec := model.FindProviderSpec(provider)
-	if spec != nil && spec.EnvVar != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", spec.EnvVar, apiKey))
-		// Add --provider flag to Pi CLI args
-		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "--provider", provider, cmd.Args[len(cmd.Args)-1])
-	}
-
-	slog.Debug("injected API key for agent", "agent_id", req.AgentID, "provider", provider)
 }

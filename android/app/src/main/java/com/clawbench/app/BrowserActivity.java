@@ -6,10 +6,12 @@ import android.content.Intent;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.CookieManager;
 import android.webkit.SslErrorHandler;
+import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -153,8 +155,26 @@ public class BrowserActivity extends AppCompatActivity {
         // WebView client with URL restriction and SSL handling
         webView.setWebViewClient(new SandboxWebViewClient());
 
-        // Chrome client for progress bar
+        // Chrome client for progress bar and console logging
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                String tag = "WebView:" + consoleMessage.messageLevel();
+                String msg = consoleMessage.message() + " (" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + ")";
+                switch (consoleMessage.messageLevel()) {
+                    case ERROR:
+                        Log.e(tag, msg);
+                        break;
+                    case WARNING:
+                        Log.w(tag, msg);
+                        break;
+                    default:
+                        Log.d(tag, msg);
+                        break;
+                }
+                return true;
+            }
+
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 if (newProgress < 100) {

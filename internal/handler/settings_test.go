@@ -16,6 +16,7 @@ import (
 
 	"clawbench/internal/middleware"
 	"clawbench/internal/model"
+	"clawbench/internal/speech"
 	"clawbench/internal/version"
 
 	"github.com/stretchr/testify/assert"
@@ -32,7 +33,6 @@ func TestServeConfig_Get(t *testing.T) {
 	cfg.Upload.MaxFiles = 10
 	cfg.Chat.InitialMessages = 15
 	cfg.Chat.PageSize = 25
-	cfg.Chat.CollapsedHeight = 200
 	cfg.Chat.SystemPromptInterval = 5
 	cfg.Session.MaxCount = 5
 	cfg.Terminal.Enabled = true
@@ -83,7 +83,7 @@ func TestServeConfig_Get(t *testing.T) {
 
 	// Verify specific values
 	chat, _ := resp["chat"].(map[string]any)
-	assert.Equal(t, float64(200), chat["collapsed_height"])
+	assert.Equal(t, float64(5), chat["system_prompt_interval"])
 	assert.Equal(t, float64(15), chat["initial_messages"])
 
 	upload, _ := resp["upload"].(map[string]any)
@@ -328,11 +328,11 @@ func TestServeConfig_Patch_Success(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	cfg.Upload.MaxSizeMB = 100
 	model.ConfigInstance = cfg
 
-	body := `{"chat":{"collapsed_height":200},"upload":{"max_size_mb":50}}`
+	body := `{"chat":{"system_prompt_interval":20},"upload":{"max_size_mb":50}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
@@ -343,13 +343,13 @@ func TestServeConfig_Patch_Success(t *testing.T) {
 	var resp map[string]any
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.NoError(t, err)
-	// Both chat.collapsed_height and upload.max_size_mb are hot-reload fields
+	// Both chat.system_prompt_interval and upload.max_size_mb are hot-reload fields
 	assert.False(t, resp["needs_restart"].(bool), "hot-reload fields should not need restart")
 	changed, ok := resp["changed_cold_fields"].([]any)
 	assert.True(t, ok)
 	assert.Empty(t, changed, "no cold fields should be reported for hot-reload changes")
 
-	assert.Equal(t, 200, model.ConfigInstance.Chat.CollapsedHeight)
+	assert.Equal(t, 20, model.ConfigInstance.Chat.SystemPromptInterval)
 	assert.Equal(t, 50, model.ConfigInstance.Upload.MaxSizeMB)
 }
 
@@ -548,7 +548,7 @@ func TestServeConfig_Patch_NegativeNumber(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
 
-	body := `{"chat":{"collapsed_height":-1}}`
+	body := `{"chat":{"initial_messages":-1}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
@@ -875,12 +875,12 @@ func TestServeConfig_Patch_HotReloadFields_NoRestartNeeded(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	cfg.Upload.MaxSizeMB = 100
 	model.ConfigInstance = cfg
 
 	// Only hot-reload fields — no restart should be needed
-	body := `{"chat":{"collapsed_height":200},"upload":{"max_size_mb":50}}`
+	body := `{"chat":{"system_prompt_interval":20},"upload":{"max_size_mb":50}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
@@ -896,7 +896,7 @@ func TestServeConfig_Patch_HotReloadFields_NoRestartNeeded(t *testing.T) {
 	assert.True(t, ok)
 	assert.Empty(t, changed, "changed_cold_fields should be empty when only hot-reload fields are changed")
 
-	assert.Equal(t, 200, model.ConfigInstance.Chat.CollapsedHeight)
+	assert.Equal(t, 20, model.ConfigInstance.Chat.SystemPromptInterval)
 	assert.Equal(t, 50, model.ConfigInstance.Upload.MaxSizeMB)
 }
 
@@ -939,12 +939,12 @@ func TestServeConfig_Patch_MixedHotAndColdFields(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	cfg.Terminal.Enabled = true
 	model.ConfigInstance = cfg
 
-	// Mix of hot (chat.collapsed_height) and cold (terminal.enabled) fields
-	body := `{"chat":{"collapsed_height":200},"terminal":{"enabled":false}}`
+	// Mix of hot (chat.system_prompt_interval) and cold (terminal.enabled) fields
+	body := `{"chat":{"system_prompt_interval":20},"terminal":{"enabled":false}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
@@ -1675,7 +1675,7 @@ func TestServeConfigPatch_WriteConfigYAMLError(t *testing.T) {
 	model.BinDir = "/nonexistent/path/that/cannot/be/created"
 	defer func() { model.BinDir = origBinDir }()
 
-	body := `{"chat":{"collapsed_height":200}}`
+	body := `{"chat":{"system_prompt_interval":20}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
@@ -1734,18 +1734,18 @@ func TestServeConfigPatch_NoExistingConfig(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	model.ConfigInstance = cfg
 	model.BinDir = t.TempDir()
 
-	body := `{"chat":{"collapsed_height":200}}`
+	body := `{"chat":{"system_prompt_interval":20}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfig, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 200, model.ConfigInstance.Chat.CollapsedHeight)
+	assert.Equal(t, 20, model.ConfigInstance.Chat.SystemPromptInterval)
 }
 
 // --- IsRunningUnderSupervisor ---
@@ -1789,7 +1789,7 @@ func TestServeConfigPassword_WithAutoPasswordFile(t *testing.T) {
 
 	req := newRequest(t, http.MethodPost, "/api/config/password", map[string]string{
 		"current_password": password,
-		"new_password":     "brand-new-password",
+		"new_password":     "brand-new1",
 	})
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfigPassword, req)
@@ -1842,7 +1842,7 @@ func TestServeConfigPassword_RemoteAddrNoPort(t *testing.T) {
 
 	req := newRequest(t, http.MethodPost, "/api/config/password", map[string]string{
 		"current_password": password,
-		"new_password":     "brand-new-password",
+		"new_password":     "brand-new1",
 	})
 	req.RemoteAddr = "192.0.2.1"
 	withAuthCookie(req, model.SessionToken)
@@ -1858,7 +1858,7 @@ func TestServeConfigPatch_MalformedExistingConfig(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	model.ConfigInstance = cfg
 
 	binDir := t.TempDir()
@@ -1870,14 +1870,14 @@ func TestServeConfigPatch_MalformedExistingConfig(t *testing.T) {
 	model.BinDir = binDir
 	defer func() { model.BinDir = origBinDir }()
 
-	body := `{"chat":{"collapsed_height":200}}`
+	body := `{"chat":{"system_prompt_interval":20}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfig, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 200, model.ConfigInstance.Chat.CollapsedHeight)
+	assert.Equal(t, 20, model.ConfigInstance.Chat.SystemPromptInterval)
 }
 
 // --- applyConfigPatch: TTS model, voice, format, speed, max_cache_files ---
@@ -2112,27 +2112,149 @@ func TestServeConfigPatch_WithExistingConfigBackup(t *testing.T) {
 	defer teardown()
 
 	cfg := model.Config{}
-	cfg.Chat.CollapsedHeight = 150
+	cfg.Chat.SystemPromptInterval = 10
 	model.ConfigInstance = cfg
 
 	binDir := t.TempDir()
 	configDir := filepath.Join(binDir, "config")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("chat:\n  collapsed_height: 100\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("chat:\n  system_prompt_interval: 5\n"), 0o644))
 
 	origBinDir := model.BinDir
 	model.BinDir = binDir
 	defer func() { model.BinDir = origBinDir }()
 
-	body := `{"chat":{"collapsed_height":200}}`
+	body := `{"chat":{"system_prompt_interval":20}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfig, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 200, model.ConfigInstance.Chat.CollapsedHeight)
+	assert.Equal(t, 20, model.ConfigInstance.Chat.SystemPromptInterval)
 
 	_, err := os.Stat(filepath.Join(configDir, "config.yaml.bak"))
 	assert.NoError(t, err, "backup file should exist")
+}
+
+func TestApplyHotReloadGlobals_TTSVoice_EdgeTTS(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.EdgeTTSProvider{Voice: "original-voice", Rate: "+0%"}
+	model.ConfigInstance.TTS.Voice = "new-voice"
+	model.ConfigInstance.TTS.Speed = 0 // don't trigger speed logic
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.EdgeTTSProvider)
+	assert.Equal(t, "new-voice", p.Voice)
+}
+
+func TestApplyHotReloadGlobals_TTSVoice_Kokoro(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.KokoroProvider{Voice: "original-voice"}
+	model.ConfigInstance.TTS.Voice = "new-kokoro-voice"
+	model.ConfigInstance.TTS.Speed = 0
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.KokoroProvider)
+	assert.Equal(t, "new-kokoro-voice", p.Voice)
+}
+
+func TestApplyHotReloadGlobals_TTSSpeed_EdgeTTS(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.EdgeTTSProvider{Rate: "+0%"}
+	model.ConfigInstance.TTS.Voice = ""
+	model.ConfigInstance.TTS.Speed = 1.5 // 50% faster
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.EdgeTTSProvider)
+	assert.Equal(t, "+50%", p.Rate)
+}
+
+func TestApplyHotReloadGlobals_TTSSlow_EdgeTTS(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.EdgeTTSProvider{Rate: "+0%"}
+	model.ConfigInstance.TTS.Voice = ""
+	model.ConfigInstance.TTS.Speed = 0.5 // 50% slower => -50%
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.EdgeTTSProvider)
+	assert.Equal(t, "-50%", p.Rate)
+}
+
+func TestApplyHotReloadGlobals_TTSSpeed_Kokoro(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.KokoroProvider{Speed: 1.0}
+	model.ConfigInstance.TTS.Voice = ""
+	model.ConfigInstance.TTS.Speed = 1.2
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.KokoroProvider)
+	assert.Equal(t, 1.2, p.Speed)
+}
+
+func TestApplyHotReloadGlobals_TTSSpeed_Piper(t *testing.T) {
+	origProvider := speechProvider
+	defer func() { speechProvider = origProvider }()
+
+	speechProvider = &speech.PiperProvider{LengthScale: 1.0}
+	model.ConfigInstance.TTS.Voice = ""
+	model.ConfigInstance.TTS.Speed = 2.0
+	model.ConfigInstance.TTS.Piper.LengthScale = 0 // not explicitly set
+
+	applyHotReloadGlobals()
+
+	p := speechProvider.(*speech.PiperProvider)
+	assert.InDelta(t, 0.5, p.LengthScale, 0.01)
+}
+
+func TestServeConfig_Get_RequireAuthForLocalhost(t *testing.T) {
+	_, teardown := setupTestEnv(t)
+	defer teardown()
+
+	model.ConfigInstance = model.Config{}
+	model.ConfigInstance.RequireAuthForLocalhost = true
+
+	req := newRequest(t, http.MethodGet, "/api/config", nil)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeConfig, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, true, resp["require_auth_for_localhost"])
+}
+
+func TestServeConfig_Patch_RequireAuthForLocalhost(t *testing.T) {
+	_, teardown := setupTestEnv(t)
+	defer teardown()
+
+	model.ConfigInstance = model.Config{}
+	model.ConfigInstance.RequireAuthForLocalhost = false
+
+	body := `{"require_auth_for_localhost":true}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeConfig, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, model.ConfigInstance.RequireAuthForLocalhost)
+	assert.True(t, model.RequireAuthForLocalhost)
 }

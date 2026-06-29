@@ -72,7 +72,6 @@
 # chat:
 #   initial_messages: 20    # Number of messages loaded initially (default: 20) / 初始加载的消息条数（默认: 20）
 #   page_size: 20           # Number of messages per lazy-load batch (default: 20) / 每次懒加载追加的消息条数（默认: 20）
-#   collapsed_height: 150   # Collapsed height for historical messages in pixels (default: 150) / 历史消息折叠高度（默认: 150）
 #   system_prompt_interval: 10  # Re-inject system prompt every N assistant turns for CLI backends without --system-prompt (0=never, default: 10) / 每N轮助手回复重新注入系统提示词（0=不重注入，默认: 10）
 
 # Session limit / 会话数量限制
@@ -166,7 +165,7 @@ tts:
 #   "codex"     — Codex CLI / 使用 Codex CLI
 #   "qoder"     — Qoder CLI (Alibaba) / 使用 Qoder CLI（阿里编码智能体）
 #   "vecli"     — VeCLI (Volcengine Doubao) / 使用 VeCLI（火山引擎 Doubao）
-#   "deepseek"  — DeepSeek TUI (requires v0.8.33+) / 使用 DeepSeek TUI（需 v0.8.33+）
+#   "deepseek"  — CodeWhale (formerly DeepSeek TUI, requires v0.8.33+) / 使用 CodeWhale（原 DeepSeek TUI，需 v0.8.33+）
 #   "pi"        — Pi CLI (minimalist coding agent) / 使用 Pi CLI（极简编程智能体）
 summarize:
   backend: "simple"                                     # Summarization backend (default: "simple") / 总结后端（默认: simple）
@@ -179,6 +178,8 @@ summarize:
 
 # Default agent (optional; leave empty to use the first agent in database)
 # 默认智能体（可选，留空则使用数据库中的第一个智能体）
+# The default embedded agent (bundled with the installer) is opencode when --embed-agent=opencode is used.
+# 默认嵌入式智能体（随安装包附带）在使用 --embed-agent=opencode 时为 opencode。
 # Available agents depend on your database / 可用智能体取决于数据库
 default_agent: "codebuddy"
 

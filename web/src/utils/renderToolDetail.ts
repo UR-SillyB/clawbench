@@ -8,6 +8,9 @@ import { detectLang, highlightLine } from './diff.ts'
 import { resolveFilePath, fileOpenButtonHtml } from '@/composables/useFilePathAnnotation.ts'
 import { localhostOpenButtonHtml } from '@/composables/useLocalhostAnnotation.ts'
 import { useAppMode } from '@/composables/useAppMode.ts'
+import { appLog } from '@/utils/appLog'
+
+const TAG = 'renderToolDetail'
 import { gt } from '@/composables/useLocale'
 import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
@@ -1378,7 +1381,7 @@ async function respondPermission(sessionId: string, toolCallId: string, optionId
     })
     return resp.ok
   } catch (e) {
-    console.error('permission respond failed:', e)
+    appLog.e(TAG, 'permission respond failed:', e)
     return false
   }
 }
@@ -1408,7 +1411,7 @@ registerToolActionHandler('AskUserQuestion', (event, emit) => {
     event.preventDefault()
     const view = optionEl.closest('.ask-question-view')
     if (view && !view.classList.contains('ask-submitted')) {
-      const multiSelect = optionEl.closest('.ask-question-item')?.dataset.multi === 'true'
+      const multiSelect = (optionEl.closest('.ask-question-item') as HTMLElement | null)?.dataset.multi === 'true'
 
       if (multiSelect) {
         optionEl.classList.toggle('selected')
@@ -1483,7 +1486,7 @@ registerToolActionHandler('AskUserQuestion', (event, emit) => {
 
 // ── PermissionApproval action handler ──
 
-registerToolActionHandler('PermissionApproval', (event, emit) => {
+registerToolActionHandler('PermissionApproval', (event, _emit) => {
   const target = event.target as HTMLElement
 
   // Button click
@@ -1507,7 +1510,7 @@ registerToolActionHandler('PermissionApproval', (event, emit) => {
     const toolCallId = toolDetail?.dataset?.toolCallId || ''
 
     if (!toolCallId) {
-      console.warn('PermissionApproval: no toolCallId found')
+      appLog.w(TAG, 'PermissionApproval: no toolCallId found')
       return true
     }
 

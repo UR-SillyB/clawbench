@@ -1,28 +1,36 @@
 /**
  * useFileRefresh — shared logic for refreshing the currently viewed file
- * while preserving scroll position and flash-highlighting changed characters.
+ * while preserving scroll position and highlighting changes.
  *
  * Used by three independent refresh triggers:
  * 1. Manual refresh (refresh button in FileHeader / FileManager)
  * 2. fsnotify auto-refresh (useFileWatch SSE file_change event)
  * 3. Chat-driven refresh (ChatPanel onFileModified callback)
  *
- * Two-phase refresh when deletions are detected:
- *   Phase 1: Red-flash deleted characters in old content → wait ~1.2s
- *   Phase 2: Update store with new content → blue-flash added characters
- *
- * Two flash mechanisms:
- * - flashRanges (line+char offset): Used by CodePreview for code/raw files
- * - flashTextSnippets (text strings): Used by MarkdownPreview for rendered HTML,
- *   where line/offset mapping is lost after markdown→HTML transformation
+ * Two highlight mechanisms within a unified flow:
+ * - Markdown rendered mode: block-level diff markers (no flash animation)
+ * - Code/raw files: line-level diff + two-phase flash (red delete → blue add)
  */
 import { ref, watch } from 'vue'
 import { store } from '@/stores/app.ts'
-import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
-import { computeDiff, wholeLineRanges, charMapToRanges } from '@/utils/diffUtils.ts'
+import { computeDiff, wholeLineRanges } from '@/utils/diffUtils.ts'
 import type { LineDiff } from '@/utils/diffUtils.ts'
+import {
+  computeMarkdownDiff,
+  offscreenExtractBlocks,
+  diffMarkers,
+  diffOldContent,
+  diffOldFilePath,
+  clearDiffMarkers,
+  extractBlocks,
+  computeCodeDiffMarkers,
+  type DiffMarker,
+  type BlockInfo,
+  type DiffResult,
+} from '@/composables/useMarkdownDiff.ts'
+import { getFileType } from '@/utils/fileType.ts'
 
-// ─── Flash state (consumed by CodePreview & MarkdownPreview) ───
+// ─── Flash state (consumed by CodePreview for code/raw files) ───
 
 export type FlashType = 'delete' | 'add'
 
@@ -41,110 +49,25 @@ export interface FlashRange {
  * reactivity to trigger the watch in CodePreview.
  */
 export const flashRanges = ref<FlashRange[]>([])
-
-/**
- * Text snippets that changed — MarkdownPreview reads this to search
- * for matching text in the rendered DOM and wrap it in flash spans.
- * Used for rendered markdown where line/offset mapping is unavailable.
- */
-export const flashTextSnippets = ref<string[]>([])
 export const flashType = ref<FlashType>('add')
 let flashTimer: ReturnType<typeof setTimeout> | null = null
 
 // Generation counter to prevent race conditions with concurrent refreshCurrentFile calls
 let refreshGeneration = 0
+// Whether a refresh is currently in-flight
+let refreshing = false
+// If a new refresh arrives while one is in-flight, we defer it
+let pendingRefreshOptions: { loadDir?: boolean; clearOnError?: boolean } | null = null
 
 function clearFlash() {
     if (flashTimer) { clearTimeout(flashTimer); flashTimer = null }
     flashRanges.value = []
-    flashTextSnippets.value = []
     flashType.value = 'add'
 }
 
 function scheduleClearFlash(ms: number) {
     if (flashTimer) clearTimeout(flashTimer)
-    flashTimer = setTimeout(() => { flashRanges.value = []; flashTextSnippets.value = []; flashType.value = 'add'; flashTimer = null }, ms)
-}
-
-// ─── Extract text snippets from diff result (for Markdown rendered mode) ───
-
-/** DOMParser singleton (reused across calls) */
-const domParser = new DOMParser()
-
-/**
- * Convert markdown source text to plain text that matches the rendered DOM.
- * Uses the same renderMarkdown pipeline as MarkdownPreview, then extracts
- * textContent — so headings, bold, code blocks, lists etc. are all handled
- * correctly without any fragile regex stripping.
- */
-function markdownToPlainText(mdText) {
-    if (!mdText) return ''
-    const html = renderMarkdown(mdText, { sanitize: false })
-    const doc = domParser.parseFromString(html, 'text/html')
-    return doc.body.textContent || ''
-}
-
-/**
- * Extract changed text snippets from the diff result and source text.
- * Uses renderMarkdown + DOMParser to get rendered plain text, so snippets
- * match what appears in the rendered DOM (not raw markdown source).
- * Filters out very short snippets (1-2 chars) to reduce false positives.
- */
-function extractSnippets(text, diff, mode) {
-    // Convert the full source text to rendered plain text, line by line.
-    // We render each line individually so we can map line numbers.
-    const lines = text.split('\n')
-    const renderedLines = lines.map(line => markdownToPlainText(line))
-
-    const snippets = []
-    const MIN_SNIPPET_LEN = 3
-
-    const collect = (lineNum, charStart, charEnd) => {
-        // Get the rendered plain text for this line
-        const renderedLine = renderedLines[lineNum - 1]
-        if (!renderedLine) return
-
-        // For char-level ranges, extract the corresponding portion from rendered text.
-        // The char offsets are in the raw markdown source, but after rendering
-        // the offsets shift. For whole-line changes we use the full rendered line.
-        // For char-level changes, we take the full rendered line (the char offsets
-        // from the raw source don't map 1:1 to rendered text).
-        const snippet = (charStart === 0 && charEnd === Infinity)
-            ? renderedLine.trim()
-            : renderedLine.trim()
-
-        if (snippet.length >= MIN_SNIPPET_LEN) {
-            snippets.push(snippet)
-            // Also add individual words as fallback for cross-element matching
-            const words = snippet.split(/[\s,;:]+/).filter(w => w.length >= MIN_SNIPPET_LEN)
-            for (const w of words) {
-                if (w !== snippet) snippets.push(w)
-            }
-        }
-    }
-
-    if (mode === 'delete') {
-        for (const lineNum of diff.deletedInOld) {
-            collect(lineNum, 0, Infinity)
-        }
-        for (const [lineNum, ranges] of diff.deletedChars) {
-            for (const { start, end } of ranges) {
-                collect(lineNum, start, end)
-            }
-        }
-    } else {
-        for (const lineNum of diff.addedInNew) {
-            collect(lineNum, 0, Infinity)
-        }
-        for (const [lineNum, ranges] of diff.addedChars) {
-            for (const { start, end } of ranges) {
-                collect(lineNum, start, end)
-            }
-        }
-    }
-
-    // Deduplicate and limit count
-    return [...new Set(snippets)].slice(0, 30)
+    flashTimer = setTimeout(() => { flashRanges.value = []; flashType.value = 'add'; flashTimer = null }, ms)
 }
 
 // ─── Scroll helpers ───
@@ -153,15 +76,26 @@ function getScrollContainer(): HTMLElement | null {
   return (document.querySelector('.markdown-body') || document.querySelector('.raw-content-pre')) as HTMLElement | null
 }
 
-function getScrollRatio(el: HTMLElement | null): number {
-  if (!el) return 0
-  const maxScroll = el.scrollHeight - el.clientHeight
-  if (maxScroll <= 0) return 0
-  return el.scrollTop / maxScroll
+/**
+ * Save scroll position as { scrollTop, lineHeight } so we can restore it
+ * even after content changes alter scrollHeight. Uses pixel scrollTop directly
+ * rather than a ratio, which breaks when content is added/removed.
+ */
+function getScrollPosition(): number {
+  const el = getScrollContainer()
+  return el ? el.scrollTop : 0
 }
 
-function restoreScrollRatio(ratio: number): void {
-  if (ratio <= 0) return
+/**
+ * Restore scroll position after content update.
+ * Uses the saved scrollTop pixel value directly — this keeps the viewport
+ * anchored to the same absolute position. If content was added above the
+ * viewport, the user sees new content scroll in from the top, which is
+ * the natural behavior. If content was removed above, the viewport
+ * stays at the same absolute offset.
+ */
+function restoreScrollPosition(scrollTop: number): void {
+  if (scrollTop <= 0) return
   const startTime = Date.now()
   const MAX_WAIT = 3000
 
@@ -171,12 +105,12 @@ function restoreScrollRatio(ratio: number): void {
       if (Date.now() - startTime < MAX_WAIT) requestAnimationFrame(tryRestore)
       return
     }
-    const maxScroll = el.scrollHeight - el.clientHeight
-    if (maxScroll <= 0) {
+    // Only restore if the content is tall enough
+    if (el.scrollHeight - el.clientHeight <= 0) {
       if (Date.now() - startTime < MAX_WAIT) requestAnimationFrame(tryRestore)
       return
     }
-    el.scrollTop = ratio * maxScroll
+    el.scrollTop = Math.min(scrollTop, el.scrollHeight - el.clientHeight)
   }
   requestAnimationFrame(() => requestAnimationFrame(tryRestore))
 }
@@ -196,12 +130,39 @@ async function prefetchFileContent(path: string): Promise<string | null> {
     }
 }
 
+// ─── Is current file a markdown file? ───
+
+function isCurrentFileMarkdown(): boolean {
+    const name = store.state.currentFile?.name
+    if (!name) return false
+    return getFileType(name)?.isMarkdown || false
+}
+
+/**
+ * Check if a markdown file is currently displayed in rendered mode
+ * (vs raw/code mode). Returns true when `.markdown-body .markdown-content`
+ * is present in the DOM.
+ */
+function isMarkdownRenderedMode(): boolean {
+    return !!document.querySelector('.markdown-body .markdown-content')
+}
+
+/**
+ * Get old block list from the live DOM for markdown block-level diff.
+ */
+function getOldBlockList() {
+    const content = document.querySelector('.markdown-body .markdown-content') || document.querySelector('.markdown-body')
+    if (!content) return []
+    return extractBlocks(content)
+}
+
 // ─── Clear flash on file navigation ───
-// When the user navigates to a different file (not via refreshCurrentFile),
-// stale flash ranges would show on the new file. Watch for path changes.
 
 watch(() => store.state.currentFile?.path, (newPath, oldPath) => {
-    if (newPath !== oldPath) clearFlash()
+    if (newPath !== oldPath) {
+        clearFlash()
+        clearDiffMarkers()
+    }
 })
 
 // ─── Main refresh function ───
@@ -211,8 +172,16 @@ const ADD_FLASH_CLEAR_MS = 2000
 
 /**
  * Refresh the currently viewed file content while preserving scroll position.
- * When changes are detected, flash-highlights deleted chars (red) first,
- * then updates the content and flash-highlights added chars (blue).
+ *
+ * Unified flow:
+ * - Markdown rendered mode: block-level diff + persistent markers (no flash)
+ * - Code/raw files: line-level diff + two-phase flash (red delete → blue add) + persistent markers
+ *
+ * Deduplication: if a refresh is already in-flight, the new call is deferred
+ * and merged — when the current refresh completes, one more refresh runs with
+ * the latest options.  This prevents concurrent refreshes from fighting over
+ * flashRanges / diffMarkers (which caused the "first edit misses deletion
+ * flash and markers" bug).
  *
  * @param options.loadDir - Also refresh the directory listing (default: false)
  * @param options.clearOnError - If the file fails to load, clear currentFile (default: false)
@@ -221,6 +190,48 @@ export async function refreshCurrentFile(options: {
   loadDir?: boolean
   clearOnError?: boolean
 } = {}): Promise<void> {
+  // Dedup: if a refresh is already running, just remember to do another one after
+  if (refreshing) {
+    // Merge: if either wants loadDir or clearOnError, keep that
+    if (pendingRefreshOptions) {
+      if (options.loadDir) pendingRefreshOptions.loadDir = true
+      if (options.clearOnError) pendingRefreshOptions.clearOnError = true
+    } else {
+      pendingRefreshOptions = { ...options }
+    }
+    return
+  }
+  refreshing = true
+
+  try {
+    await doRefreshCurrentFile(options)
+  } finally {
+    refreshing = false
+    // If a refresh was deferred while we were running, execute it now
+    if (pendingRefreshOptions) {
+      const opts = pendingRefreshOptions
+      pendingRefreshOptions = null
+      await refreshCurrentFile(opts)
+    }
+  }
+}
+
+/**
+ * Internal implementation — always runs serially (caller ensures dedup).
+ *
+ * Unified flow for both markdown and code files:
+ *   1. Common preamble (save old content, scroll ratio, prefetch)
+ *   2. Diff computation (branch: block-level for markdown, line-level for code)
+ *   3. Phase 1: Red-flash deletions (code only)
+ *   4. Phase 2: Store update (common)
+ *   5. Apply markers (common)
+ *   6. Phase 3: Blue-flash additions (code only)
+ *   7. Restore scroll (common)
+ */
+async function doRefreshCurrentFile(options: {
+  loadDir?: boolean
+  clearOnError?: boolean
+}): Promise<void> {
   const { loadDir = false, clearOnError = false } = options
   const gen = ++refreshGeneration
 
@@ -231,9 +242,8 @@ export async function refreshCurrentFile(options: {
   const oldContent = currentFile?.content ?? null
   const oldPath = currentFilePath
 
-  // Save scroll position as ratio before refresh
-  const scrollEl = getScrollContainer()
-  const scrollRatio = getScrollRatio(scrollEl)
+  // Save scroll position before refresh
+  const savedScrollTop = getScrollPosition()
 
   // Refresh directory listing if requested
   if (loadDir && store.state.currentDir !== undefined) {
@@ -242,76 +252,106 @@ export async function refreshCurrentFile(options: {
 
   if (!currentFilePath) return
 
-  // ─── Phase 0: Pre-fetch new content for diff ───
-  let newContent: string | null = null
-  let hasDeletions = false
-  let diffResult: LineDiff | null = null
+  // Determine diff mode
+  const isMarkdown = isCurrentFileMarkdown() && isMarkdownRenderedMode()
 
-  if (oldContent) {
-      newContent = await prefetchFileContent(currentFilePath)
-      // Abort if a newer refresh has started
-      if (gen !== refreshGeneration) return
+  // ─── Phase 0: Pre-fetch + diff computation ───
+
+  const newContent = await prefetchFileContent(currentFilePath)
+  if (gen !== refreshGeneration) return
+
+  let diffResult: LineDiff | null = null
+  let codeMarkers: DiffMarker[] | null = null
+  let markdownResult: DiffResult | null = null
+  let hasDeletions = false
+
+  if (isMarkdown) {
+      // Block-level diff for rendered markdown
+      const oldBlocks = getOldBlockList()
+      const newBlocks: BlockInfo[] = newContent !== null ? offscreenExtractBlocks(newContent) : []
+      markdownResult = (oldBlocks.length > 0 && newBlocks.length > 0 && newContent !== oldContent)
+          ? computeMarkdownDiff(oldBlocks, newBlocks)
+          : null
+  } else if (oldContent) {
+      // Line-level diff for code/raw files
       if (newContent !== null && newContent !== oldContent) {
           diffResult = computeDiff(oldContent, newContent)
           hasDeletions = diffResult.deletedInOld.length > 0 || diffResult.deletedChars.size > 0
+          codeMarkers = computeCodeDiffMarkers(diffResult, oldContent, newContent)
       }
   }
 
-  // ─── Phase 1: Red-flash deletions (if any) ───
-  if (hasDeletions && diffResult) {
-      // For CodePreview (code files): line+offset ranges
+  // ─── Phase 1: Red-flash deletions (code only) ───
+
+  if (!isMarkdown && hasDeletions && diffResult) {
       const delRanges: FlashRange[] = [
           ...wholeLineRanges(diffResult.deletedInOld),
-          ...charMapToRanges(diffResult.deletedChars),
+          ...wholeLineRanges([...diffResult.deletedChars.keys()]),
       ]
-      // For MarkdownPreview (rendered mode): text snippets to search in DOM
-      const delSnippets = extractSnippets(oldContent, diffResult, 'delete')
 
       flashRanges.value = delRanges
-      flashTextSnippets.value = delSnippets
       flashType.value = 'delete'
 
-      // Wait for user to see the red flash
       await new Promise<void>(resolve => setTimeout(resolve, DELETE_FLASH_MS))
 
-      // Abort if a newer refresh started or user navigated away
+      // Stale generation: just exit — don't clearFlash because the current
+      // generation may have already set its own flash state.
       if (gen !== refreshGeneration || store.state.currentFile?.path !== oldPath) {
-          clearFlash()
           return
       }
   }
 
-  // ─── Phase 2: Update store with new content ───
+  // ─── Phase 2: Update store with new content (common) ───
+
   await store.selectFile(
     currentFilePath,
     currentFile?.isImage,
     currentFile?.isAudio,
-    false, // addToHistory=false — this is a refresh, not navigation
+    false,
   )
 
-  // Abort if a newer refresh started
   if (gen !== refreshGeneration) return
 
-  // Clear file on error if requested
   if (clearOnError && store.state.currentFile?.error) {
     store.state.currentFile = null
-    clearFlash()
+    if (isMarkdown) clearDiffMarkers()
+    else clearFlash()
     return
   }
 
-  // ─── Phase 3: Blue-flash additions ───
-  if (diffResult) {
+  // ─── Apply markers (common) ───
+
+  if (isMarkdown) {
+      if (markdownResult && markdownResult.hasChanges) {
+          diffMarkers.value = markdownResult.markers
+          diffOldContent.value = oldContent
+          diffOldFilePath.value = currentFilePath
+      } else {
+          clearDiffMarkers()
+      }
+  } else {
+      if (codeMarkers && codeMarkers.length > 0) {
+          diffMarkers.value = codeMarkers
+          diffOldContent.value = oldContent
+          diffOldFilePath.value = currentFilePath
+      } else {
+          clearDiffMarkers()
+      }
+  }
+
+  // ─── Phase 3: Blue-flash additions (code only) ───
+
+  if (isMarkdown) {
+      // Markdown path: no flash animation, clear any stale flash state
+      clearFlash()
+  } else if (diffResult) {
       const addRanges: FlashRange[] = [
           ...wholeLineRanges(diffResult.addedInNew),
-          ...charMapToRanges(diffResult.addedChars),
+          ...wholeLineRanges([...diffResult.addedChars.keys()]),
       ]
-      const addSnippets = newContent
-          ? extractSnippets(newContent, diffResult, 'add')
-          : []
 
-      if (addRanges.length > 0 || addSnippets.length > 0) {
+      if (addRanges.length > 0) {
           flashRanges.value = addRanges
-          flashTextSnippets.value = addSnippets
           flashType.value = 'add'
           scheduleClearFlash(ADD_FLASH_CLEAR_MS)
       } else {
@@ -321,8 +361,9 @@ export async function refreshCurrentFile(options: {
       clearFlash()
   }
 
-  // Restore scroll position
-  restoreScrollRatio(scrollRatio)
+  // ─── Restore scroll position (common) ───
+
+  restoreScrollPosition(savedScrollTop)
 }
 
-export { getScrollContainer, getScrollRatio, restoreScrollRatio }
+export { getScrollContainer, getScrollPosition, restoreScrollPosition }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -161,150 +162,88 @@ func TestServeFileRename(t *testing.T) {
 	})
 }
 
-func TestServeFileEditLine(t *testing.T) {
-	t.Run("EditSpecificLine_ContentUpdated", func(t *testing.T) {
+func TestServeFileWrite(t *testing.T) {
+	t.Run("WriteFullContent_Succeeds", func(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
 
-		createTestFile(t, env.ProjectDir, "edit.txt", "line1\nline2\nline3")
+		createTestFile(t, env.ProjectDir, "write.txt", "old content")
 
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":    "edit.txt",
-			"lineNum": 2,
-			"content": "LINE2_EDITED",
+		req := newRequest(t, http.MethodPost, "/api/file/write", map[string]interface{}{
+			"path":    "write.txt",
+			"content": "new content",
 		})
 		withProjectCookie(req, env.ProjectDir)
 
-		w := callHandler(ServeFileEditLine, req)
+		w := callHandler(ServeFileWrite, req)
 		assertOK(t, w)
 
-		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "edit.txt"))
+		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "write.txt"))
 		assert.NoError(t, err)
-		assert.Equal(t, "line1\nLINE2_EDITED\nline3", string(data))
+		assert.Equal(t, "new content", string(data))
 	})
 
-	t.Run("InsertLineAbove", func(t *testing.T) {
+	t.Run("AtomicWrite_NoTempFileLeft", func(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
 
-		createTestFile(t, env.ProjectDir, "insert.txt", "line1\nline2\nline3")
+		createTestFile(t, env.ProjectDir, "atomic.txt", "before")
 
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":        "insert.txt",
-			"lineNum":     2,
-			"insertAbove": true,
-			"content":     "INSERTED",
+		req := newRequest(t, http.MethodPost, "/api/file/write", map[string]interface{}{
+			"path":    "atomic.txt",
+			"content": "after",
 		})
 		withProjectCookie(req, env.ProjectDir)
 
-		w := callHandler(ServeFileEditLine, req)
+		w := callHandler(ServeFileWrite, req)
 		assertOK(t, w)
 
-		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "insert.txt"))
+		// No temp files left behind
+		entries, err := os.ReadDir(env.ProjectDir)
 		assert.NoError(t, err)
-		lines := splitLines(string(data))
-		assert.Equal(t, 4, len(lines))
-		assert.Equal(t, "", lines[1]) // empty line inserted above line 2
+		for _, e := range entries {
+			assert.False(t, strings.HasPrefix(e.Name(), ".clawbench-write-"), "temp file left behind: %s", e.Name())
+		}
 	})
 
-	t.Run("InsertLineBelow", func(t *testing.T) {
+	t.Run("MissingPath_Returns400", func(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
 
-		createTestFile(t, env.ProjectDir, "insert.txt", "line1\nline2\nline3")
-
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":        "insert.txt",
-			"lineNum":     2,
-			"insertBelow": true,
-			"content":     "INSERTED",
+		req := newRequest(t, http.MethodPost, "/api/file/write", map[string]interface{}{
+			"content": "data",
 		})
 		withProjectCookie(req, env.ProjectDir)
 
-		w := callHandler(ServeFileEditLine, req)
-		assertOK(t, w)
-
-		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "insert.txt"))
-		assert.NoError(t, err)
-		lines := splitLines(string(data))
-		assert.Equal(t, 4, len(lines))
-		assert.Equal(t, "", lines[2]) // empty line inserted below line 2
-	})
-
-	t.Run("DeleteLine", func(t *testing.T) {
-		env, teardown := setupTestEnv(t)
-		defer teardown()
-
-		createTestFile(t, env.ProjectDir, "delete.txt", "line1\nline2\nline3")
-
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":    "delete.txt",
-			"lineNum": 2,
-			"delete":  true,
-		})
-		withProjectCookie(req, env.ProjectDir)
-
-		w := callHandler(ServeFileEditLine, req)
-		assertOK(t, w)
-
-		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "delete.txt"))
-		assert.NoError(t, err)
-		assert.Equal(t, "line1\nline3", string(data))
-	})
-
-	t.Run("LineNumberOutOfRange_Returns400", func(t *testing.T) {
-		env, teardown := setupTestEnv(t)
-		defer teardown()
-
-		createTestFile(t, env.ProjectDir, "short.txt", "only_one_line")
-
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":    "short.txt",
-			"lineNum": 99,
-			"content": "nope",
-		})
-		withProjectCookie(req, env.ProjectDir)
-
-		w := callHandler(ServeFileEditLine, req)
+		w := callHandler(ServeFileWrite, req)
 		assertStatus(t, w, http.StatusBadRequest)
 	})
 
-	t.Run("MissingPathOrInvalidLineNum_Returns400", func(t *testing.T) {
+	t.Run("PathTraversal_Returns403", func(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
 
-		// Missing path
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"lineNum": 1,
-			"content": "x",
+		req := newRequest(t, http.MethodPost, "/api/file/write", map[string]interface{}{
+			"path":    "../../etc/passwd",
+			"content": "hacked",
 		})
 		withProjectCookie(req, env.ProjectDir)
-		w := callHandler(ServeFileEditLine, req)
-		assertStatus(t, w, http.StatusBadRequest)
 
-		// Invalid lineNum (0)
-		req2 := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
-			"path":    "file.txt",
-			"lineNum": 0,
-			"content": "x",
-		})
-		withProjectCookie(req2, env.ProjectDir)
-		w2 := callHandler(ServeFileEditLine, req2)
-		assertStatus(t, w2, http.StatusBadRequest)
+		w := callHandler(ServeFileWrite, req)
+		assert.Equal(t, http.StatusForbidden, w.Code)
 	})
 
 	t.Run("NoProjectCookie_Returns403", func(t *testing.T) {
 		_, teardown := setupTestEnv(t)
 		defer teardown()
 
-		req := newRequest(t, http.MethodPost, "/api/file/edit-line", map[string]interface{}{
+		req := newRequest(t, http.MethodPost, "/api/file/write", map[string]interface{}{
 			"path":    "file.txt",
-			"lineNum": 1,
-			"content": "x",
+			"content": "data",
 		})
 
-		w := callHandler(ServeFileEditLine, req)
-		assertStatus(t, w, http.StatusForbidden)
+		w := callHandler(ServeFileWrite, req)
+		assert.Equal(t, http.StatusForbidden, w.Code)
 	})
 }
 
@@ -825,6 +764,28 @@ func TestServeFileMove(t *testing.T) {
 		w := callHandler(ServeFileMove, req)
 		assertStatus(t, w, http.StatusForbidden)
 	})
+
+	t.Run("SameSourceAndDest_ReturnsOK_NoOp", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		createTestFile(t, env.ProjectDir, "same.txt", "don't lose me")
+
+		req := newRequest(t, http.MethodPost, "/api/file/move", map[string]string{
+			"path": "same.txt",
+			"dest": "same.txt",
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileMove, req)
+		assertOK(t, w)
+		assertJSONField(t, w, "ok", true)
+
+		// File must still exist with original content
+		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "same.txt"))
+		assert.NoError(t, err)
+		assert.Equal(t, "don't lose me", string(data))
+	})
 }
 
 func TestServeFileCopy(t *testing.T) {
@@ -902,7 +863,7 @@ func TestServeFileCopy(t *testing.T) {
 
 		req := newRequest(t, http.MethodPost, "/api/file/copy", map[string]string{
 			"path": "original.txt",
-			"dest": "original.txt",
+			"dest": "original (1).txt",
 		})
 		withProjectCookie(req, env.ProjectDir)
 
@@ -932,6 +893,28 @@ func TestServeFileCopy(t *testing.T) {
 		assertStatus(t, w, http.StatusConflict)
 	})
 
+	t.Run("SameSourceAndDest_ReturnsOK_NoOp", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		createTestFile(t, env.ProjectDir, "same.txt", "don't lose me")
+
+		req := newRequest(t, http.MethodPost, "/api/file/copy", map[string]string{
+			"path": "same.txt",
+			"dest": "same.txt",
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileCopy, req)
+		assertOK(t, w)
+		assertJSONField(t, w, "ok", true)
+
+		// File must still exist with original content
+		data, err := os.ReadFile(filepath.Join(env.ProjectDir, "same.txt"))
+		assert.NoError(t, err)
+		assert.Equal(t, "don't lose me", string(data))
+	})
+
 	t.Run("CopyToDifferentDir_NoConflict_Succeeds", func(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
@@ -955,7 +938,7 @@ func TestServeFileCopy(t *testing.T) {
 }
 
 // splitLines splits a string by newline, matching the handler's behavior.
-func splitLines(s string) []string {
+func splitLines(s string) []string { //nolint:unused // test utility kept for future use
 	if s == "" {
 		return nil
 	}
