@@ -21,7 +21,7 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync upstream via rebase
+      - name: Sync upstream via merge
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -51,20 +51,23 @@ jobs:
             exit 0
           fi
 
-          echo "📋 Rebasing $FORK_COUNT fork commit(s) onto upstream:"
+          echo "📋 Merging $NEW_COMMITS upstream commit(s) onto $FORK_COUNT fork commit(s):"
+          echo "Fork-only commits:"
           echo "$FORK_COMMITS"
 
-          # Rebase fork commits on top of upstream
-          if ! git rebase upstream/main; then
+          # Three-way merge upstream into fork. Unlike rebase, merge does not
+          # replay each fork commit individually onto upstream — it reconciles
+          # the two tips in one pass, so fork-local code that has already been
+          # adapted to the latest upstream architecture merges cleanly.
+          if ! git merge upstream/main --no-edit; then
             echo ""
-            echo "❌ Rebase conflict detected — cannot auto-resolve."
-            echo "Fork-only commits that conflicted:"
-            git rebase --abort 2>/dev/null || true
+            echo "❌ Merge conflict detected — cannot auto-resolve."
+            git merge --abort 2>/dev/null || true
             echo ""
-            echo "::error::Rebase conflicts — manual sync required. Run locally: git fetch upstream && git rebase upstream/main"
+            echo "::error::Merge conflicts — manual sync required. Run locally: git fetch upstream && git merge upstream/main"
             exit 1
           fi
 
-          # Rebase succeeded, force push the clean history
-          git push origin main --force
-          echo "✅ Rebase sync complete. $FORK_COUNT fork commit(s) rebased onto $NEW_COMMITS upstream commit(s)."
+          # Merge succeeded, push normally (no force needed with merge strategy)
+          git push origin main
+          echo "✅ Merge sync complete. $NEW_COMMITS upstream commit(s) merged onto $FORK_COUNT fork commit(s)."
