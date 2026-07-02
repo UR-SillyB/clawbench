@@ -45,21 +45,11 @@
 
       <!-- Prompt preview card -->
       <div class="overview-card">
-        <div class="prompt-header" @click="promptExpanded = !promptExpanded">
-          <h3 class="card-title">
-            <MessageSquare class="card-icon" :size="14" />
-            {{ t('task.form.prompt') }}
-          </h3>
-          <span class="prompt-toggle">
-            <ChevronUp v-if="promptExpanded" :size="16" />
-            <ChevronDown v-else :size="16" />
-          </span>
-        </div>
-        <div v-if="promptExpanded" class="prompt-body markdown-body" v-html="renderedPrompt"></div>
-        <div v-else class="prompt-body collapsed">
-          <div class="prompt-preview-text" v-html="renderedPrompt"></div>
-          <div class="prompt-fade"></div>
-        </div>
+        <h3 class="card-title">
+          <MessageSquare class="card-icon" :size="14" />
+          {{ t('task.form.prompt') }}
+        </h3>
+        <div class="prompt-body markdown-body" ref="promptBodyRef" @click="handlePromptClick" v-html="renderedPrompt"></div>
       </div>
     </div>
 
@@ -108,17 +98,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Pencil, Pause, Play, Zap, Trash2, History, CalendarClock, MessageSquare, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { ref, computed, watch, nextTick } from 'vue'
+import { Pencil, Pause, Play, Zap, Trash2, History, CalendarClock, MessageSquare } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useTaskOverview } from '@/composables/useTaskOverview.ts'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { useAgents } from '@/composables/useAgents'
+import { useFilePathAnnotation } from '@/composables/useFilePathAnnotation.ts'
+import { useWorktreeAnnotation } from '@/composables/useWorktreeAnnotation.ts'
+import { annotateCommitHashes, verifyCommitHashes } from '@/composables/useCommitHashAnnotation.ts'
+import { annotateLocalhostUrls, useLocalhostUrlClickHandler } from '@/composables/useLocalhostAnnotation.ts'
+import { annotateCodeBlockHeaders, handleCodeBlockClick, annotateTableBlockHeaders, handleTableBlockClick } from '@/composables/useCodeBlockHeader.ts'
+import { store } from '@/stores/app.ts'
 import { humanizeCron, repeatLabel, formatDateTime } from '@/utils/format'
 
 const { t } = useI18n()
 const { renderMarkdown } = useMarkdownRenderer()
 const { getAgentIcon, getAgentName } = useAgents()
+const { annotateFilePaths, verifyFilePaths, openFilePath } = useFilePathAnnotation()
+const { annotateWorktreePaths } = useWorktreeAnnotation()
+const { handleLocalhostUrlClick } = useLocalhostUrlClickHandler()
 
 const props = defineProps<{
   task: any
@@ -140,7 +139,9 @@ const { actionLoading, triggerTask, pauseTask, resumeTask, deleteTask } = useTas
   },
 })
 
-const promptExpanded = ref(true)
+const promptBodyRef = ref<HTMLElement | null>(null)
+const renderedPrompt = ref('')
+let promptRenderId = 0
 
 function copyId() {
   if (props.task.id) {
@@ -158,9 +159,103 @@ const statusText = computed(() => {
   return map[props.task.status] || props.task.status
 })
 
-const renderedPrompt = computed(() => {
-  return renderMarkdown(props.task.prompt || '', { sanitize: true })
-})
+watch(
+  () => [props.task.prompt, store.state.projectRoot, store.state.homeDir] as const,
+  ([prompt, projectRoot, homeDir]) => {
+    const renderId = ++promptRenderId
+    let html = renderMarkdown(prompt || '', { sanitize: true })
+    // Add code block headers (language label + copy/wrap buttons)
+    html = annotateCodeBlockHeaders(html)
+    // Add table block headers (label + copy/wrap buttons)
+    html = annotateTableBlockHeaders(html)
+    // Annotate worktree paths BEFORE file paths — prevents partial matches
+    const { html: worktreeHtml } = annotateWorktreePaths(html, { projectRoot })
+    html = worktreeHtml
+    // Annotate file paths
+    const { html: annotatedHtml, detectedPaths } = annotateFilePaths(html, { projectRoot, homeDir })
+    // Annotate commit hashes
+    const { html: commitHtml, detectedSHAs } = annotateCommitHashes(annotatedHtml)
+    // Annotate localhost URLs
+    html = annotateLocalhostUrls(commitHtml)
+    // Add lightbox-img class to all <img> tags for lightbox activation
+    html = html.replace(/<img(\s+[^>]*?)>/gi, (_match, attrs) => {
+      const clean = attrs.replace(/\s*class="[^"]*"/i, '')
+      return `<img${clean} class="lightbox-img">`
+    })
+
+    renderedPrompt.value = html
+
+    // Async verify file paths after DOM update
+    if (detectedPaths.length > 0) {
+      const uniquePaths = [...new Set(detectedPaths)]
+      nextTick(() => {
+        if (renderId !== promptRenderId) return
+        if (promptBodyRef.value) {
+          verifyFilePaths(uniquePaths, promptBodyRef.value)
+        }
+      })
+    }
+    // Async verify commit hashes after DOM update
+    if (detectedSHAs.length > 0) {
+      const uniqueSHAs = [...new Set(detectedSHAs)]
+      nextTick(() => {
+        if (renderId !== promptRenderId) return
+        if (promptBodyRef.value) {
+          verifyCommitHashes(uniqueSHAs, promptBodyRef.value)
+        }
+      })
+    }
+  },
+  { immediate: true }
+)
+
+function handlePromptClick(event: MouseEvent) {
+  // Handle localhost URL clicks
+  if (handleLocalhostUrlClick(event)) return
+
+  // Code block header buttons (copy/wrap)
+  if (handleCodeBlockClick(event)) return
+
+  // Table block header buttons (copy/wrap)
+  if (handleTableBlockClick(event)) return
+
+  const target = event.target as HTMLElement | null
+  // Handle commit-hash clicks
+  const commitEl = target?.closest('.chat-commit-hash, .chat-commit-open-btn')
+  if (commitEl) {
+    event.preventDefault()
+    event.stopPropagation()
+    const sha = commitEl.getAttribute('data-commit-sha')
+    if (sha) {
+      window.dispatchEvent(new CustomEvent('navigate-to-commit', { detail: { sha } }))
+    }
+    return
+  }
+  // Handle worktree action buttons
+  const wtBtn = target?.closest('.chat-worktree-btn')
+  if (wtBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const wtPath = wtBtn.getAttribute('data-worktree-path')
+    if (wtPath) {
+      store.setProject(wtPath)
+    }
+    return
+  }
+  // Handle file-open buttons
+  const btn = target?.closest('.chat-file-open-btn')
+  if (btn) {
+    event.preventDefault()
+    event.stopPropagation()
+    const filePath = btn.getAttribute('data-file-path')
+    const lineStart = btn.getAttribute('data-line-start')
+    const lineEnd = btn.getAttribute('data-line-end')
+    if (filePath) {
+      openFilePath(filePath, lineStart ? parseInt(lineStart, 10) : undefined, lineEnd ? parseInt(lineEnd, 10) : undefined)
+    }
+    return
+  }
+}
 </script>
 
 <style scoped>
@@ -357,30 +452,7 @@ const renderedPrompt = computed(() => {
 }
 
 /* Prompt card */
-.prompt-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  user-select: none;
-  margin: -2px;
-  padding: 2px;
-  border-radius: 6px;
-  transition: background 0.2s;
-}
-
-.prompt-header:hover {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.prompt-toggle {
-  color: var(--text-muted, #999);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Expanded: use global .markdown-body styles */
+/* Use global .markdown-body styles */
 .prompt-body.markdown-body {
   overflow-y: visible;
   max-width: 100%;
@@ -388,37 +460,6 @@ const renderedPrompt = computed(() => {
   margin: 0;
   background: transparent;
   font-size: 12px;
-}
-
-.prompt-body.collapsed {
-  position: relative;
-  overflow: hidden;
-  max-height: 4.5em;
-  margin-top: 4px;
-}
-
-.prompt-preview-text {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary, #666);
-}
-
-.prompt-preview-text :deep(p) {
-  margin: 0 0 4px;
-}
-
-.prompt-preview-text :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.prompt-fade {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2em;
-  background: linear-gradient(transparent, var(--bg-secondary, #f8f9fa));
-  pointer-events: none;
 }
 
 /* Fixed bottom action bar */

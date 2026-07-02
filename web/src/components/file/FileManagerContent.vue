@@ -325,6 +325,7 @@ import { useTerminalStatus } from '@/composables/useTerminalStatus.ts'
 import { useFeatureBackHandler, PRIORITY_PAGE } from '@/composables/useEdgeSwipeBack'
 import { useFileUpload } from '@/composables/useFileUpload.ts'
 import { useChatContext } from '@/composables/useChatContext.ts'
+import { downloadFileByPath } from '@/utils/download.ts'
 import { useToast } from '@/composables/useToast.ts'
 import { useFileNavStack } from '@/composables/useFileNavStack'
 import SearchInput from '@/components/common/SearchInput.vue'
@@ -852,17 +853,7 @@ function doDownload() {
     const path = ctxMenu.entry.path
     const name = ctxMenu.entry.name
     closeCtxMenu()
-    const native = window.AndroidNative
-    if (isAppMode.value && native && native.downloadFile) {
-        native.downloadFile(path)
-    } else {
-        const a = document.createElement('a')
-        a.href = '/api/local-file/' + encodeURIComponent(path) + '?download=1'
-        a.download = name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-    }
+    downloadFileByPath(path, name)
 }
 
 // ── Archive download (zip) ──

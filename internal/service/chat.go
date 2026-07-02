@@ -4,9 +4,11 @@ package service
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,6 +141,20 @@ func GetUserMessageIndex(sessionID string) ([]model.ChatMessage, error) {
 	return messages, nil
 }
 
+// GetMessageContent returns the plain text content of a message by its ID,
+// scoped to the specified session. Returns empty string if not found.
+func GetMessageContent(id int64, sessionID string) (string, error) {
+	var content string
+	err := DBRead.QueryRow("SELECT content FROM chat_history WHERE id = ? AND session_id = ?", id, sessionID).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return ExtractPlainText(content), nil
+}
+
 // GetMessageByID fetches a single chat message by its database ID.
 // Returns the complete message including all content blocks (text, thinking, tool_use).
 func GetMessageByID(id int64) (*model.ChatMessage, error) {
@@ -243,8 +259,8 @@ func AddChatMessage(projectPath, backend, sessionID, role, content string, files
 		err = tx.QueryRow("SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sessionID).Scan(&count)
 		if err == nil && count == 1 {
 			title := ExtractPlainText(content)
-			if len(files) > 0 && title == "" {
-				title = fallbackTitle
+			if title == "" && len(files) > 0 {
+				title = titleFromFiles(files)
 			}
 			if title == "" {
 				title = fallbackTitle
@@ -265,6 +281,25 @@ func AddChatMessage(projectPath, backend, sessionID, role, content string, files
 	}
 	messageID, _ := result.LastInsertId()
 	return messageID, nil
+}
+
+// titleFromFiles builds a session title from file paths by extracting basenames
+// and joining them with commas. Returns empty string if no files.
+func titleFromFiles(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		name := filepath.Base(f)
+		if name != "" && name != "." {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.Join(names, ", ")
 }
 
 // GetRecentProjects returns the most recent project paths.

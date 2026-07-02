@@ -264,6 +264,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 	register("/api/file/delete", middleware.Auth(ServeFileDelete))
 	register("/api/file/batch-delete", middleware.Auth(ServeFileBatchDelete))
 	register("/api/file/batch-exists", middleware.Auth(ServeFileBatchExists))
+	register("/api/file/batch-base64", middleware.Auth(ServeFileBatchBase64))
 	register("/api/file/create", middleware.Auth(ServeFileCreate))
 	register("/api/file/copy", middleware.Auth(ServeFileCopy))
 	register("/api/dir/create", middleware.Auth(ServeDirCreate))
@@ -288,6 +289,10 @@ func RegisterRoutes(mux *http.ServeMux) {
 	// This endpoint only accepts log entries (write-only, no read); the data is
 	// non-sensitive debug logs. Auth is unnecessary and would block the feature.
 	register("/api/android-log", ServeAndroidLog)
+
+	// Android APK download — intentionally unauthenticated:
+	// APK is a public resource; users need to download it before they can even log in.
+	register("/api/apk", ServeAPK)
 
 	// File watch SSE (auto-refresh on file changes)
 	register("/api/file/watch", middleware.Auth(FileWatchSSE))

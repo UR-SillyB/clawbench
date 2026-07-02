@@ -1,6 +1,6 @@
 <template>
   <div v-if="type === 'header'" class="settings-item__header">{{ label }}</div>
-  <div v-else class="settings-item" :class="{ 'settings-item--disabled': disabled }" @click="handleClick">
+  <div v-else class="settings-item" :class="{ 'settings-item--disabled': disabled, 'settings-item--no-divider': noDivider }" @click="handleClick">
     <div class="settings-item__left">
       <div class="settings-item__text">
         <span class="settings-item__label">{{ label }}</span>
@@ -36,18 +36,14 @@
       </template>
       <template v-else-if="type === 'password'">
         <span class="settings-item__value">{{ displayValue }}</span>
-        <span class="settings-item__arrow" :class="{ 'settings-item__arrow--open': editing }">›</span>
       </template>
       <template v-else-if="type === 'select' || type === 'number' || type === 'text'">
         <span class="settings-item__value">{{ displayValue }}</span>
-        <span class="settings-item__arrow" :class="{ 'settings-item__arrow--open': editing }">›</span>
       </template>
       <template v-else-if="type === 'textarea'">
         <span class="settings-item__value">{{ displayValue }}</span>
-        <span class="settings-item__arrow" :class="{ 'settings-item__arrow--open': editing }">›</span>
       </template>
       <template v-else-if="type === 'action'">
-        <span class="settings-item__arrow">›</span>
       </template>
       <template v-else-if="type === 'info'">
         <!-- info value shown in description area below, nothing on the right -->
@@ -163,6 +159,7 @@ interface Props {
   disabled?: boolean
   forceClose?: boolean
   warning?: string
+  noDivider?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -177,6 +174,7 @@ const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   forceClose: false,
   warning: '',
+  noDivider: false,
 })
 
 const emit = defineEmits<{
@@ -320,6 +318,20 @@ function confirmEdit() {
   position: relative;
 }
 
+.settings-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0.5px;
+  background: var(--border-color);
+}
+
+.settings-item--no-divider::after {
+  display: none;
+}
+
 .settings-item--disabled {
   opacity: 0.5;
   pointer-events: none;
@@ -396,17 +408,6 @@ function confirmEdit() {
   padding: 0 16px 10px;
   word-break: break-all;
   line-height: 1.4;
-}
-
-.settings-item__arrow {
-  font-size: 20px;
-  color: var(--text-muted);
-  line-height: 1;
-  transition: transform 0.2s ease;
-}
-
-.settings-item__arrow--open {
-  transform: rotate(90deg);
 }
 
 /* Section header */

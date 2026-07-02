@@ -38,7 +38,7 @@ cd "$ROOT_DIR"
 if [ "$SKIP_TEST" = false ]; then
   echo "==> Running Android tests with coverage..."
   cd "$ANDROID_DIR"
-  JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/jdk-17.0.12} ./gradlew jacocoTestReport 2>&1
+  JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64} ./gradlew jacocoTestReport 2>&1
   cd "$ROOT_DIR"
   echo ""
 else
@@ -251,6 +251,7 @@ else:
     # for testing (same rationale as Tier 2 exempt_files, but keyed by class name).
     tier1_exempt_classes = {
         "com.clawbench.app.BackgroundService",  # startForegroundCompat, ensureConnection need Android framework + JSch
+        "com.clawbench.app.MainActivity",  # Needs Android framework for most methods; Share Out logic extracted to SharedCacheUtils
     }
 
     for cls in all_classes:

@@ -131,7 +131,9 @@ describe('renderMarkdown', () => {
     mockDOMPurifySanitize.mockImplementation((s: string) => s)
 
     const result = renderMarkdown('table content')
-    expect(result).toContain('<div class="table-wrap"><table>')
+    // injectTableRowAttrs adds data-table-idx and data-row-idx after wrapping
+    expect(result).toContain('table-wrap')
+    expect(result).toContain('<table')
     expect(result).toContain('</table></div>')
   })
 
@@ -176,12 +178,12 @@ describe('renderMarkdown', () => {
     expect(mockDOMPurifySanitize).not.toHaveBeenCalled()
   })
 
-  it('passes ADD_TAGS: ["math"] to DOMPurify', () => {
+  it('passes ADD_TAGS and ADD_ATTR to DOMPurify', () => {
     mockMarkedParse.mockReturnValue('<p>content</p>')
     mockDOMPurifySanitize.mockImplementation((s: string) => s)
 
     renderMarkdown('content')
-    expect(mockDOMPurifySanitize).toHaveBeenCalledWith(expect.any(String), { ADD_TAGS: ['math'] })
+    expect(mockDOMPurifySanitize).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ADD_TAGS: expect.arrayContaining(['math', 'button']), ADD_ATTR: expect.arrayContaining(['data-action', 'aria-label', 'title']) }))
   })
 
   it('renders KaTeX before sanitizing', () => {

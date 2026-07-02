@@ -4,7 +4,7 @@
       <div class="lightbox-backdrop" @click="close" />
       <div class="lightbox-toolbar">
         <div v-if="currentFileName" class="lb-filename">{{ currentFileName }}</div>
-        <button v-if="currentUrl" class="lb-btn" @click="handleDownload" title="Download">
+        <button v-if="currentUrl || currentSvg" class="lb-btn" @click="handleDownload" title="Download">
           <Download :size="20" />
         </button>
         <button class="lb-btn" @click="resetAndRefresh" title="Reset & Reload">
@@ -62,9 +62,8 @@ import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { store } from '@/stores/app.ts'
 import { baseName, joinPath } from '@/utils/path.ts'
 import { getFileType } from '@/utils/fileType.ts'
-import { useAppMode } from '@/composables/useAppMode.ts'
+import { downloadBlob, buildLocalFileUrl, downloadFileByPath } from '@/utils/download.ts'
 
-const { isAppMode } = useAppMode()
 const lightboxVisible = ref(false)
 const currentUrl = ref('')
 const currentSvg = ref('')
@@ -118,7 +117,10 @@ const currentFileName = computed(() => {
     if (navMode.value === 'md' && mdImages.value.length > 0) {
         return mdImages.value[mdCurrentIndex.value]?.name || ''
     }
-    if (!currentFilePath.value) return ''
+    if (!currentFilePath.value) {
+        if (currentSvg.value) return 'diagram.svg'
+        return ''
+    }
     return baseName(currentFilePath.value)
 })
 
@@ -204,8 +206,7 @@ function navigateToIndex(newIdx, direction) {
     currentFilePath.value = entryPath
 
     // Build URL for the new file
-    const url = '/api/local-file/' + encodeURIComponent(entryPath)
-    currentUrl.value = url + '?t=' + Date.now()
+    currentUrl.value = buildLocalFileUrl(entryPath, { timestamp: true })
     currentSvg.value = ''
 
     // Sync with store
@@ -320,20 +321,40 @@ function resetAndRefresh() {
 }
 
 function handleDownload() {
-    if (!currentUrl.value) return
-    const native = window.AndroidNative
-    if (isAppMode.value && native && native.downloadFile) {
-        // For app mode, extract file path from URL or use currentFilePath
-        native.downloadFile(currentFilePath.value)
+    if (currentSvg.value) {
+        // Download SVG content as .svg file
+        const svgName = currentFileName.value || 'diagram.svg'
+        const name = svgName.endsWith('.svg') ? svgName : svgName.replace(/\.\w+$/, '') + '.svg'
+        downloadBlob(currentSvg.value, name, 'image/svg+xml')
         return
     }
+    if (!currentUrl.value) return
+
+    // Resolve the relative file path for downloadFileByPath / buildLocalFileUrl
+    let filePath = currentFilePath.value
+    if (!filePath) {
+        try {
+            const url = new URL(currentUrl.value, window.location.origin)
+            const prefix = '/api/local-file/'
+            if (url.pathname.startsWith(prefix)) {
+                filePath = decodeURIComponent(url.pathname.slice(prefix.length))
+            }
+        } catch { /* ignore */ }
+    }
+
+    if (filePath) {
+        downloadFileByPath(filePath, currentFileName.value)
+        return
+    }
+
+    // External URL — construct download link directly
     const a = document.createElement('a')
     const baseUrl = currentUrl.value.replace(/[?&]t=\d+/, '')
-    a.href = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'download=1'
+    a.href = baseUrl
     a.download = currentFileName.value || ''
     document.body.appendChild(a)
     a.click()
-    document.body.removeChild(a)
+    setTimeout(() => { document.body.removeChild(a) }, 1000)
 }
 
 function handleWheel(e) {
@@ -497,7 +518,7 @@ onMounted(() => {
     document.addEventListener('mouseup', handleMouseUp)
     // Listen for clicks on images and mermaid diagrams to open lightbox
     document.addEventListener('click', (e) => {
-        const img = e.target.closest('.markdown-body img, .chat-message img, .image-preview-img')
+        const img = e.target.closest('.lightbox-img')
         if (img) {
             e.preventDefault()
             // Check if the image is inside a markdown body — collect sibling images for navigation

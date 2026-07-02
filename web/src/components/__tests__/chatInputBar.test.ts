@@ -74,6 +74,7 @@ const i18n = createI18n({
           deleteCurrentSession: '删除当前会话',
           noSessionToDelete: '无可删除会话',
           forkSession: '派生会话',
+          userMsgIndex: '消息索引',
         },
         create: { selectAgentOrLongPress: '选择Agent' },
         delete: { confirm: '确认删除？' },
@@ -139,7 +140,7 @@ function mountInputBar(props = {}) {
       stubs: {
         Teleport: TeleportStub,
         PopupMenu: true,
-        QuickSendDialog: true,
+        QuickSendDrawer: true,
       },
       plugins: [i18n],
     },
@@ -508,8 +509,8 @@ describe('ChatInputBar — quoteData chip', () => {
     })
     await nextTick()
 
-    expect(wrapper.find('.quote-line-info').exists()).toBe(true)
-    expect(wrapper.find('.quote-line-info').text()).toBe('L5')
+    expect(wrapper.find('.attachment-quote .attachment-filesize').exists()).toBe(true)
+    expect(wrapper.find('.attachment-quote .attachment-filesize').text()).toBe('L5')
   })
 
   it('hides line number when startLine is 0', async () => {
@@ -518,7 +519,7 @@ describe('ChatInputBar — quoteData chip', () => {
     })
     await nextTick()
 
-    expect(wrapper.find('.quote-line-info').exists()).toBe(false)
+    expect(wrapper.find('.attachment-quote .attachment-filesize').exists()).toBe(false)
   })
 
   it('emits remove-quote when quote remove button is clicked', async () => {
@@ -527,7 +528,7 @@ describe('ChatInputBar — quoteData chip', () => {
     })
     await nextTick()
 
-    await wrapper.find('.attachment-quote .attachment-tag-remove').trigger('click')
+    await wrapper.find('.attachment-quote .attachment-close-btn').trigger('click')
     expect(wrapper.emitted('remove-quote')).toBeTruthy()
   })
 
@@ -592,29 +593,28 @@ describe('ChatInputBar — quoteData chip', () => {
   })
 })
 
-describe('ChatInputBar — fork button', () => {
-  it('hides fork button when currentTransport is not acp-stdio', () => {
+describe('ChatInputBar — user message index button', () => {
+  it('shows user message index button regardless of transport', () => {
     const wrapper = mountInputBar({ currentTransport: '' })
-    // Find all chat-action-btn and check none has the fork tooltip
     const buttons = wrapper.findAll('.chat-action-btn')
-    const forkBtn = buttons.find(b => b.attributes('title')?.includes('派生会话') || b.attributes('title')?.includes('Fork'))
-    expect(forkBtn).toBeUndefined()
+    const indexBtn = buttons.find(b => b.attributes('title')?.includes('消息索引') || b.attributes('title')?.includes('Message index'))
+    expect(indexBtn).toBeDefined()
   })
 
-  it('shows fork button when currentTransport is acp-stdio', () => {
+  it('shows user message index button for acp-stdio transport too', () => {
     const wrapper = mountInputBar({ currentTransport: 'acp-stdio' })
     const buttons = wrapper.findAll('.chat-action-btn')
-    const forkBtn = buttons.find(b => b.attributes('title')?.includes('派生会话') || b.attributes('title')?.includes('Fork'))
-    expect(forkBtn).toBeDefined()
+    const indexBtn = buttons.find(b => b.attributes('title')?.includes('消息索引') || b.attributes('title')?.includes('Message index'))
+    expect(indexBtn).toBeDefined()
   })
 
-  it('emits fork-session when fork button is clicked', async () => {
-    const wrapper = mountInputBar({ currentTransport: 'acp-stdio' })
+  it('emits open-user-msg-index when index button is clicked', async () => {
+    const wrapper = mountInputBar({})
     const buttons = wrapper.findAll('.chat-action-btn')
-    const forkBtn = buttons.find(b => b.attributes('title')?.includes('派生会话') || b.attributes('title')?.includes('Fork'))
-    expect(forkBtn).toBeDefined()
+    const indexBtn = buttons.find(b => b.attributes('title')?.includes('消息索引') || b.attributes('title')?.includes('Message index'))
+    expect(indexBtn).toBeDefined()
 
-    await forkBtn!.trigger('click')
-    expect(wrapper.emitted('fork-session')).toBeTruthy()
+    await indexBtn!.trigger('click')
+    expect(wrapper.emitted('open-user-msg-index')).toBeTruthy()
   })
 })

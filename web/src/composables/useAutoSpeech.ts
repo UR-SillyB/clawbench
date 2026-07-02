@@ -18,6 +18,8 @@ import { useToast } from '@/composables/useToast.ts'
 import { gt } from '@/composables/useLocale'
 import i18n from '@/i18n'
 import { localConfig, setLocalConfig } from '@/composables/useSettingsConfig'
+import { useWakeLock } from '@/composables/useWakeLock'
+import { appLog } from '@/utils/appLog'
 
 /**
  * Extract speakable text from chat message blocks.
@@ -69,6 +71,15 @@ enabled.value = !!localConfig.autoSpeech
 // Module-level toast instance (shared, not per-component)
 const toast = useToast()
 
+// Wake lock singleton — acquired when output starts (if auto-speech on), released when TTS ends
+const wakeLock = useWakeLock()
+
+/** Track whether screen lock is currently suppressed for the output+speech cycle.
+ *  Used to avoid releasing when we didn't acquire (e.g. auto-speech was off). */
+let screenLockSuppressed = false
+
+const TAG = 'AutoSpeech'
+
 // Sync from Settings page changes
 if (typeof window !== 'undefined') {
   window.addEventListener('clawbench-autospeech-change', (e: Event) => {
@@ -96,7 +107,13 @@ export function useAutoSpeech() {
   }
 
   // --- Audio Playback ---
-  function stopAudio() {
+  /**
+   * Stop current audio/TTS playback.
+   * @param releaseScreenLock If true (default), release the screen wake lock.
+   *   Pass false when stopping previous audio to start a new TTS in the same
+   *   output cycle (e.g. inside _speak), so the screen lock stays suppressed.
+   */
+  function stopAudio(releaseScreenLock = true) {
     abortController?.abort()
     abortController = null
     if (currentEventSource) {
@@ -113,6 +130,11 @@ export function useAutoSpeech() {
     activeId.value = ''
     playingSummary.value = ''
     state.value = 'idle'
+    // Release screen lock if suppressed for this output cycle
+    if (releaseScreenLock && screenLockSuppressed) {
+      wakeLock.release()
+      screenLockSuppressed = false
+    }
   }
 
   function reportError(message: string) {
@@ -133,6 +155,11 @@ export function useAutoSpeech() {
         activeId.value = ''
         playingSummary.value = ''
         state.value = 'idle'
+        // Release screen lock after TTS playback ends
+        if (screenLockSuppressed) {
+          wakeLock.release()
+          screenLockSuppressed = false
+        }
       }
     }
     audio.onerror = () => {
@@ -142,6 +169,11 @@ export function useAutoSpeech() {
         playingSummary.value = ''
         state.value = 'idle'
         reportError(gt('autoSpeech.playbackFailed'))
+        // Release screen lock on playback error
+        if (screenLockSuppressed) {
+          wakeLock.release()
+          screenLockSuppressed = false
+        }
       }
     }
 
@@ -155,14 +187,26 @@ export function useAutoSpeech() {
       activeId.value = ''
       playingSummary.value = ''
       state.value = 'idle'
+      // Release screen lock on play failure
+      if (screenLockSuppressed) {
+        wakeLock.release()
+        screenLockSuppressed = false
+      }
     })
   }
 
   // --- Internal: generate and play TTS for text ---
   async function _speak(id: string, text: string) {
-    if (!text) return
+    if (!text) {
+      // No speakable text — release screen lock since TTS won't play
+      if (screenLockSuppressed) {
+        wakeLock.release()
+        screenLockSuppressed = false
+      }
+      return
+    }
 
-    stopAudio()
+    stopAudio(false)
     lastError.value = ''
 
     const controller = new AbortController()
@@ -250,6 +294,11 @@ export function useAutoSpeech() {
         activeId.value = ''
         playingSummary.value = ''
         state.value = 'idle'
+        // Release screen lock on TTS error
+        if (screenLockSuppressed) {
+          wakeLock.release()
+          screenLockSuppressed = false
+        }
       }
 
       function handleResult(result: any) {
@@ -258,6 +307,7 @@ export function useAutoSpeech() {
           activeId.value = ''
           playingSummary.value = ''
           state.value = 'idle'
+          releaseScreenLockOnError()
           return
         }
 
@@ -267,6 +317,7 @@ export function useAutoSpeech() {
           activeId.value = ''
           playingSummary.value = ''
           state.value = 'idle'
+          releaseScreenLockOnError()
           return
         }
 
@@ -275,6 +326,7 @@ export function useAutoSpeech() {
           activeId.value = ''
           playingSummary.value = ''
           state.value = 'idle'
+          releaseScreenLockOnError()
           return
         }
 
@@ -304,6 +356,7 @@ export function useAutoSpeech() {
       activeId.value = ''
       playingSummary.value = ''
       state.value = 'idle'
+      releaseScreenLockOnError()
     } finally {
       if (abortController === controller) {
         abortController = null
@@ -347,6 +400,43 @@ export function useAutoSpeech() {
     return activeId.value === id && state.value === 'playing'
   }
 
+  // --- Screen Lock ---
+
+  /** Release screen lock on TTS error paths */
+  function releaseScreenLockOnError() {
+    if (screenLockSuppressed) {
+      wakeLock.release()
+      screenLockSuppressed = false
+    }
+  }
+
+  /**
+   * Called when AI output starts.
+   * Suppresses screen lock so the display stays on during
+   * the entire output + TTS playback cycle.
+   * Only activates if the preventScreenLock setting is enabled.
+   */
+  function onOutputStart() {
+    if (!localConfig.preventScreenLock) return
+    if (screenLockSuppressed) return
+    wakeLock.acquire()
+    screenLockSuppressed = true
+    appLog.i(TAG, 'Screen lock suppressed for output')
+  }
+
+  /**
+   * Called when output ends but auto-speech did not start TTS
+   * (e.g. no speakable text). Releases the screen lock that was
+   * suppressed at output start.
+   */
+  function onOutputEndNoSpeech() {
+    if (screenLockSuppressed && state.value === 'idle') {
+      wakeLock.release()
+      screenLockSuppressed = false
+      appLog.i(TAG, 'Screen lock restored: output ended without TTS')
+    }
+  }
+
   return {
     enabled,
     state,
@@ -360,5 +450,7 @@ export function useAutoSpeech() {
     getPhaseLabel,
     isGeneratingText,
     isPlayingAudio,
+    onOutputStart,
+    onOutputEndNoSpeech,
   }
 }

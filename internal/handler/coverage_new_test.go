@@ -59,6 +59,88 @@ func TestSanitizeArchiveName(t *testing.T) {
 }
 
 // ============================================================================
+// contentDispositionAttachment tests
+// ============================================================================
+
+func TestContentDispositionAttachment(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"ASCII", "file.txt", `attachment; filename="file.txt"; filename*=UTF-8''file.txt`},
+		{"CJK", "日本語.zip", `attachment; filename="日本語.zip"; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E.zip`},
+		{"Quote", "my\"file.txt", `attachment; filename="my_file.txt"; filename*=UTF-8''my%22file.txt`},
+		{"Space", "my file.txt", `attachment; filename="my file.txt"; filename*=UTF-8''my%20file.txt`},
+		{"Percent", "100%.txt", `attachment; filename="100%.txt"; filename*=UTF-8''100%25.txt`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := contentDispositionAttachment(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ============================================================================
+// rfc5987Encode and isRFC5987Unreserved tests
+// ============================================================================
+
+func TestRFC5987Encode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"Empty", "", ""},
+		{"AllUnreserved", "file.txt", "file.txt"},
+		{"Space", "my file", "my%20file"},
+		{"CJK", "日本語", "%E6%97%A5%E6%9C%AC%E8%AA%9E"},
+		{"Mixed", "hello 世界.txt", "hello%20%E4%B8%96%E7%95%8C.txt"},
+		{"SpecialChars", "!#$&+-.^_`|~", "!#$&+-.^_`|~"},
+		{"Percent", "100%", "100%25"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rfc5987Encode(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestIsRFC5987Unreserved(t *testing.T) {
+	unreserved := "!#$&+-.^_`|~"
+	for _, r := range unreserved {
+		if !isRFC5987Unreserved(r) {
+			t.Errorf("expected %q to be unreserved", r)
+		}
+	}
+	// Alphanums
+	for r := 'a'; r <= 'z'; r++ {
+		if !isRFC5987Unreserved(r) {
+			t.Errorf("expected %q to be unreserved", r)
+		}
+	}
+	for r := 'A'; r <= 'Z'; r++ {
+		if !isRFC5987Unreserved(r) {
+			t.Errorf("expected %q to be unreserved", r)
+		}
+	}
+	for r := '0'; r <= '9'; r++ {
+		if !isRFC5987Unreserved(r) {
+			t.Errorf("expected %q to be unreserved", r)
+		}
+	}
+	// Reserved characters
+	for _, r := range " @<>[]()=%/\\\"" {
+		if isRFC5987Unreserved(r) {
+			t.Errorf("expected %q to be reserved", r)
+		}
+	}
+}
+
+// ============================================================================
 // addFileToZip tests
 // ============================================================================
 
@@ -834,10 +916,10 @@ func TestServeGitVerifyCommits_WrongMethod(t *testing.T) {
 // TestSetPushClient_SetsRef removed — trivial setter test that only verifies Go assignment syntax
 
 func TestServePushConfig_NoClient(t *testing.T) {
-	origRef := pushClientRef
-	defer func() { pushClientRef = origRef }()
+	origRef := GetPushClient()
+	defer SetPushClient(origRef)
 
-	pushClientRef = nil
+	SetPushClient(nil)
 
 	req := newRequest(t, http.MethodGet, "/api/push/config", nil)
 	w := callHandler(ServePushConfig, req)
@@ -850,14 +932,14 @@ func TestServePushConfig_NoClient(t *testing.T) {
 }
 
 func TestServePushConfig_DisabledClient(t *testing.T) {
-	origRef := pushClientRef
-	defer func() { pushClientRef = origRef }()
+	origRef := GetPushClient()
+	defer SetPushClient(origRef)
 
-	pushClientRef = push.NewJPushClient(model.JPushConfig{
+	SetPushClient(push.NewJPushClient(model.JPushConfig{
 		Enabled:      false,
 		AppKey:       "test-key",
 		MasterSecret: "test-secret",
-	})
+	}))
 
 	req := newRequest(t, http.MethodGet, "/api/push/config", nil)
 	w := callHandler(ServePushConfig, req)
@@ -869,14 +951,14 @@ func TestServePushConfig_DisabledClient(t *testing.T) {
 }
 
 func TestServePushConfig_EnabledClient(t *testing.T) {
-	origRef := pushClientRef
-	defer func() { pushClientRef = origRef }()
+	origRef := GetPushClient()
+	defer SetPushClient(origRef)
 
-	pushClientRef = push.NewJPushClient(model.JPushConfig{
+	SetPushClient(push.NewJPushClient(model.JPushConfig{
 		Enabled:      true,
 		AppKey:       "test-app-key-123",
 		MasterSecret: "test-master-secret",
-	})
+	}))
 
 	req := newRequest(t, http.MethodGet, "/api/push/config", nil)
 	w := callHandler(ServePushConfig, req)
@@ -1218,12 +1300,10 @@ func TestServeProjectsCreate_PathTraversalName(t *testing.T) {
 // ============================================================================
 
 func TestServeIndex_MethodNotAllowed(t *testing.T) {
-	// ServeIndex is registered as a catch-all route — it handles GET only
-	// POST on "/" goes through the router which may return 404 instead of 405
+	// ServeIndex rejects non-GET/HEAD methods with 405
 	req := newRequest(t, http.MethodPost, "/", nil)
 	w := callHandler(ServeIndex, req)
-	// The handler may return 404 (no route) or 405 — just verify no panic
-	assert.NotEqual(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 }
 
 // ============================================================================
@@ -1666,9 +1746,9 @@ func TestWriteDiffResponse_WithGitError(t *testing.T) {
 // ============================================================================
 
 func TestTerminalWebSocket_NilManager(t *testing.T) {
-	origMgr := terminalMgr
-	defer func() { terminalMgr = origMgr }()
-	terminalMgr = nil
+	origMgr := GetTerminalManager()
+	defer SetTerminalManager(origMgr)
+	SetTerminalManager(nil)
 
 	req := newRequest(t, http.MethodGet, "/api/terminal/ws", nil)
 	w := callHandler(TerminalWebSocket, req)
@@ -1676,12 +1756,13 @@ func TestTerminalWebSocket_NilManager(t *testing.T) {
 }
 
 func TestTerminalWebSocket_NoProjectCookie(t *testing.T) {
-	origMgr := terminalMgr
+	origMgr := GetTerminalManager()
 	defer func() {
-		if terminalMgr != nil && terminalMgr != origMgr {
-			terminalMgr.Close()
+		curMgr := GetTerminalManager()
+		if curMgr != nil && curMgr != origMgr {
+			curMgr.Close()
 		}
-		terminalMgr = origMgr
+		SetTerminalManager(origMgr)
 	}()
 
 	SetTerminalManager(terminal.NewManager(model.TerminalConfig{

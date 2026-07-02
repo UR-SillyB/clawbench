@@ -25,6 +25,8 @@
       @refresh="emit('refresh')"
       @overlay-close="emit('overlayClose')"
       @overlay-go-back="emit('overlayGoBack')"
+      @share-external="emit('shareExternal')"
+      @export-html="handleExportHtml"
     />
 
     <div class="file-viewer-content" ref="contentRef">
@@ -70,7 +72,7 @@
           <FileText />
           <div class="unsupported-title">{{ file.name }}</div>
           <div class="unsupported-desc">{{ t('file.viewer.fileTooLarge') }} {{ file.size ? '(' + formatSize(file.size) + ')' : '' }}</div>
-          <a v-if="!isAppMode" :href="'/api/local-file/' + encodeURIComponent(file.path) + '?download=1'" class="download-btn" :download="file.name">
+          <a v-if="!isAppMode" :href="buildLocalFileUrl(file.path, { download: true })" class="download-btn" :download="file.name">
             <Download :size="14" color="#fff" />
             {{ t('common.download') }}
           </a>
@@ -88,7 +90,7 @@
           <div class="unsupported-title">{{ file.name }}</div>
           <div class="unsupported-desc">{{ t('file.viewer.binaryFile') }} {{ file.size ? '(' + formatSize(file.size) + ')' : '' }}</div>
           <div class="unsupported-actions">
-            <a v-if="!isAppMode" :href="'/api/local-file/' + encodeURIComponent(file.path) + '?download=1'" class="download-btn" :download="file.name">
+            <a v-if="!isAppMode" :href="buildLocalFileUrl(file.path, { download: true })" class="download-btn" :download="file.name">
               <Download :size="14" color="#fff" />
               {{ t('common.download') }}
             </a>
@@ -99,6 +101,10 @@
             <button class="open-as-text-btn" @click="handleOpenAsText">
               <Code2 :size="14" />
               {{ t('file.header.openAsText') }}
+            </button>
+            <button v-if="isAppMode" class="open-as-text-btn" @click="handleShareExternal">
+              <Share :size="14" />
+              {{ t('file.header.shareExternal') }}
             </button>
           </div>
         </div>
@@ -162,7 +168,7 @@
 
     <!-- Shared diff drawer for all file types -->
     <DiffDrawer
-      :visible="drawerVisible"
+      :visible="diffDrawer.effectiveOpen.value"
       :marker-type="drawerMarkerType"
       :char-diff="drawerCharDiff"
       :diff-lines="drawerDiffLines"
@@ -175,7 +181,7 @@
 import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSettingsConfig } from '@/composables/useSettingsConfig'
-import { FileText, Download, Code2, AlertTriangle } from 'lucide-vue-next'
+import { FileText, Download, Code2, AlertTriangle, Share } from 'lucide-vue-next'
 import ImagePreview from '@/components/media/ImagePreview.vue'
 import PdfPreview from '@/components/media/PdfPreview.vue'
 import AudioPreview from '@/components/media/AudioPreview.vue'
@@ -184,16 +190,23 @@ import MarkdownPreview from './MarkdownPreview.vue'
 import CodePreview from './CodePreview.vue'
 import DiffDrawer from './DiffDrawer.vue'
 import { useDiffDrawer } from '@/composables/useDiffDrawer.ts'
+import { diffDrawerVisible } from '@/composables/useMarkdownDiff.ts'
+import { useTabDrawer } from '@/composables/useTabDrawer'
 import { flashRanges, flashType } from '@/composables/useFileRefresh.ts'
 import FileHeader from './FileHeader.vue'
 import { getFileType, formatFileSize } from '@/utils/fileType.ts'
 import { store } from '@/stores/app.ts'
 import { useAppMode } from '@/composables/useAppMode.ts'
 import { useFileNavStack } from '@/composables/useFileNavStack.ts'
+import { exportRenderedHtml } from '@/utils/exportHtml.ts'
+import { downloadBlob, buildLocalFileUrl, downloadFileByPath } from '@/utils/download.ts'
+import { useToast } from '@/composables/useToast.ts'
 
 const { t } = useI18n()
 const { isAppMode } = useAppMode()
-const { drawerVisible, drawerMarkerType, drawerCharDiff, drawerDiffLines, closeDrawer } = useDiffDrawer()
+const toast = useToast()
+const { drawerMarkerType, drawerCharDiff, drawerDiffLines, closeDrawer } = useDiffDrawer()
+const diffDrawer = useTabDrawer('browse', diffDrawerVisible)
 
 const props = defineProps({
     file: Object,
@@ -202,7 +215,7 @@ const props = defineProps({
     markdownViewMode: String,
     externalLoading: Boolean,
 })
-const emit = defineEmits(['delete', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'toggleView', 'refresh', 'openFile', 'overlayClose', 'overlayGoBack'])
+const emit = defineEmits(['delete', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'toggleView', 'refresh', 'openFile', 'overlayClose', 'overlayGoBack', 'shareExternal'])
 
 const fileNav = useFileNavStack()
 
@@ -372,10 +385,48 @@ function handleOpenAsText() {
 }
 
 function handleDownload(path) {
-    const native = window.AndroidNative
-    if (isAppMode.value && native && native.downloadFile) {
-        native.downloadFile(path)
+    downloadFileByPath(path, props.file?.name)
+}
+
+async function handleExportHtml() {
+    if (!props.file?.path || !contentRef.value) return
+    const markdownBodyEl = contentRef.value.querySelector('.markdown-body')
+    if (!markdownBodyEl) return
+
+    toast.show(t('file.header.exportingHtml'), { icon: '📄', type: 'info', duration: 0 })
+    try {
+        const result = await exportRenderedHtml({
+            markdownBodyEl,
+            filePath: props.file.path,
+            fileName: props.file.name,
+        })
+        const htmlName = props.file.name.replace(/\.md$/i, '.html')
+        downloadBlob(result.html, htmlName, 'text/html')
+        const msgs = [t('file.header.exportHtmlSuccess')]
+        if (result.skippedImages > 0) msgs.push(t('file.header.exportHtmlSkippedImages', { n: result.skippedImages }))
+        if (result.externalImages > 0) msgs.push(t('file.header.exportHtmlSkippedImages', { n: result.externalImages }))
+        toast.show(msgs.join('. '), { icon: '✅', type: 'success', duration: 3000 })
+    } catch (e) {
+        toast.show(t('file.header.exportHtmlFailed'), { icon: '❌', type: 'error', duration: 3000 })
     }
+}
+
+function handleShareExternal() {
+    const native = window.AndroidNative
+    if (!native || !native.shareFile) return
+    const path = props.file?.path
+    if (!path) return
+    const ft = fileType.value
+    let mimeType = '*/*'
+    if (ft?.isImage) mimeType = 'image/*'
+    else if (ft?.isVideo) mimeType = 'video/*'
+    else if (ft?.isAudio) mimeType = 'audio/*'
+    else if (ft?.isPdf) mimeType = 'application/pdf'
+    else {
+        const ext = path.split('.').pop()?.toLowerCase()
+        if (ext === 'zip' || ext === 'tar' || ext === 'gz') mimeType = 'application/zip'
+    }
+    native.shareFile(path, mimeType)
 }
 
 // Expose for parent (App.vue) to access PDF TOC

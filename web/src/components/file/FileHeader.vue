@@ -35,6 +35,10 @@
               <Code2 :size="14" />
               {{ t('file.header.openAsText') }}
             </button>
+            <button v-if="isAppMode" class="dropdown-item" @click="handleShareExternal">
+              <Share :size="14" />
+              {{ t('file.header.shareExternal') }}
+            </button>
             <button v-if="isMarkdown || isHtml" class="dropdown-item" @click="handleToggleView">
               <Code2 :size="14" />
               {{ viewMode === 'rendered' ? t('file.header.sourceView') : t('file.header.renderedView') }}
@@ -54,13 +58,17 @@
               {{ t('file.header.stickyScroll') }}
               <span v-if="stickyScroll" class="wrap-check">✓</span>
             </button>
-            <a v-if="!isAppMode" class="dropdown-item" :href="'/api/local-file/' + encodeURIComponent(file.path) + '?download=1'" :download="file.name" @click="menuOpen = false">
+            <a v-if="!isAppMode" class="dropdown-item" :href="buildLocalFileUrl(file.path, { download: true })" :download="file.name" @click="menuOpen = false">
               <Download :size="14" />
               {{ t('common.download') }}
             </a>
             <button v-else class="dropdown-item" @click="handleDownload">
               <Download :size="14" />
               {{ t('common.download') }}
+            </button>
+            <button v-if="isMarkdown && viewMode === 'rendered'" class="dropdown-item" @click="handleExportHtml">
+              <FileOutput :size="14" />
+              {{ t('file.header.exportHtml') }}
             </button>
             <button class="dropdown-item danger" @click="handleDelete">
               <Trash2 :size="14" />
@@ -88,11 +96,12 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { List, Search, MoreVertical, Code2, Download, Trash2, GitBranch, TextWrap, Hash, RotateCw, Pin, ChevronLeft, X, Paperclip } from 'lucide-vue-next'
+import { List, Search, MoreVertical, Code2, Download, Trash2, GitBranch, TextWrap, Hash, RotateCw, Pin, ChevronLeft, X, Paperclip, Share, FileOutput } from 'lucide-vue-next'
 import { getFileType } from '@/utils/fileType.ts'
 import { useAppMode } from '@/composables/useAppMode.ts'
 import { useChatContext } from '@/composables/useChatContext.ts'
 import { useToast } from '@/composables/useToast.ts'
+import { buildLocalFileUrl, downloadFileByPath } from '@/utils/download.ts'
 
 const props = defineProps({
     file: Object,
@@ -105,7 +114,7 @@ const props = defineProps({
     overlayOpen: Boolean,
     overlayCanGoBack: Boolean,
 })
-const emit = defineEmits(['delete', 'toggleView', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'openAsText', 'toggleWordWrap', 'toggleLineNumbers', 'toggleStickyScroll', 'refresh', 'overlayClose', 'overlayGoBack'])
+const emit = defineEmits(['delete', 'toggleView', 'showDetails', 'openGitHistory', 'toggleToc', 'toggleSearch', 'openAsText', 'toggleWordWrap', 'toggleLineNumbers', 'toggleStickyScroll', 'refresh', 'overlayClose', 'overlayGoBack', 'shareExternal', 'exportHtml'])
 
 const { isAppMode } = useAppMode()
 const { t } = useI18n()
@@ -181,10 +190,31 @@ function handleOpenAsText() {
 
 function handleDownload() {
     menuOpen.value = false
+    downloadFileByPath(props.file?.path || '', props.file?.name)
+}
+
+function handleExportHtml() {
+    menuOpen.value = false
+    emit('exportHtml')
+}
+
+function handleShareExternal() {
+    menuOpen.value = false
     const native = window.AndroidNative
-    if (native && native.downloadFile) {
-        native.downloadFile(props.file?.path)
+    if (!native || !native.shareFile) return
+    const path = props.file?.path
+    if (!path) return
+    const ft = fileType.value
+    let mimeType = '*/*'
+    if (ft?.isImage) mimeType = 'image/*'
+    else if (ft?.isVideo) mimeType = 'video/*'
+    else if (ft?.isAudio) mimeType = 'audio/*'
+    else if (ft?.isPdf) mimeType = 'application/pdf'
+    else {
+        const ext = path.split('.').pop()?.toLowerCase()
+        if (ext === 'zip' || ext === 'tar' || ext === 'gz') mimeType = 'application/zip'
     }
+    native.shareFile(path, mimeType)
 }
 
 function handleDelete() {

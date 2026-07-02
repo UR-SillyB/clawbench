@@ -796,6 +796,7 @@ func ServeBackends(w http.ResponseWriter, r *http.Request) {
 		Specialty            string   `json:"specialty"`
 		DefaultCmd           string   `json:"default_cmd"`
 		ThinkingEffortLevels []string `json:"thinking_effort_levels,omitempty"`
+		Embedded             bool     `json:"embedded"`
 	}
 
 	backends := make([]backendInfo, 0, len(model.GetBackendRegistry()))
@@ -810,6 +811,7 @@ func ServeBackends(w http.ResponseWriter, r *http.Request) {
 			Specialty:            spec.Specialty,
 			DefaultCmd:           spec.DefaultCmd,
 			ThinkingEffortLevels: spec.ThinkingEffortLevels,
+			Embedded:             spec.EmbeddedSubDir != "",
 		})
 	}
 

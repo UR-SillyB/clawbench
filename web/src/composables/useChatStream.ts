@@ -60,6 +60,8 @@ export function useChatStream(options: UseChatStreamOptions) {
   let disconnectedByCleanup = false
   // Track tool_use timeout timers so we can clean them up
   const toolUseTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  // Counter for assigning stable _key to thinking blocks during streaming
+  let thinkingBlockCounter = 0
 
   const STREAM_TIMEOUT_MS = 30000 // 30 seconds without any SSE event = try reconnect
   const PERMISSION_STREAM_TIMEOUT_MS = 300000 // 5 min when permission approval is pending (user deciding)
@@ -281,6 +283,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         createdAt: new Date().toISOString(),
         backend: currentBackend.value
       })
+      thinkingBlockCounter = 0
       onRenderNeeded()
     }
     onScrollBottom()
@@ -333,6 +336,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         (phase2 as any).id = data.message_id
       }
       messages.value.push(phase2)
+      thinkingBlockCounter = 0
       onRenderNeeded()
       debouncedRender()
     })
@@ -366,7 +370,7 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (existingThinking) {
         existingThinking.text += data.text
       } else {
-        blocks.push({ type: 'thinking', text: data.text })
+        blocks.push({ type: 'thinking', text: data.text, _key: `thinking-${thinkingBlockCounter++}` })
       }
       debouncedRender()
       if (isOpen.value) {
@@ -409,6 +413,21 @@ export function useChatStream(options: UseChatStreamOptions) {
           if (data.summary !== undefined) existing.summary = data.summary
           if (data.display_name !== undefined) existing.display_name = data.display_name
           if (data.file_path !== undefined) existing.file_path = data.file_path
+        } else {
+          // No existing block — create a new done tool_use block.
+          // This happens when the backend sends tool_use with done=true
+          // (e.g. Pi's toolcall_end provides complete arguments in one event).
+          const newBlock: any = {
+            type: 'tool_use', name: data.name, id: data.id, done: true,
+            status: data.status || '',
+          }
+          if (data.input && Object.keys(data.input).length > 0) {
+            newBlock.input = data.input
+          }
+          if (data.summary) newBlock.summary = data.summary
+          if (data.display_name) newBlock.display_name = data.display_name
+          if (data.file_path) newBlock.file_path = data.file_path
+          blocks.push(newBlock)
         }
         const timer = toolUseTimeouts.get(data.id)
         if (timer) { clearTimeout(timer); toolUseTimeouts.delete(data.id) }
@@ -505,6 +524,13 @@ export function useChatStream(options: UseChatStreamOptions) {
       }
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
       clearToolUseTimeouts()
+      thinkingBlockCounter = 0
+
+      // Finalize streaming state BEFORE loadHistory replaces the array.
+      // This ensures: (1) streaming flag removed immediately (no stuck "three dots"),
+      // (2) unfinished tool_use blocks marked done (no stuck spinners),
+      // (3) if loadHistory is slow/fails, UI is already in a clean state.
+      _forceCleanupStreamingState(messages.value, { onRenderNeeded, onExtractScheduledTasks })
 
       // Diagnostic: log message state when done event received
       const doneSummary = messages.value.map((m: any, i: number) =>
@@ -653,16 +679,21 @@ export function useChatStream(options: UseChatStreamOptions) {
       let data: any
       try { data = JSON.parse(e.data) } catch { appLog.w(TAG, 'SSE queue_drain: invalid JSON, skipping'); return }
 
+      // Sync pendingStore FIRST — remove the drained message from pending before
+      // pushing the drain message into messages.value. This ordering ensures
+      // renderedMessages computed never sees the same message in both sources
+      // (drain + pending), preventing a brief duplicate flash.
+      // Always update pendingStore — this is per-session so no cross-session contamination.
+      pendingStore.syncFromBackendQueue(sessionId, data.queue || [])
+
       if (!sessionChanged()) {
-        // Push the drain message to messages.value BEFORE removing from pendingStore.
-        // This ensures the formal user message is already rendered when the
-        // pending message disappears, making the transition atomic — the user
-        // never sees a gap where neither is visible.
         const drainText = data.text || ''
         const drainFiles = [...(data.filePaths || []), ...(data.files || [])]
         drainQueueMessage(
           messages.value, drainText, drainFiles, currentBackend.value,
-          { onRenderNeeded, onExtractScheduledTasks }
+          { onRenderNeeded, onExtractScheduledTasks },
+          undefined,
+          data.messageId || undefined
         )
 
         if (isOpen.value) {
@@ -670,12 +701,6 @@ export function useChatStream(options: UseChatStreamOptions) {
           onScrollBottom(true)
         }
       }
-
-      // After pushing the drain message, sync pendingStore.
-      // The drained message is removed from the backend queue, so syncFromBackendQueue
-      // will remove it from pendingStore[sessionId].
-      // Always update pendingStore — this is per-session so no cross-session contamination.
-      pendingStore.syncFromBackendQueue(sessionId, data.queue || [])
     })
 
     // queue_update: sent when a new message is enqueued while a session is running.

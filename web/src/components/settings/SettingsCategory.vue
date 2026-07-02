@@ -7,11 +7,12 @@
   <SettingsAgentDetail
     v-else-if="categoryId.startsWith('agents:')"
     :agent-id="categoryId.slice(7)"
+    @deleted="$emit('navigate', 'agents')"
   />
   <!-- Standard settings category -->
   <div v-else class="settings-category">
     <SettingsItem
-      v-for="item in items"
+      v-for="(item, index) in items"
       :key="item.key"
       :label="item.label"
       :description="item.description"
@@ -23,6 +24,7 @@
       :step="item.step"
       :needs-restart="item.needsRestart"
       :force-close="activeKey !== null && activeKey !== item.key"
+      :no-divider="isLastInSection(items, index)"
       @update:model-value="(v: any) => handleUpdate(item, v)"
       @click="handleClick(item)"
       @edit-toggle="(open: boolean) => handleEditToggle(item.key, open)"
@@ -35,6 +37,8 @@
       @close="showPasswordDialog = false"
       @changed="handlePasswordChanged"
     />
+    <!-- iOS install instructions sheet -->
+    <IosInstallDrawer :open="showIosSheet" @close="showIosSheet = false" />
   </div>
 </template>
 
@@ -45,11 +49,13 @@ import SettingsItem from './SettingsItem.vue'
 import PasswordChangeDialog from './PasswordChangeDialog.vue'
 import SettingsAgentsIndex from './SettingsAgentsIndex.vue'
 import SettingsAgentDetail from './SettingsAgentDetail.vue'
+import IosInstallDrawer from '@/components/common/IosInstallDrawer.vue'
 import { useSettingsConfig } from '@/composables/useSettingsConfig'
 import { useAgents } from '@/composables/useAgents'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
 import { useAppMode } from '@/composables/useAppMode'
+import { usePwaInstall } from '@/composables/usePwaInstall'
 import { useGlobalEvents } from '@/composables/useGlobalEvents'
 import { categoryItems, engineVoiceOptions, type ItemSpec, type DependsOn } from './settingsFieldMap'
 
@@ -60,6 +66,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   navigate: [categoryId: string]
   restartNeeded: [changedFields: string[]]
+  restartRequested: []
 }>()
 
 const { t } = useI18n()
@@ -68,10 +75,12 @@ const dialog = useDialog()
 const { localConfig, serverConfig, setLocalConfig, getServerValueWithDefault, setServerValue } = useSettingsConfig()
 const { agents, loadAgents } = useAgents()
 const { isAppMode } = useAppMode()
+const pwaInstall = usePwaInstall()
 const { pushRegistered } = useGlobalEvents()
 
 const activeKey = ref<string | null>(null)
 const showPasswordDialog = ref(false)
+const showIosSheet = ref(false)
 
 // Load agents when chat or agents category is shown
 watch(() => props.categoryId, (id) => {
@@ -107,6 +116,10 @@ const items = computed(() => {
     if (!isDependsOnMet(item.dependsOn)) continue
     // Hide appVersion row when not in Android App mode (no AndroidNative bridge)
     if (item.key === 'appVersion' && !isAppMode.value) continue
+    // Hide PWA install action when not available
+    if (item.key === 'addToHomeScreen' && !pwaInstall.showPwaInstall.value) continue
+    // Hide APK download action when not available
+    if (item.key === 'downloadAndroidApp' && !pwaInstall.showApkDownload.value) continue
     // Inject push registration status as a standalone info row at the top of push category
     if (item.key === 'push.jpush.enabled') {
       expanded.push({
@@ -197,11 +210,11 @@ async function handleUpdate(item: any, value: any) {
   if (item.type === 'password') {
     if (!value || value.includes('•')) return
   }
-  // Confirm before enabling localhost auth (CLI tools will be affected)
-  if (item.key === 'require_auth_for_localhost' && value === true) {
+  // Confirm before disabling localhost auth exempt (CLI tools will be affected)
+  if (item.key === 'localhost_auth_exempt' && value === false) {
     const confirmed = await dialog.confirm(
-      t('settings.items.requireAuthForLocalhostConfirm'),
-      { title: t('settings.items.requireAuthForLocalhost'), dangerous: true }
+      t('settings.items.localhostAuthExemptConfirm'),
+      { title: t('settings.items.localhostAuthExempt'), dangerous: true }
     )
     if (!confirmed) return
   }
@@ -239,6 +252,33 @@ function handleClick(item: any) {
   if (item.key === 'changePassword') {
     showPasswordDialog.value = true
   }
+  if (item.key === 'restartServer') {
+    handleRestartServer()
+  }
+  if (item.key === 'addToHomeScreen') {
+    handleAddToHomeScreen()
+  }
+  if (item.key === 'downloadAndroidApp') {
+    window.location.href = '/api/apk'
+  }
+}
+
+async function handleAddToHomeScreen() {
+  if (pwaInstall.canInstallPwa.value) {
+    await pwaInstall.installPwa()
+  } else if (pwaInstall.isIOS.value) {
+    showIosSheet.value = true
+  }
+}
+
+async function handleRestartServer() {
+  const confirmed = await dialog.confirm(
+    t('settings.items.restartServerConfirm'),
+    { title: t('settings.items.restartServer'), dangerous: true }
+  )
+  if (confirmed) {
+    emit('restartRequested')
+  }
 }
 
 function handlePasswordChanged(needsRestart: boolean) {
@@ -267,6 +307,13 @@ function handleDescToggle(key: string, open: boolean) {
 
 function handleDiscard() {
   toast.show(t('settings.passwordDiscarded'), { icon: 'ℹ️', type: 'info', duration: 3000 })
+}
+
+/** Check if item at index is the last in its section (last item overall, or next item is a header). */
+function isLastInSection(items: any[], index: number): boolean {
+  if (index >= items.length - 1) return true
+  const nextItem = items[index + 1]
+  return nextItem?.type === 'header'
 }
 </script>
 

@@ -10,17 +10,17 @@
     <div v-show="showingSummary && summary" v-html="renderTextBlock(summary || '', msgId, 0, false)"></div>
     <!-- Original content mode -->
     <template v-if="!showingSummary || !summary">
-    <template v-for="(block, bi) in blocks" :key="bi">
+    <template v-for="(block, bi) in blocks" :key="stableBlockKey(bi, block)">
       <!-- Thinking block: streaming shows inline content, collapsed shows clickable chip -->
       <div v-if="block.type === 'thinking'"
-        :ref="isThinkingStreaming(block) ? (el) => setThinkingRef(bi, el) : undefined"
+        :ref="isThinkingStreaming(block) ? (el) => setThinkingRef(stableBlockKey(bi, block), el) : undefined"
         class="chat-thinking"
         :class="{
           'thinking-streaming': isThinkingStreaming(block),
           'thinking-collapsed': !isThinkingStreaming(block),
-          'thinking-collapsing': !!collapsingThinking[bi],
+          'thinking-collapsing': !!collapsingThinking[stableBlockKey(bi, block)],
         }"
-        :style="collapsingThinking[bi] ? { maxHeight: collapsingMaxHeight[bi] + 'px' } : {}"
+        :style="collapsingThinking[stableBlockKey(bi, block)] ? { maxHeight: collapsingMaxHeight[stableBlockKey(bi, block)] + 'px' } : {}"
         @click.stop="!isThinkingStreaming(block) && handleThinkingClick(block, bi)"
       >
         <div class="thinking-header">
@@ -34,7 +34,7 @@
           <CheckCircle2 v-else :size="14" color="#22c55e" class="thinking-check" />
         </div>
         <!-- Inline streaming content: only visible during streaming or collapse animation -->
-        <div v-if="isThinkingStreaming(block) || !!collapsingThinking[bi]" class="thinking-inline-content" v-html="getThinkingHtml(bi, block)"></div>
+        <div v-if="isThinkingStreaming(block) || !!collapsingThinking[stableBlockKey(bi, block)]" class="thinking-inline-content" v-html="getThinkingHtml(bi, block)"></div>
       </div>
       <!-- Tool use block -->
       <template v-else-if="block.type === 'tool_use'">
@@ -288,8 +288,19 @@ function scheduledTaskKeys(bi) {
   return scheduledTaskKeysUtil(taskKeyIndex.value, bi)
 }
 
+/** Generate a stable key for a block, used for v-for :key and animation state.
+ *  tool_use: block.id (unique tool call ID from backend)
+ *  thinking: block._key (stable key assigned at creation/parsing)
+ *  text: text-${bi} (text blocks merge so index is stable)
+ *  other: type-bi (fallback) */
+function stableBlockKey(bi, block) {
+  if (block.type === 'tool_use' && block.id) return block.id
+  if (block.type === 'thinking' && block._key) return block._key
+  return `${block.type || 'other'}-${bi}`
+}
+
 function handleThinkingClick(block, bi) {
-  emit('show-thinking-detail', { text: block.text, msgId: props.msgId, blockIdx: bi })
+  emit('show-thinking-detail', { text: block.text, msgId: props.msgId, blockKey: block._key })
 }
 
 /** Whether a thinking block should show inline streaming content.
@@ -315,9 +326,9 @@ const isLastBlockThinking = computed(() => {
 })
 
 // ── Thinking block collapse animation state ──
-const collapsingThinking = ref({})   // { [blockIndex]: true } for blocks mid-collapse
-const collapsingMaxHeight = ref({})  // { [blockIndex]: maxHeightPx } for animation
-let _collapseElRefs = {}             // { [blockIndex]: HTMLElement } tracked during streaming
+const collapsingThinking = ref({})   // { [blockKey]: true } for blocks mid-collapse
+const collapsingMaxHeight = ref({})  // { [blockKey]: maxHeightPx } for animation
+let _collapseElRefs = {}             // { [blockKey]: HTMLElement } tracked during streaming
 let _collapseTimers = []             // setTimeout IDs for collapse animation (cleaned up on unmount)
 
 // Collapse animation constants — must stay in sync with CSS
@@ -327,11 +338,11 @@ const COLLAPSE_TRANSITION_MS = 400   // ms — must match CSS transition-duratio
 const COLLAPSE_PLACEHOLDER_MAX = 99999 // large sentinel to keep content visible during nextTick
 
 /** Track thinking block element refs during streaming for collapse animation. */
-function setThinkingRef(bi, el) {
+function setThinkingRef(key, el) {
   if (el) {
-    _collapseElRefs[bi] = el
+    _collapseElRefs[key] = el
   } else {
-    delete _collapseElRefs[bi]
+    delete _collapseElRefs[key]
   }
 }
 
@@ -340,8 +351,8 @@ function handleToolDetailClick(event) {
   // Try tool-specific action handler first (via data-tool-name on the .tool-detail container)
   const toolName = event.currentTarget.dataset?.toolName
   if (toolName && handleToolAction(toolName, event, emit)) return
-  // Allow file-open buttons and commit-hash elements to bubble
-  if (event.target.closest('.chat-file-open-btn') || event.target.closest('.chat-commit-hash, .chat-commit-open-btn') || event.target.closest('.chat-worktree-btn')) {
+  // Allow file-open buttons, commit-hash elements, and table rows to bubble
+  if (event.target.closest('.chat-file-open-btn') || event.target.closest('.chat-commit-hash, .chat-commit-open-btn') || event.target.closest('.chat-worktree-btn') || event.target.closest('tbody tr[data-row-idx]')) {
     return
   }
   event.stopPropagation()
@@ -365,12 +376,13 @@ function flushBlockHtml() {
   const newCache = {}
   for (let i = 0; i < (props.blocks?.length || 0); i++) {
     const block = props.blocks[i]
+    const key = stableBlockKey(i, block)
     if (block.type === 'text') {
       // streaming=true: deferred rendering — pure markdown only
-      newCache[i] = props.renderTextBlock(block.text, props.msgId, i, true)
+      newCache[key] = props.renderTextBlock(block.text, props.msgId, i, true)
     } else if (block.type === 'thinking') {
       // Thinking blocks use renderMarkdown during streaming
-      newCache[`t-${i}`] = renderMarkdown(block.text)
+      newCache[`t-${key}`] = renderMarkdown(block.text)
     }
   }
   blockHtmlCache.value = newCache
@@ -407,19 +419,20 @@ function getBlockHtml(bi, block) {
     return ''
   }
   // Streaming: deferred rendering with throttling
-  if (blockHtmlCache.value[bi] !== undefined) {
+  const key = stableBlockKey(bi, block)
+  if (blockHtmlCache.value[key] !== undefined) {
     if (!_throttleTimer) {
       const newCache = { ...blockHtmlCache.value }
-      newCache[bi] = props.renderTextBlock(block.text, props.msgId, bi, true)
+      newCache[key] = props.renderTextBlock(block.text, props.msgId, bi, true)
       blockHtmlCache.value = newCache
       _throttleTimer = setTimeout(flushBlockHtml, THROTTLE_MS)
     } else {
       _throttlePending = true
     }
-    return blockHtmlCache.value[bi]
+    return blockHtmlCache.value[key]
   }
   const html = props.renderTextBlock(block.text, props.msgId, bi, true)
-  blockHtmlCache.value = { ...blockHtmlCache.value, [bi]: html }
+  blockHtmlCache.value = { ...blockHtmlCache.value, [key]: html }
   return html
 }
 
@@ -428,7 +441,7 @@ function getThinkingHtml(bi, block) {
   if (!props.streaming || !props.active) {
     return renderMarkdown(block.text)
   }
-  const cacheKey = `t-${bi}`
+  const cacheKey = `t-${stableBlockKey(bi, block)}`
   // Streaming: deferred rendering with throttling (same pattern as text blocks)
   if (blockHtmlCache.value[cacheKey] !== undefined) {
     if (!_throttleTimer) {
@@ -527,10 +540,11 @@ watch(() => props.blocks.filter(b => b.type === 'thinking' && b.done).map(b => b
   for (let i = 0; i < props.blocks.length; i++) {
     const block = props.blocks[i]
     if (block.type === 'thinking' && block.done) {
-      const el = _collapseElRefs[i]
-      if (el && !collapsingThinking.value[i]) {
-        refSnapshot[i] = el
-        delete _collapseElRefs[i]
+      const key = stableBlockKey(i, block)
+      const el = _collapseElRefs[key]
+      if (el && !collapsingThinking.value[key]) {
+        refSnapshot[key] = el
+        delete _collapseElRefs[key]
       }
     }
   }
@@ -850,6 +864,19 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
   font-weight: 600;
 }
+.thinking-inline-content strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.thinking-inline-content em {
+  font-style: italic;
+}
+.thinking-inline-content mark {
+  background: rgba(245, 158, 11, 0.2);
+  color: inherit;
+  padding: 1px 2px;
+  border-radius: 2px;
+}
 
 /* Tool calls display */
 .chat-tool-call {
@@ -920,7 +947,7 @@ onUnmounted(() => {
   margin-left: auto;
 }
 
-/* Inline tool detail — only used by AskUserQuestion (other tools use ToolDetailOverlay) */
+/* Inline tool detail — only used by AskUserQuestion (other tools use ToolDetailDrawer) */
 .tool-detail {
   margin: 2px 0 4px 0;
   padding: 6px 8px;
@@ -1177,94 +1204,6 @@ onUnmounted(() => {
 <style>
 /* Non-scoped styles for v-html penetration — tool detail rendering */
 
-/* ── File path annotation (from annotateFilePaths in text blocks) ── */
-.content-blocks .chat-file-path {
-  font-family: 'SF Mono', 'Fira Code', Menlo, Monaco, monospace;
-  font-size: 0.95em;
-  background: color-mix(in srgb, var(--text-muted, #999) 8%, transparent);
-  padding: 1px 4px;
-  border-radius: 3px;
-  word-break: break-all;
-}
-
-.content-blocks .chat-file-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
-}
-
-.content-blocks .chat-file-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
-/* Project-external file open button — orange icon */
-.content-blocks .chat-file-open-btn.external {
-  color: #e67e22;
-}
-.content-blocks .chat-file-open-btn.external:hover {
-  color: #d35400;
-}
-
-/* ── Commit hash annotation (from annotateCommitHashes in text blocks) ── */
-.content-blocks .chat-commit-hash {
-  font-family: 'SF Mono', 'Fira Code', Menlo, Monaco, monospace;
-  font-size: 0.95em;
-  color: var(--accent-color, #4a90d9);
-  cursor: pointer;
-}
-
-.content-blocks .chat-commit-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
-}
-
-.content-blocks .chat-commit-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
-
-.content-blocks .chat-worktree-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
-}
-
-.content-blocks .chat-worktree-switch-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
 
 :root[data-theme="dark"] .content-blocks .chat-tool-call[data-category="bash"]   { --tool-accent: #34d399; }
 :root[data-theme="dark"] .content-blocks .chat-tool-call[data-category="search"] { --tool-accent: #a78bfa; }
@@ -1366,31 +1305,6 @@ onUnmounted(() => {
   top: 0;
   right: 0;
   flex-shrink: 0;
-}
-
-/* Base style for file-open buttons in tool detail */
-.content-blocks .tool-detail .chat-file-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-}
-
-.content-blocks .tool-detail .chat-file-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
-.content-blocks .tool-detail .chat-file-open-btn.external {
-  color: #e67e22;
-}
-.content-blocks .tool-detail .chat-file-open-btn.external:hover {
-  color: #d35400;
 }
 
 .content-blocks .tool-detail .tool-file-path {

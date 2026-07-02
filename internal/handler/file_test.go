@@ -1011,7 +1011,7 @@ func TestServeLocalFile_DownloadMode(t *testing.T) {
 
 	w := callHandler(ServeLocalFile, req)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, `attachment; filename="test.txt"`, w.Header().Get("Content-Disposition"))
+	assert.Equal(t, `attachment; filename="test.txt"; filename*=UTF-8''test.txt`, w.Header().Get("Content-Disposition"))
 }
 
 func TestServeLocalFile_Directory_Returns400(t *testing.T) {
@@ -1239,6 +1239,216 @@ func TestServeFileBatchExists_AbsolutePathExists(t *testing.T) {
 
 	results := result["results"].(map[string]interface{})
 	assert.Equal(t, "file", results[extFile])
+}
+
+func TestServeFileBatchBase64(t *testing.T) {
+	t.Run("ImageFile_ReturnsBase64", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		// Create a small PNG (1x1 red pixel)
+		pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+		createTestFile(t, env.ProjectDir, "img/logo.png", string(pngData))
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"img/logo.png"},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assertOK(t, w)
+
+		var result map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &result)
+		assert.NoError(t, err)
+
+		results, ok := result["results"].(map[string]interface{})
+		assert.True(t, ok)
+		item, ok := results["img/logo.png"].(map[string]interface{})
+		assert.True(t, ok)
+		assert.Equal(t, "image/png", item["mime"])
+		assert.NotEmpty(t, item["data"])
+	})
+
+	t.Run("NonImageFile_Skipped", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		createTestFile(t, env.ProjectDir, "src/main.go", "package main")
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"src/main.go"},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assertOK(t, w)
+
+		var result map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &result)
+		assert.NoError(t, err)
+
+		results, ok := result["results"].(map[string]interface{})
+		assert.True(t, ok)
+		assert.Empty(t, results) // no image results
+		skipped, ok := result["skipped"].([]interface{})
+		assert.True(t, ok)
+		assert.Len(t, skipped, 1)
+	})
+
+	t.Run("EmptyPaths_Returns400", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("TooManyPaths_Returns400", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		paths := make([]string, 51)
+		for i := range paths {
+			paths[i] = "img/a.png"
+		}
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": paths,
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("NonExistentImage_Skipped", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"img/missing.png"},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assertOK(t, w)
+
+		var result map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &result)
+		assert.NoError(t, err)
+
+		results, ok := result["results"].(map[string]interface{})
+		assert.True(t, ok)
+		assert.Empty(t, results)
+		skipped, ok := result["skipped"].([]interface{})
+		assert.True(t, ok)
+		assert.Len(t, skipped, 1)
+	})
+
+	t.Run("WrongMethod_Returns405", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		req := newRequest(t, http.MethodGet, "/api/file/batch-base64", nil)
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
+
+	t.Run("NoProjectCookie_Returns403", func(t *testing.T) {
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"img/a.png"},
+		})
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("MixedImageAndNonImage", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+		createTestFile(t, env.ProjectDir, "img/logo.png", string(pngData))
+		createTestFile(t, env.ProjectDir, "src/main.go", "package main")
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"img/logo.png", "src/main.go"},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assertOK(t, w)
+
+		var result map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &result)
+		assert.NoError(t, err)
+
+		results := result["results"].(map[string]interface{})
+		assert.Len(t, results, 1) // only the PNG
+		skipped := result["skipped"].([]interface{})
+		assert.Len(t, skipped, 1) // the .go file
+	})
+
+	t.Run("OversizedFile_Skipped", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+
+		// Create a PNG larger than 2MB
+		bigData := make([]byte, 2*1024*1024+100)
+		copy(bigData, "\x89PNG\r\n\x1a\n")
+		createTestFile(t, env.ProjectDir, "img/big.png", string(bigData))
+
+		req := newRequest(t, http.MethodPost, "/api/file/batch-base64", map[string]interface{}{
+			"paths": []string{"img/big.png"},
+		})
+		withProjectCookie(req, env.ProjectDir)
+
+		w := callHandler(ServeFileBatchBase64, req)
+		assertOK(t, w)
+
+		var result map[string]interface{}
+		err := json.Unmarshal(w.Body.Bytes(), &result)
+		assert.NoError(t, err)
+
+		results := result["results"].(map[string]interface{})
+		assert.Empty(t, results)
+		skipped := result["skipped"].([]interface{})
+		assert.Len(t, skipped, 1)
+	})
+}
+
+func TestBatchBase64ResolvePath(t *testing.T) {
+	t.Run("RelativePath", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+		abs, ok := batchBase64ResolvePath("img/logo.png", env.ProjectDir)
+		assert.True(t, ok)
+		assert.Equal(t, filepath.Join(env.ProjectDir, "img/logo.png"), abs)
+	})
+
+	t.Run("AbsolutePathOutsideRoot", func(t *testing.T) {
+		abs, ok := batchBase64ResolvePath("/nonexistent/path/that/should/fail", "/unused")
+		assert.False(t, ok)
+		assert.Empty(t, abs)
+	})
+
+	t.Run("AbsolutePathUnderProject", func(t *testing.T) {
+		env, teardown := setupTestEnv(t)
+		defer teardown()
+		// Create the file so the path exists for symlink resolution
+		createTestFile(t, env.ProjectDir, "img/logo.png", "test")
+		testPath := filepath.Join(env.ProjectDir, "img/logo.png")
+		abs, ok := batchBase64ResolvePath(testPath, "/unused")
+		assert.True(t, ok)
+		assert.Equal(t, testPath, abs)
+	})
 }
 
 func TestGetFile_BrokenSymlink(t *testing.T) {

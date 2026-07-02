@@ -320,7 +320,7 @@ export function useChatSession(options: UseChatSessionOptions) {
               Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
               Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
               // Replace messages — pending messages are in pendingStore, not messages.value
-              messages.value = parseMessages(recoverMsgs, onParseAssistantContent, messages.value)
+              messages.value = parseMessages(recoverMsgs, onParseAssistantContent, messages.value, recoverData.running)
               totalMessages.value = recoverData.total || messages.value.length
               // Sync remaining session metadata from recovery response
               if (recoverData.modeState && recoverData.modeState?.availableModes?.length > 0) {
@@ -388,6 +388,23 @@ export function useChatSession(options: UseChatSessionOptions) {
       if (loadHistorySeq !== mySeq) { return }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}))
+        // If the session was deleted (404 + SessionNotFound), clear stale
+        // currentSessionId and recover by re-triggering loadHistory (which
+        // will use the recovery path to auto-select the latest available
+        // session or create a new one).
+        if (resp.status === 404 && errData.msgKey === 'SessionNotFound' && currentSessionId.value) {
+          appLog.w(TAG, 'loadHistory: session not found, clearing stale sessionId and recovering')
+          currentSessionId.value = ''
+          // Resolve deferred and clean up in-flight state before re-invoking
+          // so the finally block doesn't double-resolve or flicker switching.
+          loadHistoryInProgress = false
+          resolveDeferred!()
+          loadHistoryDeferred = null
+          const next = pendingReload || { forceScrollBottom, showOverlay, skipIfUnchanged }
+          pendingReload = null
+          setTimeout(() => loadHistory(next.forceScrollBottom, next.showOverlay, next.skipIfUnchanged), 0)
+          return
+        }
         throw new Error(errData.error || gt('chat.session.requestFailed', { status: resp.status }))
       }
       const data = await resp.json()
@@ -422,7 +439,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       // Replace messages with server data. Pending messages are NOT in
       // messages.value — they live in a separate per-session pendingStore.
       // No need to preserve/re-append pending messages here.
-      messages.value = parseMessages(rawMsgs, onParseAssistantContent, messages.value)
+      messages.value = parseMessages(rawMsgs, onParseAssistantContent, messages.value, data.running)
 
       totalMessages.value = data.total || messages.value.length
       // Sanity check: if the backend returned a different sessionId than what we
@@ -533,7 +550,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       const resp = await fetch(`/api/ai/chat?session_id=${encodeURIComponent(currentSessionId.value)}&limit=${pageSize}&before_id=${encodeURIComponent(beforeId)}`)
       if (!resp.ok) return
       const data = await resp.json()
-      const olderMsgs = parseMessages(data.messages || [], onParseAssistantContent)
+      const olderMsgs = parseMessages(data.messages || [], onParseAssistantContent, undefined, data.running)
       if (olderMsgs.length > 0) {
         messages.value = [...olderMsgs, ...messages.value]
         totalMessages.value = data.total || totalMessages.value
@@ -594,6 +611,27 @@ export function useChatSession(options: UseChatSessionOptions) {
         fetch(chatUrl),
       ])
       if (!resp.ok) {
+        // If the session was deleted, clear stale currentSessionId and recover
+        // by falling back to the latest available session (same as deleteSession).
+        const errData = await resp.json().catch(() => ({}))
+        if (resp.status === 404 && errData.msgKey === 'SessionNotFound') {
+          appLog.w(TAG, 'switchSession: session not found, recovering to latest session')
+          const sessionsResp = await fetch('/api/ai/sessions')
+          const sessionsData = await sessionsResp.json()
+          // If another switch happened while fetching sessions, bail
+          if (switchSessionSeq !== mySeq) return
+          if (sessionsData.sessions && sessionsData.sessions.length > 0) {
+            // Switch to the most recent session — guard against recursive deletion
+            const targetId = sessionsData.sessions[0].id
+            if (targetId !== sessionId) {
+              await switchSession(targetId)
+              return
+            }
+          }
+          // No valid sessions left — create a new one
+          await createSession('')
+          return
+        }
         toast.show(gt('chat.session.switchFailed'), { icon: '⚠️', type: 'error' })
         return
       }
@@ -603,7 +641,7 @@ export function useChatSession(options: UseChatSessionOptions) {
       // (the newer switch will set switching=false when it completes)
       if (switchSessionSeq !== mySeq) return
 
-      messages.value = parseMessages(data.messages || [], onParseAssistantContent)
+      messages.value = parseMessages(data.messages || [], onParseAssistantContent, undefined, data.running)
       totalMessages.value = data.total || messages.value.length
       currentSessionId.value = data.sessionId || sessionId
       currentSessionTitle.value = data.sessionTitle || ''
@@ -899,13 +937,18 @@ export function useChatSession(options: UseChatSessionOptions) {
     }
   }
 
-  /** Fork the current session — create a new session with copied messages. */
-  async function forkSession(sessionId: string): Promise<boolean> {
+  /** Fork the current session — create a new session with copied messages.
+   *  If beforeMessageId is provided, only messages up to and including that message are copied. */
+  async function forkSession(sessionId: string, beforeMessageId?: number): Promise<boolean> {
     try {
+      const body: Record<string, unknown> = { sessionId }
+      if (beforeMessageId && beforeMessageId > 0) {
+        body.beforeMessageId = beforeMessageId
+      }
       const resp = await fetch('/api/ai/session/fork', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify(body),
       })
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}))

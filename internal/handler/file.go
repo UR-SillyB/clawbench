@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -372,8 +373,8 @@ func ServeLocalFile(w http.ResponseWriter, r *http.Request) {
 	// directory index and redirects to "./", which changes the URL path to
 	// point at the parent directory, triggering a NotADirectory error.
 	if r.URL.Query().Get("download") == "1" {
-		fileName := sanitizeArchiveName(filepath.Base(absPath))
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+		fileName := filepath.Base(absPath)
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(fileName))
 		w.Header().Set("Content-Type", mime)
 		f, err := os.Open(absPath)
 		if err != nil {
@@ -381,7 +382,7 @@ func ServeLocalFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = f.Close() }()
-		http.ServeContent(w, r, fileName, info.ModTime(), f)
+		http.ServeContent(w, r, sanitizeArchiveName(fileName), info.ModTime(), f)
 		return
 	}
 
@@ -559,6 +560,153 @@ func ServeFileBatchExists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"results": results})
+}
+
+// imageBase64Exts is the set of image extensions allowed in the batch-base64 endpoint.
+// Only includes formats with inline browser support and known MIME types.
+var imageBase64Exts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".webp": true, ".svg": true, ".bmp": true, ".ico": true,
+}
+
+// ServeFileBatchBase64 reads multiple image files and returns their base64-encoded content.
+//
+// POST /api/file/batch-base64
+// Body:   { "paths": ["img/logo.png", "img/diagram.svg"] }
+//
+//	Response: {
+//	  "results": { "img/logo.png": { "mime": "image/png", "data": "base64..." } },
+//	  "skipped": [{ "path": "img/huge.png", "reason": "exceeds 2MB limit" }]
+//	}
+//
+// Only image files are allowed. Per-file size cap is 2MB.
+// Total response size budget is 20MB of base64 data (~15MB raw).
+// Max 50 paths per request.
+func ServeFileBatchBase64(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Paths) == 0 {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "MissingPath")
+		return
+	}
+	if len(req.Paths) > 50 {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "TooManyPaths")
+		return
+	}
+
+	projectPath, ok := requireProject(w, r)
+	if !ok {
+		return
+	}
+	baseAbs, err := filepath.Abs(projectPath)
+	if err != nil {
+		model.WriteError(w, model.Internal(err))
+		return
+	}
+
+	results, skipped := batchBase64ProcessPaths(req.Paths, baseAbs)
+
+	resp := map[string]interface{}{
+		"results": results,
+	}
+	if len(skipped) > 0 {
+		resp["skipped"] = skipped
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type batchBase64Result struct {
+	Mime string `json:"mime"`
+	Data string `json:"data"`
+}
+
+type batchBase64Skip struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// batchBase64ProcessPaths processes each path and returns results and skipped items.
+func batchBase64ProcessPaths(paths []string, baseAbs string) (map[string]batchBase64Result, []batchBase64Skip) {
+	const maxFileSize = 2 * 1024 * 1024     // 2MB per file
+	const maxTotalBase64 = 20 * 1024 * 1024 // 20MB total base64 output
+
+	results := make(map[string]batchBase64Result, len(paths))
+	var skipped []batchBase64Skip
+	var totalBase64 int
+
+	for _, p := range paths {
+		res, skip, encodedLen := batchBase64ProcessOne(p, baseAbs, maxFileSize, totalBase64, maxTotalBase64)
+		if skip != nil {
+			skipped = append(skipped, *skip)
+			continue
+		}
+		results[p] = *res
+		totalBase64 += encodedLen
+	}
+	return results, skipped
+}
+
+// batchBase64ProcessOne handles a single path for batch-base64.
+// Returns (result, skip, encodedLen). Exactly one of result/skip is non-nil.
+func batchBase64ProcessOne(p, baseAbs string, maxFileSize, totalBase64, maxTotalBase64 int) (*batchBase64Result, *batchBase64Skip, int) {
+	lower := strings.ToLower(p)
+	ext := filepath.Ext(lower)
+	if !imageBase64Exts[ext] {
+		return nil, &batchBase64Skip{Path: p, Reason: "not an image file"}, 0
+	}
+
+	absPath, ok := batchBase64ResolvePath(p, baseAbs)
+	if !ok {
+		return nil, &batchBase64Skip{Path: p, Reason: "access denied"}, 0
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		reason := "read error"
+		if errors.Is(err, os.ErrNotExist) {
+			reason = "file not found"
+		}
+		return nil, &batchBase64Skip{Path: p, Reason: reason}, 0
+	}
+
+	if len(data) > maxFileSize {
+		return nil, &batchBase64Skip{Path: p, Reason: "exceeds 2MB limit"}, 0
+	}
+
+	encodedSize := base64.StdEncoding.EncodedLen(len(data))
+	if totalBase64+encodedSize > maxTotalBase64 {
+		return nil, &batchBase64Skip{Path: p, Reason: "total size exceeded"}, 0
+	}
+
+	mime := mimeTypes[ext]
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return &batchBase64Result{Mime: mime, Data: b64}, nil, len(b64)
+}
+
+// batchBase64ResolvePath resolves a path to an absolute path with access checks.
+func batchBase64ResolvePath(p, baseAbs string) (string, bool) {
+	p = platform.ExpandTilde(p)
+	if strings.HasPrefix(p, "/") || filepath.IsAbs(p) {
+		abs, err := filepath.Abs(p)
+		if err != nil || !isPathUnderAnyRoot(abs) {
+			return "", false
+		}
+		return abs, true
+	}
+	absPath, valid := model.ValidatePath(baseAbs, p)
+	return absPath, valid
 }
 
 // ── File-related DTOs ──────────────────────────────────────────────────────────

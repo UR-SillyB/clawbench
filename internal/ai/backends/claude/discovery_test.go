@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"clawbench/internal/model"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -143,4 +145,79 @@ func TestKnownClaudeAlias(t *testing.T) {
 	assert.True(t, KnownClaudeAlias("haiku"))
 	assert.False(t, KnownClaudeAlias("claude-sonnet-4-6"))
 	assert.False(t, KnownClaudeAlias("gpt-4"))
+}
+
+func TestOverrideDedup_KeepsFirstByName(t *testing.T) {
+	// Simulate the dedup logic: when multiple models override to the same Name,
+	// only the first (by sort order: sonnet > opus > haiku) is kept.
+	models := []model.AgentModel{
+		{ID: "claude-sonnet-4-6", Name: "MiniMax-M2.7"},
+		{ID: "claude-opus-4-5", Name: "MiniMax-M2.7"},
+		{ID: "claude-haiku-3-5", Name: "Claude Haiku 3.5"},
+	}
+	seenNames := make(map[string]bool)
+	deduped := make([]model.AgentModel, 0, len(models))
+	for i := range models {
+		if seenNames[models[i].Name] {
+			continue
+		}
+		seenNames[models[i].Name] = true
+		deduped = append(deduped, models[i])
+	}
+	assert.Len(t, deduped, 2, "duplicate Name should be deduped")
+	assert.Equal(t, "claude-sonnet-4-6", deduped[0].ID, "first occurrence (sonnet) kept")
+	assert.Equal(t, "claude-haiku-3-5", deduped[1].ID, "non-duplicate kept")
+}
+
+func TestOverrideDedup_AllSameName(t *testing.T) {
+	// All models override to the same Name — only first survives.
+	models := []model.AgentModel{
+		{ID: "claude-sonnet-4-6", Name: "Proxy"},
+		{ID: "claude-opus-4-5", Name: "Proxy"},
+		{ID: "claude-haiku-3-5", Name: "Proxy"},
+	}
+	seenNames := make(map[string]bool)
+	deduped := make([]model.AgentModel, 0, len(models))
+	for i := range models {
+		if seenNames[models[i].Name] {
+			continue
+		}
+		seenNames[models[i].Name] = true
+		deduped = append(deduped, models[i])
+	}
+	assert.Len(t, deduped, 1, "all same Name → only first kept")
+	assert.Equal(t, "claude-sonnet-4-6", deduped[0].ID)
+}
+
+func TestOverrideDedup_NoCollisions(t *testing.T) {
+	// No Name collisions — all models pass through.
+	models := []model.AgentModel{
+		{ID: "claude-sonnet-4-6", Name: "MiniMax-M2.7"},
+		{ID: "claude-opus-4-5", Name: "DeepSeek-V3"},
+		{ID: "claude-haiku-3-5", Name: "Claude Haiku 3.5"},
+	}
+	seenNames := make(map[string]bool)
+	deduped := make([]model.AgentModel, 0, len(models))
+	for i := range models {
+		if seenNames[models[i].Name] {
+			continue
+		}
+		seenNames[models[i].Name] = true
+		deduped = append(deduped, models[i])
+	}
+	assert.Len(t, deduped, 3, "no collisions → all kept")
+}
+
+func TestOverrideDedup_EmptyInput(t *testing.T) {
+	models := []model.AgentModel{}
+	seenNames := make(map[string]bool)
+	deduped := make([]model.AgentModel, 0, len(models))
+	for i := range models {
+		if seenNames[models[i].Name] {
+			continue
+		}
+		seenNames[models[i].Name] = true
+		deduped = append(deduped, models[i])
+	}
+	assert.Len(t, deduped, 0)
 }

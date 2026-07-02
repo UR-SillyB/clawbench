@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-message" :class="[msg.role, { 'has-metadata': msg.role === 'assistant' && msg.metadata, pending: msg.pending }]">
+  <div class="chat-message" :class="[msg.role, { 'has-metadata': msg.role === 'assistant' && msg.metadata, pending: msg.pending }]" :data-msg-key="msg.id ? 'db-' + msg.id : null">
 
     <!-- Collapsible content wrapper -->
     <div ref="wrapperRef" class="msg-content-wrapper">
@@ -54,8 +54,12 @@
         <span v-if="msg.metadata?.wallMs" class="chat-meta-duration">{{ formatDuration(msg.metadata.wallMs) }}</span>
       </span>
       <div class="chat-meta-actions">
+        <button v-if="hasFileChanges" class="chat-action-btn chat-action-btn--wide" @click="fileChangesOpen = true" :title="t('chat.fileChanges.title')">
+          <FileDiff :size="14" />
+          <span>{{ t('chat.fileChanges.title') }}</span>
+        </button>
         <SummaryToggle v-if="msg.summary && !msg.streaming" mode="button" :showing-summary="msg.showingSummary" i18n-prefix="chat.message" @toggle="$emit('toggle-summary', msg.id)" />
-        <button v-if="msgText" ref="speakBtnRef" class="chat-info-btn chat-speak-btn" :class="{ active: autoSpeech.isActive(msg.id), loading: autoSpeech.isGeneratingText(msg.id) }" @click.stop="handleSpeak">
+        <button v-if="msgText" ref="speakBtnRef" class="chat-action-btn chat-action-btn--wide" :class="{ active: autoSpeech.isActive(msg.id), loading: autoSpeech.isGeneratingText(msg.id) }" @click.stop="handleSpeak">
           <!-- Generating states: summarizing / synthesizing -->
           <template v-if="autoSpeech.isGeneratingText(msg.id)">
             <Clock :size="14" class="speak-spinner" />
@@ -72,31 +76,36 @@
             <span>{{ t('chat.message.readAloud') }}</span>
           </template>
         </button>
-        <button v-if="!msg.streaming" class="chat-info-btn" @click="$emit('show-metadata', msg)" :title="t('chat.message.viewDetails')">
+        <button v-if="!msg.streaming" class="chat-action-btn" @click="$emit('show-metadata', msg)" :title="t('chat.message.viewDetails')">
           <Info :size="14" />
         </button>
       </div>
     </div>
-    <!-- Bottom bar for user messages -->
-    <div v-if="msg.role === 'user' && !msg.pending" class="chat-meta-bar chat-meta-bar-user">
-      <span class="chat-meta-info">
-      </span>
-      <button class="chat-info-btn chat-info-btn-user" @click="$emit('show-metadata', msg)" :title="t('chat.message.viewDetails')">
-        <Info :size="14" />
-      </button>
-    </div>
 
+    <!-- File changes sheet -->
+    <FileChangesDrawer
+      :open="fileChangesDrawer.effectiveOpen.value"
+      :created="fileChanges.created"
+      :modified="fileChanges.modified"
+      @close="fileChangesOpen = false"
+      @open-file="handleOpenFile"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, inject, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Clock, Pause, Volume2, Info } from 'lucide-vue-next'
+import { Clock, Pause, Volume2, Info, FileDiff } from 'lucide-vue-next'
 import { formatDuration } from '@/utils/format.ts'
 import { extractSpeakableText } from '@/composables/useAutoSpeech.ts'
+import { extractFileChanges } from '@/utils/chatStreamUtils.ts'
+import { openFilePath } from '@/composables/useFilePathAnnotation.ts'
+import { store } from '@/stores/app.ts'
 import ContentBlocks from './ContentBlocks.vue'
 import FileAttachmentList from './FileAttachmentList.vue'
+import FileChangesDrawer from './FileChangesDrawer.vue'
+import { useTabDrawer } from '@/composables/useTabDrawer'
 import SummaryToggle from '@/components/common/SummaryToggle.vue'
 
 
@@ -141,6 +150,24 @@ const chatSession = inject('chatSession', {})
 
 const { renderTextBlock, toolCallSummary, formatToolInput, humanizeCron, repeatLabel, truncate, hasImagesInContent } = chatRender
 const { getAgentIcon, getAgentName } = chatSession
+
+// File changes extraction (Write → created, Edit → modified)
+const fileChanges = computed(() => {
+  if (props.msg?.role !== 'assistant' || props.msg.streaming) return { created: [], modified: [] }
+  return extractFileChanges(props.msg?.blocks || [])
+})
+const hasFileChanges = computed(() => fileChanges.value.created.length > 0 || fileChanges.value.modified.length > 0)
+
+const fileChangesOpen = ref(false)
+const fileChangesDrawer = useTabDrawer('chat', fileChangesOpen)
+
+function handleOpenFile(path) {
+  // AI may return absolute paths (e.g. /home/user/project/src/foo.ts).
+  // Strip projectRoot prefix so openFilePath doesn't treat them as external.
+  const root = store.state.projectRoot
+  const relPath = root && path.startsWith(root + '/') ? path.slice(root.length + 1) : path
+  openFilePath(relPath)
+}
 </script>
 
 <style scoped>
@@ -167,12 +194,12 @@ const { getAgentIcon, getAgentName } = chatSession
 }
 
 /* Image thumbnail style */
-.chat-message .chat-img-thumbnail {
+.chat-message .lightbox-img {
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
 }
 
-.chat-message .chat-img-thumbnail:hover {
+.chat-message .lightbox-img:hover {
   transform: scale(1.02);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
@@ -210,53 +237,13 @@ const { getAgentIcon, getAgentName } = chatSession
     font-variant-numeric: tabular-nums;
 }
 
-/* Chat Info Button */
-.chat-info-btn {
-    flex-shrink: 0;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 6px;
-    border: none;
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    opacity: 0.5;
-    transition: opacity 0.2s, background 0.2s;
-    font-size: 11px;
-}
-
-.chat-info-btn:hover {
-    opacity: 1;
-    background: var(--bg-tertiary);
-}
-
-.chat-info-btn svg {
-    width: 14px;
-    height: 14px;
-    flex-shrink: 0;
-}
-
-.chat-info-btn span {
-    white-space: nowrap;
-}
-
-/* Speak button specific styles */
-.chat-speak-btn {
-    min-width: auto;
-    padding: 0 8px;
-}
-
-.chat-speak-btn.active {
+/* Speak button active state */
+.chat-action-btn.active {
     opacity: 1;
     color: var(--accent-color, #0066cc);
 }
 
-.chat-speak-btn.active:hover {
+.chat-action-btn.active:hover {
     background: color-mix(in srgb, var(--accent-color, #0066cc) 10%, transparent);
 }
 
@@ -355,7 +342,6 @@ const { getAgentIcon, getAgentName } = chatSession
 /* Chat message - non-scoped for v-html penetration */
 .chat-message {
     padding: 8px 12px;
-    border-radius: var(--radius-md);
     font-size: 13px;
     line-height: 1.4;
     min-width: 0;
@@ -398,35 +384,66 @@ const { getAgentIcon, getAgentName } = chatSession
 /* ── File attachment in messages ── */
 .chat-files {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 6px;
   margin: 4px 0;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
 
-/* Common file tag styles - shared by both current file and uploaded attachments */
-.chat-file-tag,
-.chat-file-attachment {
+.chat-files::-webkit-scrollbar {
+  display: none;
+}
+
+/* File card: filename pill */
+.chat-message .chat-file-tag,
+.chat-message .chat-file-attachment {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  border-radius: 8px;
-  padding: 1px 6px;
-  margin-bottom: 4px;
+  border-radius: 6px;
+  height: 40px;
+  padding: 0 10px;
   font-size: 12px;
   text-decoration: none;
   cursor: pointer;
   transition: opacity 0.15s;
-  white-space: nowrap;
-  max-width: 200px;
-}
-
-.chat-file-tag-icon,
-.chat-file-attachment svg {
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
-.chat-file-tag-path,
-.chat-file-name {
+.chat-message .attachment-filename {
+  font-family: monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message .attachment-filesize {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Image card: square thumbnail */
+.chat-message .chat-file-attachment.attachment-image-only {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.chat-message .attachment-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-file-tag-path {
   font-family: monospace;
   flex: 1;
   min-width: 0;
@@ -437,8 +454,7 @@ const { getAgentIcon, getAgentName } = chatSession
   -ms-overflow-style: none;
 }
 
-.chat-file-tag-path::-webkit-scrollbar,
-.chat-file-name::-webkit-scrollbar {
+.chat-file-tag-path::-webkit-scrollbar {
   display: none;
 }
 
@@ -449,27 +465,18 @@ const { getAgentIcon, getAgentName } = chatSession
 }
 
 .chat-message.user .chat-file-tag-path,
-.chat-message.user .chat-file-name {
+.chat-message.user .attachment-filename {
   color: rgba(255, 255, 255, 0.95);
 }
 
-.chat-message.user .chat-file-tag-icon,
-.chat-message.user .chat-file-attachment svg {
-  stroke: rgba(255, 255, 255, 0.95);
-}
-
-/* User message: uploaded - solid border */
-.chat-message.user .attachment-upload {
+/* User message: solid border (both upload and ref) */
+.chat-message.user .attachment-upload,
+.chat-message.user .attachment-ref {
   background: rgba(255, 255, 255, 0.15);
   border: 1px solid rgba(255, 255, 255, 0.35);
 }
 
-/* User message: referenced - dashed border */
-.chat-message.user .attachment-ref {
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px dashed rgba(255, 255, 255, 0.6);
-}
-
+.chat-message.user .attachment-upload:hover,
 .chat-message.user .attachment-ref:hover,
 .chat-message.user .chat-file-tag:hover {
   background: rgba(255, 255, 255, 0.25);
@@ -482,27 +489,18 @@ const { getAgentIcon, getAgentName } = chatSession
 }
 
 .chat-message.assistant .chat-file-tag-path,
-.chat-message.assistant .chat-file-name {
+.chat-message.assistant .attachment-filename {
   color: var(--text-secondary);
 }
 
-.chat-message.assistant .chat-file-tag-icon,
-.chat-message.assistant .chat-file-attachment svg {
-  stroke: var(--text-secondary);
-}
-
-/* Assistant message: uploaded - solid border */
-.chat-message.assistant .attachment-upload {
+/* Assistant message: solid border (both upload and ref) */
+.chat-message.assistant .attachment-upload,
+.chat-message.assistant .attachment-ref {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
 }
 
-/* Assistant message: referenced - dashed border */
-.chat-message.assistant .attachment-ref {
-  background: color-mix(in srgb, var(--text-muted, #999) 8%, transparent);
-  border: 1px dashed var(--text-secondary);
-}
-
+.chat-message.assistant .attachment-upload:hover,
 .chat-message.assistant .attachment-ref:hover,
 .chat-message.assistant .chat-file-tag:hover {
   background: var(--bg-secondary);
@@ -512,7 +510,9 @@ const { getAgentIcon, getAgentName } = chatSession
     background: var(--user-msg-color);
     color: white;
     align-self: flex-end;
-    border-radius: 16px 16px 0 16px;
+    border-radius: 20px 20px 0 20px;
+    margin-right: 10px;
+    max-width: calc(100% - 20px);
     overflow: hidden;
 }
 
@@ -520,7 +520,7 @@ const { getAgentIcon, getAgentName } = chatSession
     background: var(--bg-tertiary);
     color: var(--text-primary);
     align-self: stretch;
-    border-radius: 16px 16px 16px 0;
+    border-radius: 0;
     position: relative;
     min-width: 0;
     overflow: hidden;
@@ -604,6 +604,11 @@ const { getAgentIcon, getAgentName } = chatSession
     margin: 0.75em 0;
 }
 
+.chat-message.user .table-block-wrapper .table-wrap {
+    margin: 0;
+    border-radius: 0;
+}
+
 .chat-message.user table {
     display: block;
     margin: 0;
@@ -676,6 +681,18 @@ const { getAgentIcon, getAgentName } = chatSession
     word-break: normal;
 }
 
+/* Word-wrap mode: override pre/code white-space from rules above */
+.chat-message.assistant .code-block-wrapper.word-wrap pre {
+    overflow: visible;
+    white-space: pre-wrap;
+}
+
+.chat-message.assistant .code-block-wrapper.word-wrap pre code {
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-wrap: break-word;
+}
+
 .chat-message.assistant code {
     padding: 2px 6px;
     font-size: 13px;
@@ -726,6 +743,11 @@ const { getAgentIcon, getAgentName } = chatSession
     margin: 0.75em 0;
 }
 
+.chat-message.assistant .table-block-wrapper .table-wrap {
+    margin: 0;
+    border-radius: 0;
+}
+
 .chat-message.assistant table {
     display: block;
     margin: 0;
@@ -762,48 +784,5 @@ const { getAgentIcon, getAgentName } = chatSession
   max-width: 100%;
   max-height: 184px;
   height: auto;
-}
-
-/* ── Localhost URL open button (🌐, same pattern as file-open button) ── */
-.content-blocks .chat-url-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
-}
-
-.content-blocks .chat-url-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
-
-.content-blocks .chat-url-open-btn.loading {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.content-blocks .chat-url-open-btn.loading::after {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--border-color);
-  border-top-color: var(--accent-color);
-  border-radius: 50%;
-  animation: url-btn-spin 0.6s linear infinite;
-  margin-left: 2px;
-  display: inline-block;
-}
-
-@keyframes url-btn-spin {
-  to { transform: rotate(360deg); }
 }
 </style>

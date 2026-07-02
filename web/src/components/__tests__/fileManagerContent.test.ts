@@ -333,6 +333,7 @@ describe('FileManagerContent — doDelete emits correct path after closeCtxMenu'
 
 describe('FileManagerContent — doDownload uses saved path/name after closeCtxMenu', () => {
   it('creates download link with correct path after closeCtxMenu nulls entry', async () => {
+    vi.useFakeTimers()
     const wrapper = mountContent()
     wrapper.vm.ctxMenu.visible = true
     wrapper.vm.ctxMenu.entry = { type: 'file', name: 'readme.md', path: 'docs/readme.md' }
@@ -348,12 +349,16 @@ describe('FileManagerContent — doDownload uses saved path/name after closeCtxM
     expect(wrapper.vm.ctxMenu.entry).toBeNull()
     expect(appendSpy).toHaveBeenCalled()
     const anchor = appendSpy.mock.calls[0][0]
-    expect(anchor.href).toContain('docs%2Freadme.md')
+    expect(anchor.href).toContain('docs/readme.md')
     expect(anchor.download).toBe('readme.md')
     expect(clickSpy).toHaveBeenCalled()
 
+    // Flush the setTimeout cleanup in downloadFileByPath
+    vi.advanceTimersByTime(1500)
+
     appendSpy.mockRestore()
     removeSpy.mockRestore()
+    vi.useRealTimers()
   })
 })
 

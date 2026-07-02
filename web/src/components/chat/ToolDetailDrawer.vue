@@ -10,7 +10,7 @@
         <CheckCircle2 v-else :size="14" color="#22c55e" class="tool-detail-status" />
       </div>
     </template>
-    <div class="tool-detail-body" @click="handleBodyClick">
+    <div class="tool-detail-body" @click="handleBodyClick" @mousedown="onTableMouseDown" @touchstart="onTableTouchStart">
       <div v-html="toolInputHtml"></div>
       <!-- Tool output section -->
       <div v-if="toolOutputHtml" class="tool-output-section">
@@ -23,16 +23,27 @@
       </div>
     </div>
   </BottomSheet>
+
+  <!-- Table row expand modal -->
+  <TableRowModal
+    :data="tableRowModal"
+    @close="closeTableRowModal"
+    @prev="tableRowPrev"
+    @next="tableRowNext"
+  />
 </template>
 
 <script setup>
 import { computed } from 'vue'
 import { CheckCircle2, XCircle } from 'lucide-vue-next'
 import BottomSheet from '@/components/common/BottomSheet.vue'
+import TableRowModal from '@/components/common/TableRowModal.vue'
 import { getToolIcon, toolDisplayName } from '@/utils/icons'
 import { handleToolAction } from '@/utils/renderToolDetail.ts'
 import { useLocalhostUrlClickHandler } from '@/composables/useLocalhostAnnotation.ts'
+import { useI18n } from 'vue-i18n'
 import { store } from '@/stores/app.ts'
+import { useTableRowExpand } from '@/composables/useTableRowExpand.ts'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -43,6 +54,7 @@ const props = defineProps({
   toolOutputHtml: { type: String, default: '' },
   toolStatus: { type: String, default: '' },
   toolDone: { type: Boolean, default: true },
+  displayNameOverride: { type: String, default: '' },
 })
 
 const emit = defineEmits(['close', 'file-open', 'send-message'])
@@ -50,6 +62,7 @@ const emit = defineEmits(['close', 'file-open', 'send-message'])
 const category = computed(() => getToolIcon(props.toolName).category)
 const headerIcon = computed(() => getToolIcon(props.toolName).icon)
 const displayName = computed(() => {
+  if (props.displayNameOverride) return props.displayNameOverride
   if (props.toolSubagentType) {
     const raw = props.toolSubagentType
     return raw.charAt(0).toUpperCase() + raw.slice(1)
@@ -58,6 +71,8 @@ const displayName = computed(() => {
 })
 
 const { handleLocalhostUrlClick } = useLocalhostUrlClickHandler()
+const { t } = useI18n()
+const { tableRowModal, closeTableRowModal, tableRowPrev, tableRowNext, handleTableRowClick, onTableMouseDown, onTableTouchStart } = useTableRowExpand()
 
 function handleBodyClick(event) {
   if (props.toolName && handleToolAction(props.toolName, event, emit)) return
@@ -65,6 +80,9 @@ function handleBodyClick(event) {
   // Handle localhost URL open buttons — bottom sheet is teleported to <body>,
   // ChatMessageList's handleChatClick won't see these clicks.
   if (handleLocalhostUrlClick(event)) return
+
+  // Handle table row click — open row-form modal
+  if (handleTableRowClick(event)) return
 
   // Handle commit-hash clicks (span or button) — bottom sheet is teleported to <body>,
   // ChatMessageList's handleChatClick won't see these clicks.
@@ -280,25 +298,6 @@ function handleBodyClick(event) {
   top: 0;
   right: 0;
   flex-shrink: 0;
-}
-
-/* Base style for file-open buttons in tool detail */
-.tool-detail-body .chat-file-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-}
-
-.tool-detail-body .chat-file-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
 }
 
 .tool-detail-body .tool-file-path {
@@ -908,67 +907,18 @@ function handleBodyClick(event) {
   background: var(--bg-tertiary, rgba(0,0,0,0.04));
   font-weight: 600;
 }
-
-/* ── Localhost URL open button in tool output (same pattern as ChatMessageItem) ── */
-.tool-detail-body .chat-url-open-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
+.tool-detail-body .thinking-overlay-md strong {
+  font-weight: 600;
+  color: var(--text-primary);
 }
-
-.tool-detail-body .chat-url-open-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
+.tool-detail-body .thinking-overlay-md em {
+  font-style: italic;
 }
-
-.tool-detail-body .chat-worktree-btn {
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--text-muted, #999);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
-  font-size: 12px;
-  line-height: 1;
-  vertical-align: baseline;
-  transition: color 0.15s, background 0.15s;
-}
-
-.tool-detail-body .chat-worktree-switch-btn:hover {
-  color: var(--accent-color, #4a90d9);
-  background: var(--bg-tertiary, #f0f0f0);
-}
-
-.tool-detail-body .chat-url-open-btn.loading {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.tool-detail-body .chat-url-open-btn.loading::after {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--border-color);
-  border-top-color: var(--accent-color);
-  border-radius: 50%;
-  animation: url-btn-spin 0.6s linear infinite;
-  margin-left: 2px;
-  display: inline-block;
+.tool-detail-body .thinking-overlay-md mark {
+  background: rgba(245, 158, 11, 0.2);
+  color: inherit;
+  padding: 1px 2px;
+  border-radius: 2px;
 }
 
 /* Localhost <a> links in tool output pre blocks */
