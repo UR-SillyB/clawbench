@@ -1,10 +1,7 @@
 name: Sync Upstream
 
 on:
-  schedule:
-    # 每天 UTC 02:00 (北京时间 10:00) 自动同步
-    - cron: '0 2 * * *'
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch: # manual only — daily auto sync disabled
 
 permissions:
   contents: write
